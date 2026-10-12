@@ -1,6 +1,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -15,26 +16,6 @@
 namespace celestrian {
 
 namespace {
-
-/** Installs an enabled, prepared stub-synth instrument slot on `node`
- * (the phase-4 fixture, duplicated here so the files stay independent).
- * Returns the raw stub for assertions. */
-test_utils::StubSynthInstance* installStubSynth(AudioNode& node,
-                                                double sample_rate) {
-  auto instance = std::make_unique<test_utils::StubSynthInstance>();
-  auto* raw = instance.get();
-  auto slots = node.fxChain()->slots();
-  auto synth = std::make_shared<dsp::Vst3Slot>(
-      std::move(instance), "Stub-synth-uid", "Stub Synth",
-      "/stub/StubSynth.vst3", /*is_instrument=*/true);
-  auto* slot = synth.get();
-  slots.push_back(std::move(synth));
-  delete node.exchangeFxChain(
-      dsp::FxChain::makeFromSlots(std::move(slots)).release());
-  node.fxChain()->prepare(sample_rate);
-  slot->enabled.store(true);
-  return raw;
-}
 
 MidiEvent event(int64_t pos, const juce::MidiMessage& m) {
   MidiEvent e;
@@ -71,20 +52,41 @@ void run(ClipNode& clip, ProcessContext& ctx, int64_t master_pos, int n) {
   clip.process(nullptr, outs, 0, 2, ctx);
 }
 
+/** The cycle above on a lone clip with the stub synth, its context
+ * playing. */
+struct Keys {
+  explicit Keys(double sample_rate) : clip("Keys", sample_rate) {
+    synth = test_utils::installStubSynth(clip, sample_rate);
+    loadCycle(clip);
+    nc = test_utils::contextFor(clip);
+    nc.ctx.sample_rate = sample_rate;
+    nc.ctx.is_playing = true;
+  }
+  void run(int64_t master_pos, int n) {
+    celestrian::run(clip, nc.ctx, master_pos, n);
+  }
+
+  ClipNode clip;
+  test_utils::StubSynthInstance* synth = nullptr;
+  test_utils::NodeContext nc;
+};
+
 }  // namespace
 
 /**
- * THE SOUND-OFF EDGES (docs/vst3.md 11): when a MIDI clip's content
+ * THE SOUND-OFF EDGES (docs/vst3.md §8.3): when a MIDI clip's content
  * stops sounding, its instrument gets All Notes Off + All Sound Off on
  * the channels in use EXACTLY ONCE per closing edge — transport stop,
  * the S7 gate landing closed (mute, solo-silence), the new-take
  * silence, a bounce tail, a device stop — and never per block, so held
  * notes release through the instrument's envelope and the chain's tail
- * rings. The stub synth records the pair per channel.
+ * rings. A REST (a one-shot group's, handed down) is no closing edge:
+ * the recorded notes release and the instrument is left be. The stub
+ * synth records the pair per channel.
  */
 class MidiReleaseTests : public juce::UnitTest {
  public:
-  MidiReleaseTests() : juce::UnitTest("MIDI sound-off edges (phase 6)") {}
+  MidiReleaseTests() : juce::UnitTest("MIDI sound-off edges") {}
 
   void runTest() override {
     const double sr = 44100.0;
@@ -92,49 +94,111 @@ class MidiReleaseTests : public juce::UnitTest {
 
     beginTest("transport stop: the pair once, then never while stopped");
     {
-      ClipNode clip("Keys", sr);
-      auto* synth = installStubSynth(clip, sr);
-      loadCycle(clip);
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 512, 0);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
-      run(clip, ctx, 0, 256);
+      Keys keys(sr);
+      auto* synth = keys.synth;
+      keys.run(0, 256);
       expect(synth->note_held, "note 60 sounding");
       expectEquals(synth->all_notes_off, 0, juce::String("no pair while playing"));
-      ctx.is_playing = false;
-      run(clip, ctx, 256, 512);
+      keys.nc.ctx.is_playing = false;
+      keys.run(256, 512);
       expect(!synth->note_held, "the stop released the note");
       expectEquals(synth->all_notes_off, 1, juce::String("CC 123 once"));
       expectEquals(synth->all_sound_off, 1, juce::String("CC 120 once"));
       expectEquals((int)synth->sound_off_channels, 1,
                    juce::String("on the channel in use (1)"));
-      for (int i = 0; i < 4; ++i) run(clip, ctx, 1024 + 512 * i, 512);
+      for (int i = 0; i < 4; ++i) keys.run(1024 + 512 * i, 512);
       expectEquals(synth->all_notes_off, 1, juce::String("never per block"));
       // Resume, then stop again: a second edge, a second pair.
-      ctx.is_playing = true;
-      run(clip, ctx, 0, 256);
-      ctx.is_playing = false;
-      run(clip, ctx, 256, 512);
+      keys.nc.ctx.is_playing = true;
+      keys.run(0, 256);
+      keys.nc.ctx.is_playing = false;
+      keys.run(256, 512);
       expectEquals(synth->all_notes_off, 2, juce::String("one per edge"));
+    }
+
+    // Three more ways the content stops sounding under a held note. Each
+    // is one closing edge: the pair at the edge's block, none after it.
+    struct Edge {
+      const char* name;
+      std::function<void(Keys&)> close;
+    };
+    const Edge edges[] = {
+        {"new take: the slot's silence is a closing edge",
+         [this](Keys& keys) {
+           expect(keys.clip.mayRetake(),
+                  "a new take may arm on the committed slot");
+           keys.clip.prepareRetake();
+           keys.clip.publishArm();
+         }},
+        {"bounce tail (content_silent): the pair once at the tail's top",
+         [](Keys& keys) { keys.nc.ctx.content_silent = true; }},
+        {"device stop request: the pair at the next block",
+         [](Keys& keys) { keys.clip.requestMidiSoundOff(); }},
+    };
+    for (const Edge& edge : edges) {
+      beginTest(edge.name);
+      Keys keys(sr);
+      keys.run(0, 256);
+      expect(keys.synth->note_held, "content sounding");
+      edge.close(keys);
+      keys.run(256, 128);  // no note of the cycle falls in this block
+      expect(!keys.synth->note_held, "the edge released the note");
+      expectEquals(keys.synth->all_sound_off, 1,
+                   juce::String("the pair once, at the edge"));
+      keys.run(384, 256);
+      keys.run(640, 256);
+      expectEquals(keys.synth->all_sound_off, 1,
+                   juce::String("and none in the blocks after it"));
+    }
+
+    beginTest("device stop request: the pair lands ahead of the block's own "
+              "notes - a note struck on the block's first sample still sounds");
+    {
+      Keys keys(sr);
+      keys.run(0, 256);    // note 60 strikes: channel 1 is in use
+      keys.run(256, 344);  // and releases at 500; the next block tops at 600
+      expect(!keys.synth->note_held, "between the two notes");
+      keys.clip.requestMidiSoundOff();
+      keys.run(600, 128);  // note 64 strikes at this block's sample 0
+      expectEquals(keys.synth->all_sound_off, 1,
+                   juce::String("the pair, at the block's top"));
+      expect(keys.synth->note_held,
+             "the note the block itself struck is not swallowed by it");
+      keys.run(728, 128);
+      expect(keys.synth->note_held, "and holds on to its own release");
+    }
+
+    beginTest("device stop request: control takes it up, a render pass alone "
+              "never does");
+    {
+      Keys keys(sr);
+      keys.run(0, 256);
+      keys.clip.requestMidiSoundOff();
+      std::vector<float> l(128, 0.0f), r(128, 0.0f);
+      float* outs[] = {l.data(), r.data()};
+      keys.nc.ctx.master_pos = 256;
+      keys.nc.ctx.island_pos = 256;
+      keys.nc.ctx.num_samples = 128;
+      keys.clip.render(outs, 2, keys.nc.ctx);
+      expectEquals(keys.synth->all_sound_off, 0,
+                   juce::String("render decides nothing: the request waits"));
+      expect(keys.synth->note_held, "note 60 still sounding");
+      keys.run(384, 128);
+      expectEquals(keys.synth->all_sound_off, 1,
+                   juce::String("the next control pass hands render the edge"));
     }
 
     beginTest("mute: the pair once when the S7 gate lands closed; re-mute repeats");
     {
-      ClipNode clip("Keys", sr);
-      auto* synth = installStubSynth(clip, sr);
-      loadCycle(clip);
-      test_utils::NodeContext nc = test_utils::contextFor(clip, kFade, 0);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
+      Keys keys(sr);
+      auto* synth = keys.synth;
       int64_t t = 0;
       auto step = [&]() {
-        run(clip, ctx, t, kFade);
+        keys.run(t, kFade);
         t += kFade;
       };
       step();
-      clip.is_muted.store(true);
+      keys.clip.is_muted.store(true);
       step();  // the ramp lands on zero inside this block
       expectEquals(synth->all_sound_off, 1,
                    juce::String("the gate closing is one edge"));
@@ -143,10 +207,10 @@ class MidiReleaseTests : public juce::UnitTest {
       expectEquals(synth->all_sound_off, 1,
                    juce::String("a closed gate sends no more"));
       expect(synth->note_ons > 1, "the muted clip keeps feeding its instrument");
-      clip.is_muted.store(false);
+      keys.clip.is_muted.store(false);
       for (int i = 0; i < 3; ++i) step();
       expectEquals(synth->all_sound_off, 1, juce::String("an unmute is no edge"));
-      clip.is_muted.store(true);
+      keys.clip.is_muted.store(true);
       step();
       expectEquals(synth->all_sound_off, 2, juce::String("a re-mute is one more"));
     }
@@ -156,7 +220,7 @@ class MidiReleaseTests : public juce::UnitTest {
       StackNode root("Root");
       auto keys_owned = std::make_unique<ClipNode>("Keys", sr);
       auto* keys = keys_owned.get();
-      auto* synth = installStubSynth(*keys, sr);
+      auto* synth = test_utils::installStubSynth(*keys, sr);
       loadCycle(*keys);
       root.addChild(std::move(keys_owned));
       auto other_owned = std::make_unique<ClipNode>("Other", sr);
@@ -186,105 +250,104 @@ class MidiReleaseTests : public juce::UnitTest {
       expectEquals(synth->all_sound_off, 1, juce::String("unsolo is no edge"));
     }
 
-    beginTest("new take: the slot's silence is a closing edge");
+    beginTest("a one-shot group's rest is a rest, not a stop: its MIDI "
+              "member's recorded note releases at the rest's top, a live note "
+              "held across it is left to the player, and a bounce tail inside "
+              "the rest is still a stop");
     {
-      ClipNode clip("Keys", sr);
-      auto* synth = installStubSynth(clip, sr);
-      loadCycle(clip);
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 512, 0);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
-      run(clip, ctx, 0, 256);
-      expect(synth->note_held, "content sounding");
-      expect(clip.prepareRetake(), "new take armed on the committed slot");
-      clip.publishArm();
-      run(clip, ctx, 256, 512);
-      expect(!synth->note_held, "the retake silence released the note");
-      expectEquals(synth->all_sound_off, 1,
-                   juce::String("the pair once at the new take's arm"));
-    }
+      // The kit fires its 1Q shot once per 4Q cycle. Its member strikes a
+      // recorded note (channel 1) and never releases it; the player
+      // strikes a live note (channel 2) in the shot and holds it.
+      const int q = 4410, n = 441;
+      StackNode root("Island");
+      root.addChild(test_utils::committedClip("Bass", sr, 4 * q, 0.0f));
+      auto kit = std::make_unique<StackNode>("Kit");
+      kit->period_from_context_.store(true);
+      auto keys = std::make_unique<ClipNode>("Keys", sr);
+      auto* synth = test_utils::installStubSynth(*keys, sr);
+      keys->origin_samples.store(0);
+      keys->duration_samples.store(q);
+      keys->loadCommittedMidi(
+          {event(10, juce::MidiMessage::noteOn(1, 60, (juce::uint8)100))}, 0);
+      keys->midi_armed.store(true);
+      kit->addChild(std::move(keys));
+      root.addChild(std::move(kit));
 
-    beginTest("bounce tail (content_silent): the pair once at the tail's top");
-    {
-      ClipNode clip("Keys", sr);
-      auto* synth = installStubSynth(clip, sr);
-      loadCycle(clip);
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 512, 0);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
-      run(clip, ctx, 0, 256);
-      expect(synth->note_held, "content sounding");
-      ctx.content_silent = true;
-      run(clip, ctx, 256, 512);
-      expect(!synth->note_held, "the tail's top released the note");
-      expectEquals(synth->all_sound_off, 1, juce::String("tail top: once"));
-      run(clip, ctx, 1024, 512);
-      run(clip, ctx, 1536, 512);
-      expectEquals(synth->all_sound_off, 1, juce::String("tail blocks: no more"));
-    }
+      juce::MidiBuffer live;
+      const auto runAt = [&](int64_t pos, bool bounce_tail = false) {
+        test_utils::NodeContext nc = test_utils::contextFor(root, n, pos);
+        nc.ctx.sample_rate = sr;
+        nc.ctx.is_playing = true;
+        nc.ctx.live_midi = &live;
+        nc.ctx.content_silent = bounce_tail;
+        std::vector<float> l((size_t)n, 0.0f), r((size_t)n, 0.0f);
+        float* outs[] = {l.data(), r.data()};
+        root.process(nullptr, outs, 0, 2, nc.ctx);
+        live.clear();
+      };
+      runAt(0);
+      live.addEvent(juce::MidiMessage::noteOn(2, 40, (juce::uint8)100), 5);
+      for (int64_t t = n; t < q; t += n) runAt(t);
+      expectEquals(synth->note_ons, 2,
+                   juce::String("the shot: the recorded note and the live one"));
+      expectEquals(synth->note_offs, 0, juce::String("both still down"));
 
-    beginTest("device stop request: the pair at the next block");
-    {
-      ClipNode clip("Keys", sr);
-      auto* synth = installStubSynth(clip, sr);
-      loadCycle(clip);
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 512, 0);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
-      run(clip, ctx, 0, 256);
-      clip.requestMidiSoundOff();
-      run(clip, ctx, 256, 512);
-      expectEquals(synth->all_sound_off, 1, juce::String("consumed once"));
-      run(clip, ctx, 768, 512);
-      expectEquals(synth->all_sound_off, 1, juce::String("and not again"));
+      runAt(q);  // the rest's first block
+      expectEquals(synth->note_offs, 1,
+                   juce::String("the rest's top releases the recorded note alone"));
+      expectEquals(synth->all_notes_off, 0,
+                   juce::String("no CC 123: the live note is the player's"));
+      expectEquals(synth->all_sound_off, 0, juce::String("no CC 120"));
+      for (int64_t t = q + n; t < 4 * q; t += n) runAt(t);
+      expectEquals(synth->note_offs, 1, juce::String("once, not per block"));
+      expectEquals(synth->all_sound_off, 0,
+                   juce::String("nothing more through the rest"));
+
+      // The next firing, its rest, and then a bounce tail inside it: the
+      // content has STOPPED, so the pair goes to both channels in use.
+      for (int64_t t = 4 * q; t <= 5 * q; t += n) runAt(t);
+      expectEquals(synth->note_ons, 3, juce::String("the next firing strikes"));
+      expectEquals(synth->note_offs, 2, juce::String("and its rest releases"));
+      expectEquals(synth->all_sound_off, 0, juce::String("still no pair"));
+      runAt(5 * q + n, /*bounce_tail=*/true);
+      expectEquals(synth->all_sound_off, 2,
+                   juce::String("a tail in the rest: CC 120 once per channel"));
+      expectEquals((int)synth->sound_off_channels, 3,
+                   juce::String("channels 1 (recorded) and 2 (live)"));
+      runAt(5 * q + 2 * n, /*bounce_tail=*/true);
+      expectEquals(synth->all_sound_off, 2, juce::String("once per edge"));
     }
 
     beginTest("channels in use: live play-through widens the pair");
     {
-      ClipNode clip("Keys", sr);
-      auto* synth = installStubSynth(clip, sr);
-      loadCycle(clip);
-      clip.midi_armed.store(true);
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 512, 0);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
+      Keys keys(sr);
+      keys.clip.midi_armed.store(true);
       juce::MidiBuffer live;
       live.addEvent(juce::MidiMessage::noteOn(2, 40, (juce::uint8)100), 5);
-      ctx.live_midi = &live;
-      run(clip, ctx, 0, 512);
+      keys.nc.ctx.live_midi = &live;
+      keys.run(0, 512);
       juce::MidiBuffer empty;
-      ctx.live_midi = &empty;
-      ctx.is_playing = false;
-      run(clip, ctx, 512, 512);
-      expectEquals((int)synth->sound_off_channels, 3,
+      keys.nc.ctx.live_midi = &empty;
+      keys.nc.ctx.is_playing = false;
+      keys.run(512, 512);
+      expectEquals((int)keys.synth->sound_off_channels, 3,
                    juce::String("channels 1 (content) and 2 (live)"));
-      expectEquals(synth->all_sound_off, 2, juce::String("one CC 120 per channel"));
+      expectEquals(keys.synth->all_sound_off, 2,
+                   juce::String("one CC 120 per channel"));
     }
 
     beginTest("engine: audioDeviceStopped requests the pair on every clip");
     {
       // An EMPTY instrument clip played live (the audio-kind live tail
       // path) — the request reaches it too.
-      AudioEngine engine;
+      const auto engine_owner = std::make_unique<AudioEngine>();
+      AudioEngine& engine = *engine_owner;
       engine.createNode("clip");
-      juce::String id;
-      {
-        const juce::var state = engine.getGraphState();
-        const auto* nodes = test_utils::nodesOf(state);
-        id = (*nodes)[0].getProperty("id", "").toString();
-      }
-      auto instance = std::make_unique<test_utils::StubSynthInstance>();
-      auto* synth = instance.get();
-      engine.addPluginSlotToChain(
-          id,
-          std::make_shared<dsp::Vst3Slot>(std::move(instance), "Stub-synth-uid",
-                                          "Stub Synth", "/stub/StubSynth.vst3",
-                                          /*is_instrument=*/true),
-          -1);
+      const juce::String id = test_utils::lastTopLevelId(engine);
+      auto slot = test_utils::makeStubSynthSlot();
+      auto* synth =
+          static_cast<test_utils::StubSynthInstance*>(slot->instance());
+      engine.addPluginSlotToChain(id, slot, -1);
       engine.setMidiArmed(id, true);
       test_utils::driveEngine(engine, 512);
       engine.handleIncomingMidiMessage(

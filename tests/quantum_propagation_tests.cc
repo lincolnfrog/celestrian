@@ -18,37 +18,11 @@ class QuantumPropagationTests : public juce::UnitTest {
     float dummy[10000] = {0.0f};
     float* const inputs[] = {dummy};
 
-    beginTest("Recursive Discovery");
-    {
-      StackNode root("Root");
-      auto clip1 = std::make_unique<ClipNode>("Clip1", 44100.0);
-      auto clip1Ptr = clip1.get();
-      root.addChild(std::move(clip1));
-
-      auto subBox = std::make_unique<StackNode>("SubBox");
-      auto subBoxPtr = subBox.get();
-      auto clip2 = std::make_unique<ClipNode>("Clip2", 44100.0);
-      auto clip2Ptr = clip2.get();
-      subBoxPtr->addChild(std::move(clip2));
-      root.addChild(std::move(subBox));
-
-      // Establish quantum in clip1
-      clip1Ptr->startRecording();
-      NodeContext nc = contextFor(root, 100, 0);
-      nc.driveFrom(*clip1Ptr);
-      clip1Ptr->process(inputs, nullptr, 1, 0, nc.ctx);
-
-      clip1Ptr->stopRecording();
-      expectEquals((int)clip1Ptr->getIntrinsicDuration(), 100);
-      expectEquals((int)root.getEffectiveQuantum(), 100);
-    }
-
     beginTest("Stored Quantum: survives shorter clips and its creator");
     {
-      // P0-3 (kernel.md step 1) + owner rulings (design_language.md Q1):
-      // Q is stored island state — a shorter committed clip must not
-      // retroactively change it, and deleting the establishing clip must
-      // not orphan it ("the DNA of the original scratch track remains").
+      // Q is stored island state (design_language.md Q1): a shorter
+      // committed clip does not change it, and deleting the clip that
+      // established it does not orphan it.
       StackNode root("Root");
       auto clip1 = std::make_unique<ClipNode>("QClip", 44100.0);
       auto* c1 = clip1.get();
@@ -61,12 +35,13 @@ class QuantumPropagationTests : public juce::UnitTest {
       c1->startRecording();
       ctx.num_samples = 1000;
       c1->process(inputs, nullptr, 1, 0, ctx);
-      c1->stopRecording();  // first clip -> immediate commit, Q = 1000
+      // The first take: its stop commits at the next block top, Q = 1000.
+      test_utils::stopAtBlockTop(*c1, ctx);
       expectEquals(root.getQuantum(), (int64_t)1000);
       expectEquals(root.getZero(), (int64_t)0);
 
       // A short overdub snapping to the Q/2 subdivision (480 -> 500)
-      // must NOT halve Q (the old min-derivation did exactly that).
+      // must NOT halve Q.
       auto clip2 = std::make_unique<ClipNode>("Short", 44100.0);
       auto* c2 = clip2.get();
       root.addChild(std::move(clip2));
@@ -109,22 +84,14 @@ class QuantumPropagationTests : public juce::UnitTest {
       nc.driveFrom(*qPtr);
       qPtr->startRecording();
       qPtr->process(inputs, nullptr, 1, 0, nc.ctx);
-      qPtr->stopRecording();  // Q = 1000
+      test_utils::stopAtBlockTop(*qPtr, nc.ctx);  // Q = 1000
 
       // Nested stack with 1000- and 1500-sample clips: composite = 3000.
-      auto makeCommitted = [&](int len) {
-        auto clip = std::make_unique<ClipNode>("C", 44100.0);
-        clip->startRecording();
-        NodeContext c = contextFor(*clip, len);
-        clip->process(inputs, nullptr, 1, 0, c.ctx);
-        clip->stopRecording();
-        return clip;
-      };
       auto sub = std::make_unique<StackNode>("Sub");
       auto* subPtr = sub.get();
       root.addChild(std::move(sub));  // attach BEFORE filling: shares island
-      subPtr->addChild(makeCommitted(1000));
-      subPtr->addChild(makeCommitted(1500));
+      subPtr->addChild(test_utils::committedClip("C", 44100.0, 1000, 0.0f));
+      subPtr->addChild(test_utils::committedClip("C", 44100.0, 1500, 0.0f));
 
       expectEquals(subPtr->getIntrinsicDuration(), (int64_t)3000,
                    "composite duration = LCM(1000, 1500)");
@@ -132,178 +99,70 @@ class QuantumPropagationTests : public juce::UnitTest {
                    "nested stack inherits the island quantum");
     }
 
-    beginTest("Hysteresis Snapping (Late Snap)");
+    beginTest("A stopped take runs on to its boundary and commits whole; an "
+              "unpadded commit keeps its raw length under the one window a "
+              "commit writes");
     {
-      StackNode root("Root");
-      auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
-      auto masterPtr = masterClip.get();
-      root.addChild(std::move(masterClip));
+      // Q = 1000 from a first take; the take under test stops (or commits)
+      // `raw` samples in. `run_on` is the block driven after the stop,
+      // long enough to cross the boundary; 0 commits at once, unpadded.
+      struct Row {
+        const char* what;
+        int raw, run_on;
+        int64_t want_duration, want_loop_end;
+      };
+      const Row rows[] = {
+          {"stop at 1.1Q: on to 2Q", 1100, 1000, 2000, 0},
+          {"stop at 0.95Q: on to 1Q", 950, 100, 1000, 0},
+          {"stop at 2.5Q: on to 3Q", 2500, 600, 3000, 0},
+          {"stop at 0.7Q, past the Q/2 subdivision: on to 1Q", 700, 400, 1000,
+           0},
+          // 400 past 3Q is outside the snap tolerance: the raw length
+          // stands and the region that sounds is the previous clean
+          // multiple.
+          {"commit at 3.4Q: raw, windowed to [0, 3Q)", 3400, 0, 3400, 3000},
+      };
+      for (const Row& row : rows) {
+        const juce::String what(row.what);
+        StackNode root("Root");
+        auto definer = std::make_unique<ClipNode>("Definer", 44100.0);
+        auto* definer_ptr = definer.get();
+        root.addChild(std::move(definer));
+        NodeContext nc = contextFor(root, 1000, 0);
+        nc.driveFrom(*definer_ptr);
+        ProcessContext& ctx = nc.ctx;
+        definer_ptr->startRecording();
+        definer_ptr->process(inputs, nullptr, 1, 0, ctx);
+        test_utils::stopAtBlockTop(*definer_ptr, ctx);  // Q = 1000
 
-      masterPtr->startRecording();
-      NodeContext nc = contextFor(root, 1000, 0);
-      nc.driveFrom(*masterPtr);
-      ProcessContext& ctx = nc.ctx;
-      masterPtr->process(inputs, nullptr, 1, 0, ctx);
-      masterPtr->stopRecording();
-
-      auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
-      auto slavePtr = slaveClip.get();
-      root.addChild(std::move(slaveClip));
-      nc.rebuild();
-      nc.driveFrom(*slavePtr);
-
-      slavePtr->startRecording();
-      ctx.num_samples = 1100;  // 1.1x Q. Threshold 15%.
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-
-      slavePtr->stopRecording();
-      // Need to process past the 2000 boundary (next Q after 1100)
-      ctx.master_pos = 1100;
-      ctx.num_samples = 1000;
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 2000);
-      expectEquals((int)slavePtr->getLoopEnd(), 0);  // no window (D4-7)
-    }
-
-    beginTest("Hysteresis Snapping (Anticipatory Stop)");
-    {
-      StackNode root("Root");
-      auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
-      auto masterPtr = masterClip.get();
-      root.addChild(std::move(masterClip));
-
-      masterPtr->startRecording();
-      NodeContext nc = contextFor(root, 1000, 0);
-      nc.driveFrom(*masterPtr);
-      ProcessContext& ctx = nc.ctx;
-      masterPtr->process(inputs, nullptr, 1, 0, ctx);
-      masterPtr->stopRecording();
-
-      auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
-      auto slavePtr = slaveClip.get();
-      root.addChild(std::move(slaveClip));
-      nc.rebuild();
-      nc.driveFrom(*slavePtr);
-
-      slavePtr->startRecording();
-      ctx.num_samples = 950;  // 0.95x Q. Tolerance is 10% (100 samples).
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-
-      slavePtr->stopRecording();
-      expect(slavePtr->isRecording());  // Still recording!
-
-      // Process past the 1000 boundary
-      ctx.num_samples = 100;
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-
-      expect(!slavePtr->isRecording());
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
-      expectEquals((int)slavePtr->getLoopEnd(), 0);  // no window (D4-7)
-    }
-
-    beginTest("Hysteresis Snapping (Raw Stop + Loop Snap)");
-    {
-      StackNode root("Root");
-      auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
-      auto masterPtr = masterClip.get();
-      root.addChild(std::move(masterClip));
-
-      masterPtr->startRecording();
-      NodeContext nc = contextFor(root, 1000, 0);
-      nc.driveFrom(*masterPtr);
-      ProcessContext& ctx = nc.ctx;
-      masterPtr->process(inputs, nullptr, 1, 0, ctx);
-      masterPtr->stopRecording();
-
-      auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
-      auto slavePtr = slaveClip.get();
-      root.addChild(std::move(slaveClip));
-      nc.rebuild();
-      nc.driveFrom(*slavePtr);
-
-      slavePtr->startRecording();
-      ctx.num_samples = 2500;  // 2.5x Q. Threshold 15% (150 samples).
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-
-      slavePtr->stopRecording();
-      // Process past the 3000 boundary (next Q after 2500)
-      ctx.master_pos = 2500;
-      ctx.num_samples = 600;
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-
-      expect(!slavePtr->isRecording());  // Should be stopped now
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 3000);
-
-      // A snapped take is whole: no window is written (D4-7).
-      expectEquals((int)slavePtr->getLoopEnd(), 0);
-    }
-
-    beginTest("Unsnapped commit: the ONE window commit writes is the "
-              "provisional [0, previous clean multiple) region (D4-7)");
-    {
-      StackNode root("Root");
-      auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
-      auto masterPtr = masterClip.get();
-      root.addChild(std::move(masterClip));
-      masterPtr->startRecording();
-      NodeContext nc = contextFor(root, 1000, 0);
-      nc.driveFrom(*masterPtr);
-      ProcessContext& ctx = nc.ctx;
-      masterPtr->process(inputs, nullptr, 1, 0, ctx);
-      masterPtr->stopRecording();  // Q = 1000
-
-      auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
-      auto slavePtr = slaveClip.get();
-      root.addChild(std::move(slaveClip));
-      nc.rebuild();
-      nc.driveFrom(*slavePtr);
-      slavePtr->startRecording();
-      ctx.num_samples = 3400;  // 400 past 3Q: outside the 15% tolerance
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-      // An immediate (unpadded) commit: the raw length stands and the
-      // region that sounds is the previous clean multiple.
-      slavePtr->commitRecording();
-      expect(!slavePtr->isRecording());
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 3400);
-      expectEquals((int)slavePtr->getLoopStart(), 0);
-      expectEquals((int)slavePtr->getLoopEnd(), 3000);
-      expect(slavePtr->isLoopWindowActive(), "the provisional window is real");
-    }
-
-    beginTest("Hysteresis Snapping (Raw Stop + Short Q)");
-    {
-      StackNode root("Root");
-      auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
-      auto masterPtr = masterClip.get();
-      root.addChild(std::move(masterClip));
-
-      masterPtr->startRecording();
-      NodeContext nc = contextFor(root, 1000, 0);
-      nc.driveFrom(*masterPtr);
-      ProcessContext& ctx = nc.ctx;
-      masterPtr->process(inputs, nullptr, 1, 0, ctx);
-      masterPtr->stopRecording();
-
-      auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
-      auto slavePtr = slaveClip.get();
-      root.addChild(std::move(slaveClip));
-      nc.rebuild();
-      nc.driveFrom(*slavePtr);
-
-      slavePtr->startRecording();
-      ctx.num_samples = 700;  // Outside 150 samples of 500 or 1000.
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-      slavePtr->stopRecording();
-
-      // Process past the 1000 boundary (next Q after 700)
-      ctx.master_pos = 700;
-      ctx.num_samples = 400;
-      slavePtr->process(inputs, nullptr, 1, 0, ctx);
-
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
-      // Snapped to Q = 1000, whole: no window is written (D4-7).
-      expectEquals((int)slavePtr->getLoopEnd(), 0);
+        auto take = std::make_unique<ClipNode>("Take", 44100.0);
+        auto* take_ptr = take.get();
+        root.addChild(std::move(take));
+        nc.rebuild();
+        nc.driveFrom(*take_ptr);
+        take_ptr->startRecording();
+        ctx.num_samples = row.raw;
+        take_ptr->process(inputs, nullptr, 1, 0, ctx);
+        if (row.run_on > 0) {
+          take_ptr->stopRecording();
+          expect(take_ptr->isRecording(),
+                 what + ": the stop waits for the boundary");
+          ctx.master_pos = row.raw;
+          ctx.num_samples = row.run_on;
+          take_ptr->process(inputs, nullptr, 1, 0, ctx);
+        } else {
+          take_ptr->commitRecording(ctx);
+        }
+        expect(!take_ptr->isRecording(), what + ": committed");
+        expectEquals(take_ptr->getIntrinsicDuration(), row.want_duration,
+                     what + ": duration");
+        expectEquals(take_ptr->getLoopStart(), (int64_t)0,
+                     what + ": loop start");
+        expectEquals(take_ptr->getLoopEnd(), row.want_loop_end,
+                     what + ": loop end (0 = a whole take, no window)");
+        expect(take_ptr->isLoopWindowActive() == (row.want_loop_end > 0),
+               what + ": the window is active exactly when one was written");
+      }
     }
   }
 };

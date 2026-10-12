@@ -1,42 +1,47 @@
 /**
  * Effect card visualizations (docs/session_view.md effects bar).
  *
- * Geometry is PURE and unit-tested (fx_viz.test.mjs); the draw
- * functions are thin canvas painters called from the 20 Hz patch tick.
- * The EQ response curve uses the SAME RBJ cookbook math as the engine
- * (src/dsp/effects.cc) so what you see is what the biquads do.
- *
- * Live data comes from the engine's published `effects.scope`
- * (spectrum, pre-rack peak, compressor GR): FxScope::metadataVar
- * (src/dsp/fx_chain.h), attached by AudioNode::getMetadata only while
- * a panel is watching.
- *
- * Painters draw in CSS-pixel space via theme.fitCanvas: absolute values
- * (line widths, dash patterns, tap widths, margins) mean CSS pixels, so
- * they render at the designed size on retina displays (a context left
- * in device pixels draws every lineWidth and dash half-size at dpr 2).
+ * The geometry is pure (fx_viz.test.mjs); the draw functions are thin
+ * canvas painters called from the patch tick, in CSS pixels
+ * (theme.fitCanvas). The EQ response curve is the engine's own RBJ
+ * cookbook math (src/dsp/effects.cc), so what you see is what the
+ * biquads do. Live data is the engine's published `effects.scope`
+ * (spectrum, pre-rack peak, compressor GR), attached only while a
+ * panel is watching.
  */
 
 import { AMBER, REC, DIM, GRID, CREAM, rgbaOf, fitCanvas } from './theme.js';
 
 /* ---------- RBJ biquad magnitude (mirrors src/dsp/effects.cc) ---------- */
 
-/**
- * RBJ low-shelf biquad coefficients (Audio EQ Cookbook), normalized so
- * a0 = 1. Fixed shelf slope S = 0.9, matching the engine.
- *
- * @param {number} sr sample rate in Hz
- * @param {number} f0 shelf corner frequency in Hz
- * @param {number} gainDb shelf gain in dB (boost > 0, cut < 0)
- * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number}}
- */
-function lowShelf(sr, f0, gainDb) {
+/** The EQ's fixed bands, as the engine places them (effects.cc;
+ * pinned by effect_contract.test.mjs). */
+export const EQ_BANDS = Object.freeze({
+    lowShelfHz: 120,
+    midPeakHz: 1000,
+    midQ: 0.7,
+    highShelfHz: 6000,
+    shelfSlope: 0.9,
+});
+
+/** A biquad section's coefficients, normalized so a0 = 1.
+ * @typedef {{b0: number, b1: number, b2: number, a1: number, a2: number}} Biquad */
+
+/** The terms both shelves share (the engine's Biquad::shelfTerms):
+ * A = 10^(dB/40), cw = cos ω0, sq = 2√A·α at the shelf slope. */
+function shelfTerms(sr, f0, gainDb) {
     const A = Math.pow(10, gainDb / 40);
     const w0 = 2 * Math.PI * f0 / sr;
     const cw = Math.cos(w0), sw = Math.sin(w0);
-    const S = 0.9;
-    const alpha = sw / 2 * Math.sqrt((A + 1 / A) * (1 / S - 1) + 2);
-    const sq = 2 * Math.sqrt(A) * alpha;
+    const alpha = sw / 2 *
+        Math.sqrt((A + 1 / A) * (1 / EQ_BANDS.shelfSlope - 1) + 2);
+    return { A, cw, sq: 2 * Math.sqrt(A) * alpha };
+}
+
+/** RBJ low shelf at corner `f0` Hz, `gainDb` of boost or cut.
+ * @returns {Biquad} */
+function lowShelf(sr, f0, gainDb) {
+    const { A, cw, sq } = shelfTerms(sr, f0, gainDb);
     const a0 = (A + 1) + (A - 1) * cw + sq;
     return {
         b0: A * ((A + 1) - (A - 1) * cw + sq) / a0,
@@ -47,15 +52,9 @@ function lowShelf(sr, f0, gainDb) {
     };
 }
 
-/**
- * RBJ peaking-EQ biquad coefficients, normalized so a0 = 1.
- *
- * @param {number} sr sample rate in Hz
- * @param {number} f0 center frequency in Hz
- * @param {number} q bandwidth as quality factor (higher = narrower)
- * @param {number} gainDb peak gain in dB (boost > 0, cut < 0)
- * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number}}
- */
+/** RBJ peaking EQ centred on `f0` Hz with quality `q` (higher is
+ * narrower).
+ * @returns {Biquad} */
 function peaking(sr, f0, q, gainDb) {
     const A = Math.pow(10, gainDb / 40);
     const w0 = 2 * Math.PI * f0 / sr;
@@ -71,22 +70,10 @@ function peaking(sr, f0, q, gainDb) {
     };
 }
 
-/**
- * RBJ high-shelf biquad coefficients, normalized so a0 = 1. Fixed shelf
- * slope S = 0.9, matching the engine.
- *
- * @param {number} sr sample rate in Hz
- * @param {number} f0 shelf corner frequency in Hz
- * @param {number} gainDb shelf gain in dB (boost > 0, cut < 0)
- * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number}}
- */
+/** RBJ high shelf at corner `f0` Hz.
+ * @returns {Biquad} */
 function highShelf(sr, f0, gainDb) {
-    const A = Math.pow(10, gainDb / 40);
-    const w0 = 2 * Math.PI * f0 / sr;
-    const cw = Math.cos(w0), sw = Math.sin(w0);
-    const S = 0.9;
-    const alpha = sw / 2 * Math.sqrt((A + 1 / A) * (1 / S - 1) + 2);
-    const sq = 2 * Math.sqrt(A) * alpha;
+    const { A, cw, sq } = shelfTerms(sr, f0, gainDb);
     const a0 = (A + 1) - (A - 1) * cw + sq;
     return {
         b0: A * ((A + 1) + (A - 1) * cw + sq) / a0,
@@ -107,12 +94,18 @@ function magSquared(c, w) {
     return num / den;
 }
 
+/** The rate the response is computed at when the caller names none. */
+const RESPONSE_SAMPLE_RATE = 48000;
+/** An echo repeat quieter than this is not drawn. */
+const TAP_FLOOR = 0.02;
+
 /** The 3-band EQ's response in dB at each frequency. */
-export function eqResponseDb(freqs, { low = 0, mid = 0, high = 0 }, sr = 48000) {
+export function eqResponseDb(freqs, { low = 0, mid = 0, high = 0 },
+                             sr = RESPONSE_SAMPLE_RATE) {
     const sections = [
-        lowShelf(sr, 120, low),
-        peaking(sr, 1000, 0.7, mid),
-        highShelf(sr, 6000, high),
+        lowShelf(sr, EQ_BANDS.lowShelfHz, low),
+        peaking(sr, EQ_BANDS.midPeakHz, EQ_BANDS.midQ, mid),
+        highShelf(sr, EQ_BANDS.highShelfHz, high),
     ];
     return freqs.map(f => {
         const w = 2 * Math.PI * f / sr;
@@ -131,13 +124,12 @@ export function logFreqs(n, fLo = 40, fHi = 16000) {
 /** Echo tap timeline: dry pulse then repeats at k·time, mix·fb^(k−1). */
 export function echoTaps({ time, feedback, mix }, horizonS = 4, maxTaps = 12) {
     const taps = [{ t: 0, h: 1, dry: true }];
-    // Degenerate delay time: every repeat would land at t = 0 — a
-    // 13-tap pile on the dry pulse. Just the dry pulse instead.
+    // No delay time: every repeat would pile onto the dry pulse.
     if (time <= 0) return taps;
     let h = mix;
     for (let k = 1; k <= maxTaps; k++) {
         const t = k * time;
-        if (t > horizonS || h < 0.02) break;
+        if (t > horizonS || h < TAP_FLOOR) break;
         taps.push({ t, h, dry: false });
         h *= feedback;
     }
@@ -150,15 +142,12 @@ export function reverbTailSeconds({ size, damp }) {
 }
 
 /**
- * The DURABLE spectrum: a weighted HIGH-WATER-MARK over the live bins
- * (a symmetric average would let silent stretches drag the line into
- * illegibility). Asymmetric per bin: RISE fast
- * toward new maxima (half the gap per poll — a new peak registers in
- * a couple of polls), FALL slowly (fall 0.01/poll ≈ a 5 s time
- * constant at the 20 Hz cadence) — so the line holds the song's tonal
- * shape through gaps and only relaxes when the content really left.
- * Seeds from the first observation; null polls are identity; a
- * bin-count change reseeds.
+ * The DURABLE spectrum: a high-water mark over the live bins that rises
+ * fast (`rise` of the gap per poll) and falls slowly (`fall` per poll,
+ * about 5 s at the 20 Hz cadence), so the line holds the song's tonal
+ * shape through silences — a symmetric average would let them drag it
+ * down. Seeds from the first observation; a null poll changes nothing;
+ * a bin-count change reseeds.
  */
 export function holdSpectrum(prev, next, { rise = 0.5, fall = 0.01 } = {}) {
     if (!next || !next.length) return prev || null;
@@ -172,13 +161,9 @@ export function holdSpectrum(prev, next, { rise = 0.5, fall = 0.01 } = {}) {
 /* ---------- canvas painters (Tape Room tokens, theme.js) ---------- */
 
 // Display windows for the dB-space cards.
-// EQ_DB_RANGE: the EQ response curve spans ±15 dB about the midline.
-// COMP_DB_FLOOR: the compressor envelope maps [−60, 0] dB to the card.
-// GR_FULL_SCALE_DB: the gain-reduction meter's full scale (24 dB of GR
-//   fills the strip).
-const EQ_DB_RANGE = 15;
-const COMP_DB_FLOOR = -60;
-const GR_FULL_SCALE_DB = 24;
+const EQ_DB_RANGE = 15;        // the response curve spans ± this about the midline
+const COMP_DB_FLOOR = -60;     // the compressor envelope maps [this, 0] dB
+const GR_FULL_SCALE_DB = 24;   // gain reduction that fills the meter strip
 
 /** Fit an fx card's canvas to its CSS layout size (min 20px). */
 function fitCard(canvas) {
@@ -201,7 +186,8 @@ function strokePolyline(ctx, pts) {
  * EQ: live spectrum bars + the DURABLE averaged-spectrum line (cream)
  * behind the bands' analytic response curve (tape).
  */
-export function drawEqViz(canvas, spectrum, gains, sr = 48000, avgSpectrum = null) {
+export function drawEqViz(canvas, spectrum, gains, sr = RESPONSE_SAMPLE_RATE,
+                          avgSpectrum = null) {
     const { ctx, w, h } = fitCard(canvas);
     // 0 dB midline
     ctx.strokeStyle = GRID;
@@ -219,9 +205,7 @@ export function drawEqViz(canvas, spectrum, gains, sr = 48000, avgSpectrum = nul
             ctx.fillRect(i * bw + 1, h - bh, bw - 2, bh);
         });
     }
-    // The durable line: the song's tonal shape as a slow-falling
-    // high-water mark — steady under the flickering bars and through
-    // silence; what you actually EQ against
+    // The durable line (holdSpectrum): what you EQ against
     if (avgSpectrum && avgSpectrum.length) {
         ctx.strokeStyle = CREAM;
         ctx.lineWidth = 1.5;

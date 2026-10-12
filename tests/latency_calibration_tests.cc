@@ -10,61 +10,59 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <memory>
 #include <vector>
 
 #include "../src/audio_engine.h"
+#include "../src/dsp/vst3_slot.h"
+#include "stub_plugin_instance.h"
 #include "test_utils.h"
 
 using celestrian::test_utils::runLoopback;
 
 namespace {
 
-/**
- * Minimal AudioIODevice for driving audioDeviceAboutToStart in tests:
- * reports a fixed config (44.1 kHz, 512 block, 200/300 sample latencies)
- * under a configurable name so device-keyed calibration persistence can be
- * exercised without hardware.
- */
-class FakeDevice : public juce::AudioIODevice {
+/** A device that reports latencies of its own (200 samples in, 300
+ * out): what an engine with no calibration compensates by. */
+class LatentDevice : public celestrian::test_utils::FakeDevice {
  public:
-  explicit FakeDevice(const juce::String& name, double sample_rate = 44100.0)
-      : juce::AudioIODevice(name, "Test"), sample_rate_(sample_rate) {}
-
-  juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
-  juce::StringArray getInputChannelNames() override { return {"In"}; }
-  juce::Array<double> getAvailableSampleRates() override {
-    return {sample_rate_};
-  }
-  juce::Array<int> getAvailableBufferSizes() override { return {512}; }
-  int getDefaultBufferSize() override { return 512; }
-  juce::String open(const juce::BigInteger&, const juce::BigInteger&, double,
-                    int) override {
-    return {};
-  }
-  void close() override {}
-  bool isOpen() override { return true; }
-  void start(juce::AudioIODeviceCallback*) override {}
-  void stop() override {}
-  bool isPlaying() override { return false; }
-  juce::String getLastError() override { return {}; }
-  int getCurrentBufferSizeSamples() override { return 512; }
-  double getCurrentSampleRate() override { return sample_rate_; }
-  int getCurrentBitDepth() override { return 24; }
-  juce::BigInteger getActiveOutputChannels() const override {
-    juce::BigInteger b;
-    b.setRange(0, 2, true);
-    return b;
-  }
-  juce::BigInteger getActiveInputChannels() const override {
-    juce::BigInteger b;
-    b.setBit(0);
-    return b;
-  }
+  using celestrian::test_utils::FakeDevice::FakeDevice;
   int getOutputLatencyInSamples() override { return 300; }
   int getInputLatencyInSamples() override { return 200; }
+};
 
- private:
-  double sample_rate_;
+/** A calibration file that does not exist yet, in a fresh directory. */
+juce::File freshCalibrationFile(const juce::String& name) {
+  return celestrian::test_utils::freshTempDir("calibration_" + name)
+      .getChildFile("calibration.json");
+}
+
+/** Silent blocks until the capture window closes (or `max_blocks`
+ * ran); returns how many were driven. */
+int driveSilenceUntilCaptured(AudioEngine& engine, int max_blocks) {
+  int driven = 0;
+  while (driven < max_blocks &&
+         engine.getLatencyCalibration().getProperty("phase", "").toString() ==
+             "capturing") {
+    celestrian::test_utils::driveEngine(engine, 512);
+    ++driven;
+  }
+  return driven;
+}
+
+/** A stub synth whose every block spins for kBlockUs of the clock the
+ * perf meters read: a callback of a known minimum duration. */
+struct SlowSynth : celestrian::test_utils::StubSynthInstance {
+  static constexpr int kBlockUs = 3000;
+  void processBlock(juce::AudioBuffer<float>& buffer,
+                    juce::MidiBuffer& midi) override {
+    const juce::int64 until =
+        juce::Time::getHighResolutionTicks() +
+        juce::Time::getHighResolutionTicksPerSecond() * kBlockUs / 1000000;
+    while (juce::Time::getHighResolutionTicks() < until) {
+    }
+    StubSynthInstance::processBlock(buffer, midi);
+  }
 };
 
 }  // namespace
@@ -75,20 +73,6 @@ class LatencyCalibrationTests : public juce::UnitTest {
       : juce::UnitTest("Latency Calibration", "Audio Engine") {}
 
   void runTest() override {
-    beginTest("Uncalibrated: reports idle and falls back to device latency");
-    {
-      AudioEngine engine;
-      auto status = engine.getLatencyCalibration();
-      expectEquals(status.getDynamicObject()->getProperty("phase").toString(),
-                   juce::String("idle"));
-      expect(!(bool)status.getDynamicObject()->getProperty("calibrated"));
-
-      auto state = engine.getGraphState();
-      auto perf = state.getDynamicObject()->getProperty("perf");
-      expect(perf.getDynamicObject() != nullptr, "perf block present");
-      expect(!(bool)perf.getDynamicObject()->getProperty("calibrated"));
-    }
-
     beginTest("Loopback with known delay is measured exactly");
     {
       AudioEngine engine;
@@ -125,20 +109,8 @@ class LatencyCalibrationTests : public juce::UnitTest {
     {
       AudioEngine engine;
       engine.startLatencyCalibration();
-
-      // Drive the capture window with silent input (no feedback path).
-      const int BLOCK = 512;
-      std::vector<float> in((size_t)BLOCK, 0.0f);
-      std::vector<float> outL((size_t)BLOCK, 0.0f), outR((size_t)BLOCK, 0.0f);
-      const float* ins[] = {in.data()};
-      float* outs[] = {outL.data(), outR.data()};
-
-      for (int b = 0; b < 300; ++b) {
-        engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, BLOCK, {});
-        auto status = engine.getLatencyCalibration();
-        auto phase = status.getDynamicObject()->getProperty("phase").toString();
-        if (phase != "capturing") break;
-      }
+      // The capture window, driven with silent input (no feedback path).
+      driveSilenceUntilCaptured(engine, 300);
 
       auto status = engine.getLatencyCalibration();
       auto* obj = status.getDynamicObject();
@@ -149,17 +121,25 @@ class LatencyCalibrationTests : public juce::UnitTest {
                    (int64_t)-1);
     }
 
-    beginTest("Calibration persists across engine instances per device");
+    beginTest("Uncalibrated falls back to the device's latency; a "
+              "calibration persists across engine instances per device");
     {
-      auto calFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                         .getChildFile("celestrian_test_calibration.json");
-      calFile.deleteFile();
-
-      FakeDevice deviceA("Test Interface");
+      const auto calFile = freshCalibrationFile("persist");
+      LatentDevice deviceA("Test Interface");
 
       // Session 1: uncalibrated fallback, then calibrate -> persists.
       {
         AudioEngine engine;
+        const auto fresh = engine.getLatencyCalibration();
+        expectEquals(fresh.getProperty("phase", "").toString(),
+                     juce::String("idle"), "a fresh engine is idle");
+        expect(!(bool)fresh.getProperty("calibrated", true),
+               "and holds no calibration");
+        expect(!(bool)engine.getGraphState()
+                    .getProperty("perf", juce::var())
+                    .getProperty("calibrated", true),
+               "perf says so before any device has started");
+
         engine.setCalibrationFile(calFile);
         engine.audioDeviceAboutToStart(&deviceA);
 
@@ -202,26 +182,20 @@ class LatencyCalibrationTests : public juce::UnitTest {
       {
         AudioEngine engine;
         engine.setCalibrationFile(calFile);
-        FakeDevice deviceB("Other Interface");
+        LatentDevice deviceB("Other Interface");
         engine.audioDeviceAboutToStart(&deviceB);
 
         auto cal = engine.getLatencyCalibration();
         expect(!(bool)cal.getDynamicObject()->getProperty("calibrated"),
                "calibration from another device config is not applied");
       }
-
-      calFile.deleteFile();
     }
 
-    beginTest("Device sample rate threads through engine state (P0-5)");
+    beginTest("Device sample rate threads through engine state");
     {
-      auto calFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                         .getChildFile("celestrian_test_calibration_48k.json");
-      calFile.deleteFile();
-
       AudioEngine engine;
-      engine.setCalibrationFile(calFile);
-      FakeDevice dev48("48k Interface", 48000.0);
+      engine.setCalibrationFile(freshCalibrationFile("48k"));
+      LatentDevice dev48("48k Interface", 48000.0);
       engine.audioDeviceAboutToStart(&dev48);
 
       // perf reports the true rate for UI samples->ms conversions
@@ -232,25 +206,10 @@ class LatencyCalibrationTests : public juce::UnitTest {
 
       // Clips created after device start carry the device rate
       engine.createNode("stack");
-      juce::String stackId = engine.getGraphState()
-                                 .getDynamicObject()
-                                 ->getProperty("nodes")
-                                 .getArray()
-                                 ->getReference(0)
-                                 .getDynamicObject()
-                                 ->getProperty("id");
-      engine.createNode("clip", stackId);
-      auto clip = engine.getGraphState()
-                      .getDynamicObject()
-                      ->getProperty("nodes")
-                      .getArray()
-                      ->getReference(0)
-                      .getDynamicObject()
-                      ->getProperty("nodes")
-                      .getArray()
-                      ->getReference(0);
-      expectEquals((double)clip.getDynamicObject()->getProperty("sampleRate"),
-                   48000.0, "clip metadata reports the device rate");
+      engine.createNode("clip", celestrian::test_utils::firstNodeId(engine));
+      const juce::var clip = celestrian::test_utils::childVar(engine, 0);
+      expectEquals((double)clip.getProperty("sampleRate", 0.0), 48000.0,
+                   "clip metadata reports the device rate");
 
       // Calibration ms conversion uses the device rate: measure a 960-sample
       // loopback (= exactly 20.0 ms at 48 kHz; would read 21.8 at 44.1).
@@ -263,33 +222,96 @@ class LatencyCalibrationTests : public juce::UnitTest {
       expectWithinAbsoluteError(
           (double)cal.getDynamicObject()->getProperty("roundTripMs"), 20.0,
           0.001, "ms conversion uses the 48 kHz device rate");
-
-      calFile.deleteFile();
     }
 
-    beginTest("Instrumentation: perf meters update after callbacks");
+    beginTest("A failed re-calibration keeps the device's stored calibration");
     {
-      AudioEngine engine;
-      const int BLOCK = 512;
-      std::vector<float> in((size_t)BLOCK, 0.0f);
-      std::vector<float> outL((size_t)BLOCK, 0.0f), outR((size_t)BLOCK, 0.0f);
-      const float* ins[] = {in.data()};
-      float* outs[] = {outL.data(), outR.data()};
+      const auto engine_owner = std::make_unique<AudioEngine>();
+      AudioEngine& engine = *engine_owner;
+      engine.setCalibrationFile(freshCalibrationFile("recal"));
+      LatentDevice device("Recal Interface");
+      engine.audioDeviceAboutToStart(&device);
+      engine.startLatencyCalibration();
+      runLoopback(engine, 700, 512, 300);
+      expect((bool)engine.getLatencyCalibration().getProperty("calibrated", false),
+             "first run measured the loopback");
 
-      for (int b = 0; b < 10; ++b) {
-        engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, BLOCK, {});
-      }
+      // The cable is gone: the second run hears nothing.
+      engine.startLatencyCalibration();
+      driveSilenceUntilCaptured(engine, 400);
+      const auto status = engine.getLatencyCalibration();
+      expectEquals(status.getProperty("phase", "").toString(),
+                   juce::String("failed"), "the second run failed");
+      expect((bool)status.getProperty("calibrated", false),
+             "the stored calibration is still in force");
+      expectEquals((int64_t)(double)status.getProperty("roundTripSamples", -1.0),
+                   (int64_t)700, "at the value measured before");
+      const auto perf = engine.getGraphState().getProperty("perf", juce::var());
+      expectEquals(
+          (int64_t)(double)perf.getProperty("latencyCompensationSamples", -1.0),
+          (int64_t)700, "and it still drives recording compensation");
+    }
 
-      auto state = engine.getGraphState();
-      auto perf = state.getDynamicObject()->getProperty("perf");
-      auto* obj = perf.getDynamicObject();
-      expect(obj != nullptr);
-      // An empty graph can complete in <1 µs (truncates to 0), so assert
-      // presence and sanity rather than a strictly positive duration.
-      expect(obj->hasProperty("maxBlockUs"));
-      expect((double)obj->getProperty("maxBlockUs") >= 0.0);
-      expect((double)obj->getProperty("avgLoadPct") >= 0.0);
-      expect(obj->hasProperty("xruns"));
+    beginTest("A second start while capturing is refused");
+    {
+      const auto baseline = std::make_unique<AudioEngine>();
+      baseline->startLatencyCalibration();
+      const int window_blocks = driveSilenceUntilCaptured(*baseline, 1000);
+      expect(window_blocks > 10 && window_blocks < 1000,
+             "the capture window is a bounded number of blocks");
+
+      const auto engine_owner = std::make_unique<AudioEngine>();
+      AudioEngine& engine = *engine_owner;
+      engine.startLatencyCalibration();
+      const int before = window_blocks / 2;
+      expectEquals(driveSilenceUntilCaptured(engine, before), before,
+                   "half the window captured");
+      engine.startLatencyCalibration();  // the audio thread owns the buffer
+      expectEquals(before + driveSilenceUntilCaptured(engine, 1000),
+                   window_blocks,
+                   "the window still closes where the first start put it");
+    }
+
+    beginTest("Perf meters: the worst block and the average load follow a "
+              "block of a known duration");
+    {
+      const auto engine_owner = std::make_unique<AudioEngine>();
+      AudioEngine& engine = *engine_owner;
+      const int block = 512;
+      const auto perf = [&](const char* key) {
+        return (double)engine.getGraphState()
+            .getProperty("perf", juce::var())
+            .getProperty(key, -1.0);
+      };
+      const double block_seconds = block / perf("sampleRate");
+
+      // An instrument track whose synth takes 3 ms a block. Armed, it
+      // plays through whatever the transport does: its rack runs in
+      // every block.
+      engine.createNode("clip");
+      const juce::String id = celestrian::test_utils::lastTopLevelId(engine);
+      engine.addPluginSlotToChain(
+          id,
+          std::make_shared<celestrian::dsp::Vst3Slot>(
+              std::make_unique<SlowSynth>(), "Slow-uid", "Slow Synth",
+              "/stub/SlowSynth.vst3", /*is_instrument=*/true),
+          -1);
+      engine.setMidiArmed(id, true);
+      celestrian::test_utils::driveEngine(engine, block);
+
+      // Asserted a millisecond under what the synth spins, clear of the
+      // clock's rounding; nothing bounds a block from above.
+      const double floor_us = SlowSynth::kBlockUs - 1000;
+      expect(perf("maxBlockUs") >= floor_us,
+             "the worst block is at least the slow one, got " +
+                 juce::String(perf("maxBlockUs")) + " us");
+      // The load is a running average: one block moves it a tenth of the
+      // way to that block's share of its period.
+      const double floor_pct = 0.1 * 100.0 * (floor_us / 1.0e6) / block_seconds;
+      expect(perf("avgLoadPct") >= floor_pct,
+             "one slow block lifts the average load, got " +
+                 juce::String(perf("avgLoadPct")) + " %");
+      expect(perf("xruns") >= 0.0, "the xrun count is published beside them");
     }
   }
 };

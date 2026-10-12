@@ -13,10 +13,9 @@ import assert from 'node:assert/strict';
 import { advanceBy, callNative, getState, loadScenario, setMasterPos }
     from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
-import { nodeById as findNodeById, recordTake, PERF as perf }
-    from './helpers.mjs';
-
-const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
+import { recordTake, PERF as perf } from './helpers.mjs';
+import { published as nodeById } from './mock_scene.mjs';
+import { findNode as rawNode } from '../mock/state.js';
 
 test('through-map record: heard arm, one-period cap, dense C commit', async () => {
     loadScenario('empty');
@@ -44,8 +43,8 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     // offsets from the mapping STACK's origin (anchored at take A's
     // origin, 0 — not the zero, 1000): the heard grid anchor is
     // origin + a0 = 1000 (≡ the zero here), and the anchor's inner
-    // position is origin + mapOffset(1000) = 0 + 2000 = 2000.
-    // (Pre-Q18 the stack map anchored at the zero, giving 3000.)
+    // position is origin + mapOffset(1000) = 0 + 2000 = 2000 (anchored
+    // at the zero it would be 3000).
     const stackOrigin = nodeById(groupId).origin;
     assert.equal(stackOrigin, 0, 'the group anchored at take A\'s origin');
     assert.equal(nodeById(groupId).anchored, true);
@@ -56,19 +55,18 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     const cId = await callNative('createNode', 'clip', groupId);
     await callNative('startRecordingInNode', cId);
     assert.equal(nodeById(cId).isPendingStart, true, 'pends in heard time');
-    assert.equal(nodeById(cId).pendingStartAt, heardZero + 5000,
+    assert.equal(rawNode(cId).pendingStartAt, heardZero + 5000,
         'heard target on the map-period grid');
 
-    // MID-TAKE MAP-EDIT GATE (owner-ruled): the mapping group refuses
-    // window edits while the take is live; a sibling stays editable.
+    // MID-TAKE MAP-EDIT GATE: the mapping group refuses window edits
+    // while the take is live.
     await callNative('setLoopPoints', groupId, 0, 2000);
     await callNative('toggleLoopWindow', groupId);
     assert.equal(nodeById(groupId).loopStart, 1000, 'edit refused (start)');
     assert.equal(nodeById(groupId).loopEnd, 3000, 'edit refused (end)');
     assert.ok(!nodeById(groupId).loopBypassed, 'bypass toggle refused');
-    // Since the live-take gate (owner ruling 2026-09-09) a sibling's
-    // window is refused too — geometry waits for the take; creating
-    // the empty node is still allowed.
+    // The live-take gate is global: a sibling's window is refused too —
+    // geometry waits for the take; creating the empty node is allowed.
     const sibId = await callNative('createNode', 'stack');
     await callNative('setLoopPoints', sibId, 0, 500);
     assert.equal(nodeById(sibId).loopEnd || 0, 0, 'sibling window refused under the live take');
@@ -96,12 +94,12 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     setMasterPos(heardZero + 8500);
     const dId = await callNative('createNode', 'clip', groupId);
     await callNative('startRecordingInNode', dId);
-    assert.equal(nodeById(dId).pendingStartAt, heardZero + 9000,
+    assert.equal(rawNode(dId).pendingStartAt, heardZero + 9000,
         'target on the period grid, second pass');
     advanceBy(500);  // trigger
     advanceBy(600);
     await callNative('stopRecordingInNode', dId);
-    assert.equal(nodeById(dId).awaitingStopAt, 1000,
+    assert.equal(rawNode(dId).awaitingStopAt, 1000,
         'stop boundary on the heard grid, clamped to the period');
     advanceBy(400);
     assert.equal(nodeById(dId).duration, 4000, 'short take commits dense C');
@@ -120,7 +118,8 @@ test('nested active maps refuse the arm (phase-2 scope)', async () => {
 
     const eId = await callNative('createNode', 'clip', innerId);
     await callNative('startRecordingInNode', eId);
-    assert.ok(!nodeById(eId).isRecording, 'composed maps: arm refused');
+    assert.ok(!nodeById(eId).isRecording && !nodeById(eId).isPendingStart,
+        'composed maps: arm refused — neither capturing nor waiting');
 
     // Bypass one → single active map → the arm proceeds.
     await callNative('toggleLoopWindow', innerId);
@@ -175,8 +174,8 @@ test('view model: bypassed map → no cue', () => {
 });
 
 test('view model: a windowed group is the frame; the ONE playhead sweeps it', () => {
-    // 2026-08-21 (a window sets the part's length): the audible cycle
-    // = the window pass (2000) IS the display frame; the group lane
+    // A window sets the part's length: the audible cycle = the window
+    // pass (2000) IS the display frame; the group lane
     // shows the window's content from 0, so island phase IS lane
     // position — no remap, no second cursor.
     // (Two committed clips so the Q13 provisional view stays out.)
@@ -207,7 +206,7 @@ test('view model: a windowed group is the frame; the ONE playhead sweeps it', ()
 });
 
 test('view model: committed through-map take tiles at its inner anchor', () => {
-    // The stage-4 engine shape: C committed duration 4000 (= the inner
+    // The engine's shape: C committed duration 4000 (= the inner
     // cycle), origin 3000 with zero 1000 → tile offset 2Q in a 4Q lane.
     const state = {
         quantum: 1000, islandZero: 1000, masterPos: 0, perf,
@@ -225,7 +224,7 @@ test('view model: committed through-map take tiles at its inner anchor', () => {
     const vm = deriveViewModel(state);
     const c = vm.lanes.find(l => l.id === 'c');
     // Under the group's active [1Q, 3Q) map the lane shows the slice
-    // the map selects of C (2026-08-21): C tiles at 4Q from its inner
+    // the map selects of C: C tiles at 4Q from its inner
     // anchor 2Q, so inner [1Q, 3Q) reads C's content [3Q, 4Q) + [0, 1Q).
     assert.equal(c.periodQ, 2, 'lane period = the part under the map');
     assert.ok(c.reps.length > 0, 'take tiles render');

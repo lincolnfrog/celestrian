@@ -1,25 +1,19 @@
 /**
- * TAKES AND COMPING — mock twin (docs/takes.md; C++ twin
- * tests/takes_tests.cc). Pins the mock's contract:
+ * TAKES AND COMPING (docs/takes.md). The take list as the mock
+ * publishes it — the arm at the slot's top, the one-period cap, select,
+ * delete, comp, their refusals and their undo — is held to the engine
+ * by the differential suite (ui/differential/ takes/*). Here, what that
+ * suite does not compare or drive:
  *
- *  (a) newTake on a committed clip arms at the slot's next top
- *      (t ≡ origin mod duration), captures exactly one period and
- *      auto-finishes; duration/origin unchanged; takes 2, active 1;
- *      the active waveform is the new take's; a stop before the period
- *      CANCELS (nothing logged, the previous take stands);
- *  (b) selectTake back to 0 swaps the published waveform; undo/redo;
+ *  (a) CONTENT: each take keeps its own peaks, and the active take's
+ *      draw — through a select, its undo, a delete and its undo;
  *  (c) undo of a new take restores take 0 (count 1, never empty);
  *      redo re-appends;
- *  (d) deleteTake of the active falls back to a neighbour; the last
- *      take never deletes; undo brings the take back;
- *  (e) setComp on a 4Q slot publishes the cells; bad cell counts and
- *      indices are refused; undo/redo; refused mid-take;
  *  (g) save → mutate → load restores takes, active and comp;
- *  (h) the published shape of a take is the ENGINE's (armed =
- *      isPendingStart alone; capturing = the live captured length on
- *      `duration`, the slot's on `periodQ`) — and through it the view
- *      keeps its picture: the lane tiles the slot, the frame holds, a
- *      group keeps its period.
+ *  (h) the VIEW through a new take, on the state the mock publishes
+ *      (armed = isPendingStart alone; capturing = the live captured
+ *      length on `duration`, the slot's on `periodQ`): the lane tiles
+ *      the slot, the frame holds, a group keeps its period.
  */
 
 import test from 'node:test';
@@ -27,6 +21,7 @@ import assert from 'node:assert/strict';
 
 import { callNative, getState, loadScenario, advanceBy }
     from '../mock_backend.js';
+import { findNode } from '../mock/state.js';
 import { deriveViewModel } from '../view_model.js';
 import { recordTake, nodeById } from './helpers.mjs';
 
@@ -35,105 +30,40 @@ const clip = id => nodeById(id, getState().nodes);
  * pendingStartAt is raw). */
 const rawClock = () => { const s = getState(); return s.islandPos + s.islandZero; };
 
-/** Arm a new take on `id` from a MID-period clock, pin the arm rule,
- * drive it to its auto-finish; returns the arm target. */
+/** A new take of `id`, armed from a mid-period clock and driven through
+ * its one period to the auto-finish. */
 async function newTakeAndFinish(id) {
     const before = clip(id);
-    const raw = rawClock();
     await callNative('newTake', id);
-    // THE PUBLISHED SHAPE is the engine's (docs/takes.md §6; AudioNode /
-    // ClipNode::getMetadata). ARMED is `isPendingStart` alone, and the
-    // slot still publishes its own length.
-    const armed = clip(id);
-    assert.equal(armed.isPendingStart, true, 'armed: waits for the slot top');
-    assert.equal(armed.isRecording, false, 'armed is not capturing');
-    assert.equal(armed.duration, before.duration, 'pending: the slot\'s length');
-    assert.deepEqual(armed.periodQ, before.periodQ, 'periodQ: the slot\'s');
-    const at = armed.pendingStartAt;
-    assert.equal((at - (before.origin || 0)) % before.duration, 0,
-        'arm target: t == origin (mod period)');
-    assert.ok(at > raw, 'the NEXT top');
-    advanceBy(at - raw);          // capture begins at the top
-    // CAPTURING: `duration` is the LIVE captured length — 0 at the
-    // top, growing — and the slot's own rides `periodQ`.
-    let live = clip(id);
-    assert.equal(live.isRecording, true, 'capturing');
-    assert.equal(live.isPendingStart, false);
-    assert.equal(live.duration, 0, 'nothing captured yet');
-    assert.deepEqual(live.periodQ, before.periodQ, 'the slot stands on periodQ');
-    const part = Math.floor(before.duration / 4);
-    advanceBy(part);
-    live = clip(id);
-    assert.equal(live.duration, part, 'the live captured length');
-    assert.deepEqual(live.periodQ, before.periodQ);
-    assert.equal('_retake' in live, false, 'the mock\'s bookkeeping stays private');
-    advanceBy(before.duration - part);   // exactly one period: auto-finish
-    const done = clip(id);
-    assert.equal(done.isRecording, false, 'auto-finished');
-    assert.equal(done.isPendingStart, false);
-    assert.equal(done.duration, before.duration, 'the slot\'s length again');
-    return at;
+    advanceBy(findNode(id).pendingStartAt - rawClock());   // capture begins at the slot top
+    advanceBy(before.duration);                            // exactly one period
+    assert.equal(clip(id).isRecording, false, 'auto-finished');
+    assert.equal(clip(id).takes, before.takes + 1, 'a take more');
 }
 
-test('(a) newTake: slot-top arm, one-period cap, facts unchanged, cancel', async () => {
+test('(a) content: each take keeps its own peaks; the active one draws — ' +
+     'through a select, its undo, a delete and its undo', async () => {
     loadScenario('empty');
     const id = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
-    let c = clip(id);
-    assert.equal(c.takes, 1, 'one take');
-    assert.equal(c.activeTake, 0);
-    assert.deepEqual(c.comp, [], 'no comp');
-    const w0 = await callNative('getWaveform', id, 40);
-    const origin = c.origin, duration = c.duration;
+    const drawn = () => callNative('getWaveform', id, 40);
+    const takePeaks = i => callNative('getTakeWaveform', id, i, 40);
+    const w0 = await drawn();
     advanceBy(300);  // mid-period
     await newTakeAndFinish(id);
-    c = clip(id);
-    assert.equal(c.takes, 2, 'two takes');
-    assert.equal(c.activeTake, 1, 'the new take is active');
-    assert.equal(c.duration, duration, 'duration unchanged');
-    assert.equal(c.origin, origin, 'origin unchanged');
-    assert.equal(getState().quantum, 1000, 'Q unchanged');
-    const w1 = await callNative('getWaveform', id, 40);
+    const w1 = await drawn();
     assert.notDeepEqual(w1, w0, 'the active waveform is the new take');
-    assert.deepEqual(await callNative('getTakeWaveform', id, 0, 40), w0, 'take 0 peaks');
-    assert.deepEqual(await callNative('getTakeWaveform', id, 1, 40), w1, 'take 1 peaks');
-    assert.deepEqual(await callNative('getTakeWaveform', id, 2, 40), [], 'no take 2');
+    assert.deepEqual(await takePeaks(0), w0, 'take 0 peaks');
+    assert.deepEqual(await takePeaks(1), w1, 'take 1 peaks');
+    assert.deepEqual(await takePeaks(2), [], 'no take 2');
 
-    // Silence while the take is live, then a stop before the period CANCELS.
-    const undoBefore = getState().canUndo;
-    advanceBy(300);
-    await callNative('newTake', id);
-    assert.equal(clip(id).isPlaying, false, 'silent while the new take is live');
-    const at = clip(id).pendingStartAt;
-    advanceBy(at - rawClock() + 400);  // capturing, mid-period
-    assert.equal(clip(id).isPendingStart, false, 'capturing');
-    await callNative('stopRecordingInNode', id);
-    c = clip(id);
-    assert.equal(c.isRecording, false, 'cancelled');
-    assert.equal(c.takes, 2, 'the list is as it was');
-    assert.equal(c.activeTake, 1, 'the previous take stands');
-    assert.equal(c.isPlaying, true, 'the slot sounds again');
-    assert.equal(getState().canUndo, undoBefore, 'nothing logged');
-});
-
-test('(b) selectTake swaps the active take; undo/redo of the selection', async () => {
-    loadScenario('empty');
-    const id = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
-    const w0 = await callNative('getWaveform', id, 40);
-    advanceBy(300);
-    await newTakeAndFinish(id);
-    const w1 = await callNative('getWaveform', id, 40);
     await callNative('selectTake', id, 0);
-    assert.equal(clip(id).activeTake, 0, 'take 0 selected');
-    assert.deepEqual(await callNative('getWaveform', id, 40), w0, 'take 0 draws');
+    assert.deepEqual(await drawn(), w0, 'take 0 draws');
     await callNative('undo');
-    assert.equal(clip(id).activeTake, 1, 'undo: take 1 active');
-    assert.deepEqual(await callNative('getWaveform', id, 40), w1);
-    await callNative('redo');
-    assert.equal(clip(id).activeTake, 0, 'redo: take 0');
-    const canUndo = getState().canUndo;
-    await callNative('selectTake', id, 5);
-    assert.equal(clip(id).activeTake, 0, 'out of range: refused');
-    assert.equal(getState().canUndo, canUndo, 'a refusal records nothing');
+    assert.deepEqual(await drawn(), w1, 'undo: take 1 draws');
+
+    await callNative('deleteTake', id, 1);
+    await callNative('undo');
+    assert.deepEqual(await takePeaks(1), w1, 'undo of the delete: the same take');
 });
 
 test('(c) undo of a new take restores take 0 (count 1); redo re-appends', async () => {
@@ -153,63 +83,6 @@ test('(c) undo of a new take restores take 0 (count 1); redo re-appends', async 
     await callNative('undo');
     await callNative('undo');
     assert.equal(clip(id).duration, 0, 'the next entry down is take 0 itself');
-});
-
-test('(d) deleteTake of the active falls back to a neighbour; undoable; last take stays', async () => {
-    loadScenario('empty');
-    const id = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
-    advanceBy(300);
-    await newTakeAndFinish(id);
-    const w1 = await callNative('getTakeWaveform', id, 1, 40);
-    await callNative('deleteTake', id, 1);
-    let c = clip(id);
-    assert.equal(c.takes, 1, 'one take left');
-    assert.equal(c.activeTake, 0, 'the neighbour became active');
-    const canUndo = getState().canUndo;
-    await callNative('deleteTake', id, 0);
-    assert.equal(clip(id).takes, 1, 'the last take never deletes');
-    assert.equal(getState().canUndo, canUndo, '...and records nothing');
-    await callNative('undo');
-    c = clip(id);
-    assert.equal(c.takes, 2, 'undo: take 1 is back');
-    assert.equal(c.activeTake, 1, '...and active again');
-    assert.deepEqual(await callNative('getTakeWaveform', id, 1, 40), w1, 'same take');
-});
-
-test('(e) setComp on a 4Q slot: cells publish; refusals; undo/redo; mid-take refusal', async () => {
-    loadScenario('empty');
-    await recordTake('', 1000, { stopEarly: 0, settle: 0 });
-    advanceBy(500);
-    const id = await recordTake('', 4000);
-    advanceBy(2000);
-    assert.equal(clip(id).duration, 4000, 'a 4Q slot');
-    advanceBy(300);
-    await newTakeAndFinish(id);
-    assert.equal(clip(id).takes, 2);
-    await callNative('setComp', id, [0, 1, 0, 1]);
-    assert.deepEqual(clip(id).comp, [0, 1, 0, 1], 'comp published');
-    const canUndo = getState().canUndo;
-    await callNative('setComp', id, [0, 1, 0]);
-    assert.deepEqual(clip(id).comp, [0, 1, 0, 1], 'wrong cell count refused');
-    await callNative('setComp', id, [0, 1, 0, 7]);
-    assert.deepEqual(clip(id).comp, [0, 1, 0, 1], 'out-of-range take refused');
-    assert.equal(getState().canUndo, canUndo, 'refusals record nothing');
-    await callNative('undo');
-    assert.deepEqual(clip(id).comp, [], 'undo: no comp');
-    await callNative('redo');
-    assert.deepEqual(clip(id).comp, [0, 1, 0, 1], 'redo: comp back');
-    // Deleting a comped take renumbers the cells; undo restores them.
-    await callNative('setComp', id, [1, 0, 1, 0]);
-    await callNative('deleteTake', id, 0);
-    assert.ok(clip(id).comp.every(c => c <= 0), 'cells never name a missing take');
-    await callNative('undo');
-    assert.deepEqual(clip(id).comp, [1, 0, 1, 0], 'undo: comp back');
-    // Mid-take: the comp is refused while a take is live.
-    advanceBy(300);
-    await callNative('newTake', id);
-    await callNative('setComp', id, []);
-    assert.deepEqual(clip(id).comp, [1, 0, 1, 0], 'refused mid-take');
-    await callNative('stopRecordingInNode', id);
 });
 
 test('(g) save -> mutate -> load restores takes, active and comp', async () => {
@@ -246,12 +119,11 @@ async function takeInto(target, probe, len) {
 
 test('(h) the VIEW through a new take, on the mock\'s published state: the ' +
      'lane tiles the slot, the frame holds, a group keeps its period', async () => {
-    // The integration the 2026-10-01 audit lacked. The mock used to keep
-    // the slot's `duration` (and publish no `periodQ`) all through a new
-    // take, so the view never met the engine's shape here — `duration`
-    // the LIVE captured length — and three view bugs passed every suite:
-    // the lane re-tiled at the captured length, the frame collapsed and
-    // regrew, a group's lane re-tiled at Q.
+    // The mock publishes a new take as the engine does — `duration` the
+    // LIVE captured length, the slot's own on `periodQ` — so the view
+    // meets that shape here: the lane must not re-tile at the captured
+    // length, the frame must not collapse and regrow, a group's lane
+    // must not re-tile at Q.
     loadScenario('empty');
     const Q = 1000;
     await recordTake('', Q, { stopEarly: 0, settle: 0 });   // Q := 1000
@@ -295,7 +167,7 @@ test('(h) the VIEW through a new take, on the mock\'s published state: the ' +
     assert.equal(vm.mapEditsLocked, true, 'the recording gate is up');
 
     // CAPTURING — at the top, a little in, most of the way.
-    const at = clip(m1).pendingStartAt;
+    const at = findNode(m1).pendingStartAt;
     advanceBy(at - rawClock());
     for (const captured of [0, 260, 1760, 3760]) {
         advanceBy(captured - clip(m1).duration);

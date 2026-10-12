@@ -1,6 +1,5 @@
 /**
- * Waveform append-stability (field 2026-07-10: "the waveform vibrates
- * left and right while recording").
+ * Waveform append-stability.
  *
  * THE LAW: while recording, previously drawn content never moves.
  * Formally — with a fixed px-per-peak scale p, the first W₁ columns of
@@ -13,16 +12,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { poolColumns } from '../canvas_renderer.js';
+import { makeLcgInt } from './helpers.mjs';
 
 // Deterministic pseudo-audio
 function makePeaks(n, seed = 7) {
-    const out = [];
-    let s = seed;
-    for (let i = 0; i < n; i++) {
-        s = (s * 48271) % 2147483647;
-        out.push(0.1 + 0.85 * Math.abs(Math.sin(i * 0.37 + (s % 100) / 300)));
-    }
-    return out;
+    const next = makeLcgInt(seed);
+    return Array.from({ length: n }, (_, i) =>
+        0.1 + 0.85 * Math.abs(Math.sin(i * 0.37 + (next() % 100) / 300)));
 }
 
 test('fixed scale: appending peaks never changes existing columns', () => {

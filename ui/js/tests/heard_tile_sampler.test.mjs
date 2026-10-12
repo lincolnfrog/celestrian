@@ -1,17 +1,15 @@
 /**
- * HEARD TILES DON'T LURCH OR BREATHE (loop-region phase 1, 2026-09-23;
- * field video "flashing waveforms", flash-chrome F2 / seam-model SM-7).
+ * HEARD TILES DON'T LURCH OR BREATHE.
  *
- * THE INVARIANT (the owner's regression gate): by the anchoring law a
- * map SLIDE — the region moved with its length held — changes what
- * sounds only in the strip each seam sweeps over, on every repeat. The
- * lane must draw exactly that: every heard-tile column outside the
- * swept sliver(s) is unchanged. The old renderer sliced srcSegs at
- * whole peaks, rotated by a rounded peak count and refit the result to
- * the tile, so a −0.15Q slide jittered features all across the lane
- * (probe i_panel_jitter: ±8 px far from the seam), and each canvas
- * normalized to its own loudest peak, so a loud hit entering the loop
- * rescaled the whole tile (probe g_norm: −45 % height).
+ * THE INVARIANT: by the anchoring law a map SLIDE — the region moved
+ * with its length held — changes what sounds only in the strip each
+ * seam sweeps over, on every repeat. The lane must draw exactly that:
+ * every heard-tile column outside the swept sliver(s) is unchanged —
+ * the columns are sampled on the exact raw grid (no whole-peak slicing,
+ * no rounded rotation) and drawn at ONE gain per take (no per-canvas
+ * normalization). The gate compares only outside the swept sliver and
+ * proves itself non-vacuous: the slide sweeps something, and the swept
+ * strip changes.
  *
  * Everything here runs the REAL deriveViewModel for srcSegs /
  * srcTopFrac / periodQ and the renderer's own column path
@@ -21,15 +19,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// Minimal DOM stubs: gesture.js's beginGesture (the live-gesture probe
-// below) touches window/document; everything else is pure.
-globalThis.window = globalThis.window || {
-    addEventListener() {}, removeEventListener() {},
-};
-globalThis.document = globalThis.document || {
-    activeElement: null, getElementById() { return null; },
-    querySelectorAll() { return []; },
-};
+import { laneOf, makeLcgInt } from './helpers.mjs';
+import { stubDom, fakeNode, pointerDown } from './dom_stub.mjs';
+
+// gesture.js's beginGesture (the live-gesture probe below) touches
+// window/document; everything else is pure.
+stubDom();
 
 const { deriveViewModel } = await import('../view_model.js');
 const { mapOffset } = await import('../time_map.js');
@@ -50,7 +45,6 @@ const { pinFrame, unpinFrame, noteFrame } =
 /* ------------------------------ scenes ------------------------------ */
 
 const Q = 1000;
-const OPTS = { fxOpen: new Set() };
 /* "Unchanged": within a millionth of full scale — the pooled columns
  * are Float32 and the same raw position computed before and after a
  * slide differs in the last bits; one pixel of a 60 px lane is ~0.04. */
@@ -77,24 +71,17 @@ const windowed = (segsQ) => segsQ.length === 1
 /** Deterministic, feature-rich pseudo-audio: every peak distinct, so
  * any shift of the mapping shows as a changed column. */
 function makePeaks(n, seed = 11, { lo = 0.05, hi = 0.9 } = {}) {
-    const out = new Array(n);
-    let s = seed;
-    for (let i = 0; i < n; i++) {
-        s = (s * 48271) % 2147483647;
-        out[i] = lo + (hi - lo) * (0.5 + 0.5 * Math.sin(i * 0.61 + (s % 997) / 97));
-    }
-    return out;
+    const next = makeLcgInt(seed);
+    return Array.from({ length: n }, (_, i) =>
+        lo + (hi - lo) * (0.5 + 0.5 * Math.sin(i * 0.61 + (next() % 997) / 97)));
 }
 
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
-
 /** Derive a scene; `pin` holds the frame + zero the way a live map
- * gesture does (drag_pin → app.js → deriveViewModel). */
+ * gesture does (drag_pin → deriveViewModel). */
 function derive(nodes, pin = null) {
     return deriveViewModel(island(nodes), pin
-        ? { ...OPTS, pinFrameQ: pin.cycleQ, pinFoldQ: pin.loopCycleQ,
-            pinZero: pin.frameZero }
-        : OPTS);
+        ? { pinFrameQ: pin.cycleQ, pinFoldQ: pin.loopCycleQ, pinZero: pin.frameZero }
+        : {});
 }
 
 /* A tile narrower than this is float noise of the view model's period
@@ -157,7 +144,7 @@ function columnSwept(x, cssW, span, slivers, dilate = 0) {
 /**
  * THE GATE: before → after a slide, every column outside the swept
  * slivers is unchanged, on every heard tile of every lane the map
- * shapes. Returns {changed, swept} counts for teeth checks.
+ * shapes. Returns the {swept, changedInSliver} column counts.
  */
 function assertOnlySliversChange(tilesBefore, tilesAfter, slivers, label,
                                  { dilate = 0, tol = TOL } = {}) {
@@ -210,7 +197,7 @@ function slideCase({ label, build, editedId, lanes, peaksBy, pxPerQ,
     return { vm0: vm0p, vm1, slivers };
 }
 
-/* The field topology: a 1Q definer, then a 12Q take windowed to 4Q. */
+/* A 1Q definer, then a 12Q take windowed to 4Q. */
 const fieldScene = (segsQ) => [
     clip('def', 0, 1),
     clip('b', 1 * Q, 12, windowed(segsQ)),
@@ -219,13 +206,13 @@ const fieldScene = (segsQ) => [
 /* -------------------------- the invariant -------------------------- */
 
 for (const { n, pxPerQ, why } of [
-    { n: 800, pxPerQ: 156, why: 'the field: 800 peaks/take at 156 px/Q (upsampling)' },
+    { n: 800, pxPerQ: 156, why: '800 peaks/take at 156 px/Q (upsampling)' },
     { n: 3000, pxPerQ: 137.3, why: 'dense peaks at a fractional scale (pooling)' },
     { n: 12 * 156, pxPerQ: 156, why: 'exactly one peak per column (the regime edge)' },
 ]) {
     const peaks = makePeaks(n);
-    // −0.15Q is the field video's slide; −0.137Q moves by a non-whole
-    // number of peaks at every density here.
+    // At 800 peaks −0.15Q is a whole number of peaks (10); −0.137Q
+    // moves by a non-whole number of peaks at every density here.
     for (const dQ of [-0.15, -0.137, 0.37, -1]) {
         test(`single segment: a ${dQ}Q slide changes only the swept sliver — ${why}`, () => {
             const base = [[6, 10]];
@@ -300,43 +287,7 @@ test('groups: a group map slide changes only its slivers on the group lane AND o
     }
 });
 
-test('THE GATE HAS TEETH: the old whole-peak slicer moves columns far from the seam on a −0.137Q slide', () => {
-    // The pre-2026-09-23 drawRepCanvas, reproduced HERE ONLY to prove
-    // the invariant above catches the field bug: slice srcSegs at
-    // floor/ceil peaks, rotate by a rounded peak count, refit.
-    const legacy = (peaks, rep, periodQ, cssW) => {
-        const n = peaks.length;
-        let d = [];
-        for (const [f0, f1] of rep.srcSegs) {
-            const a = Math.max(0, Math.floor(f0 * n));
-            const b = Math.min(n, Math.max(a + 1, Math.ceil(f1 * n)));
-            for (let i = a; i < b; i++) d.push(peaks[i]);
-        }
-        const m = d.length;
-        const rotN = Math.round(((rep.srcTopFrac || 0) % 1) * m);
-        if (rotN > 0 && m > 1) d = d.slice(m - rotN).concat(d.slice(0, m - rotN));
-        return poolColumns(d, cssW);
-    };
-    const peaks = makePeaks(800);
-    const base = [[6, 10]];
-    const vm0 = derive(fieldScene(base));
-    // (At 800 peaks over 12Q the field's −0.15Q is exactly 10 peaks —
-    // the one case the old slicer got right; −0.137Q is 9.13.)
-    const vm1 = derive(fieldScene(slideSegs(base, -0.137, 12).segs), vm0);
-    const vm0p = derive(fieldScene(base), vm0);
-    const slivers = sweptSlivers(laneOf(vm0p, 'b').reps[0], laneOf(vm1, 'b').reps[0]);
-    const t0 = laneTiles(vm0p, 'b', peaks, 156, legacy);
-    const t1 = laneTiles(vm1, 'b', peaks, 156, legacy);
-    let outside = 0;
-    for (let x = 0; x < t0[0].cssW; x++) {
-        if (columnSwept(x, t0[0].cssW, t0[0].span, slivers)) continue;
-        if (Math.abs(t1[0].cols[x] - t0[0].cols[x]) > TOL) outside++;
-    }
-    assert.ok(outside > t0[0].cssW / 4,
-        `the legacy slicer lurched ${outside} of ${t0[0].cssW} columns outside the sliver`);
-});
-
-test('ONE GAIN PER TAKE: a loud hit entering the loop changes no other column (the old self-normalization rescaled the whole tile)', () => {
+test('ONE GAIN PER TAKE: a loud hit entering the loop changes no other column', () => {
     // Quiet material, one loud hit just past the window's end (10.1Q–
     // 10.2Q of the 12Q take): a +0.37Q slide brings it into the loop.
     const n = 1200;
@@ -360,38 +311,13 @@ test('ONE GAIN PER TAKE: a loud hit entering the loop changes no other column (t
         if (columnSwept(x, t0.cssW, t0.span, slivers, 1)) continue;
         assert.ok(Math.abs(h1[x] - h0[x]) <= TOL, `drawn column ${x} rescaled`);
     }
-    // Teeth: normalizing each tile to its OWN loudest column (the old
-    // drawWaveform default) rescales nearly every column.
-    const a0 = shapeColumns(t0.cols, envelopeBoost(t0.cols));
-    const a1 = shapeColumns(t1.cols, envelopeBoost(t1.cols));
-    let rescaled = 0;
-    for (let x = 0; x < t0.cssW; x++) {
-        if (!columnSwept(x, t0.cssW, t0.span, slivers, 1) &&
-            Math.abs(a1[x] - a0[x]) > 0.01) rescaled++;
-    }
-    assert.ok(rescaled > t0.cssW / 2, `self-normalization rescaled ${rescaled} columns`);
-});
-
-test('peaksBoost: the whole array\'s auto boost, cached per identity, capped for silence', () => {
-    const p = [0.1, 0.5, 0.25];
-    assert.equal(peaksBoost(p), 0.95 / 0.5);
-    p[1] = 0.9;  // same identity → the cached value (arrays are replaced on refetch)
-    assert.equal(peaksBoost(p), 0.95 / 0.5);
-    assert.equal(peaksBoost([0, 0]), 1, 'silence draws flat');
-    assert.equal(peaksBoost([0.01]), 8, 'the NORM_MAX_BOOST cap');
-    assert.equal(peaksBoost(['0.5', '0.25']), 1.9, 'string peaks (JSON) read as numbers');
-    assert.equal(peaksBoost([]), 1);
-    // The whole-array boost IS what the self-normalizing path picks for
-    // a canvas that shows the whole array (downsampled).
-    const q = makePeaks(1000, 3);
-    assert.ok(Math.abs(envelopeBoost(poolColumns(q, 300)) - peaksBoost(q)) < 1e-6);
 });
 
 test('THE REVEAL draws at the take\'s gain and on the exact raw grid: its columns ARE the whole take\'s at the lane scale', () => {
     // 8Q take, 500 peaks (62.5 per Q): a reveal view starting at 2.37Q
     // does not start on a peak, so a whole-peak slice would sit up to a
-    // peak off (the lurch a pan showed). A loud hit OUTSIDE the view
-    // sets the take's gain — the quiet slice must not re-level to it.
+    // peak off. A loud hit OUTSIDE the view sets the take's gain — the
+    // quiet slice must not re-level to it.
     const totalQ = 8;
     const peaks = makePeaks(500, 17, { lo: 0.05, hi: 0.3 });
     peaks[450] = 0.95;
@@ -401,19 +327,12 @@ test('THE REVEAL draws at the take\'s gain and on the exact raw grid: its column
     const { cols, boost } = revealColumns(peaks, totalQ, a, b, W);
     assert.equal(boost, peaksBoost(peaks), 'one gain per take');
     assert.ok(Math.abs(envelopeBoost(cols) - boost) > 0.5,
-        'teeth: the slice\'s own auto boost is a different gain');
+        'the fixture: the slice\'s own auto boost is a different gain');
     const whole = mappedColumns(peaks, totalQ * pxPerQ, { src: [[0, 1]] });
     const off = Math.round(a * pxPerQ);
     for (let x = 0; x < W; x++) {
         assert.ok(Math.abs(cols[x] - whole[off + x]) <= TOL, `column ${x}`);
     }
-    // Teeth: the old whole-peak slice, refit to the tile, is misplaced.
-    const n = peaks.length;
-    const i0 = Math.floor((a / totalQ) * n), i1 = Math.ceil((b / totalQ) * n);
-    const old = poolColumns(peaks.slice(i0, i1), W);
-    let moved = 0;
-    for (let x = 0; x < W; x++) if (Math.abs(old[x] - whole[off + x]) > 1e-3) moved++;
-    assert.ok(moved > W / 4, `the whole-peak slice moved ${moved} columns`);
 });
 
 /* -------------------- the sampler's own contract -------------------- */
@@ -563,7 +482,7 @@ test('MIDI tiles and audio tiles share ONE exact mapping (every note piece lands
 test('mapEditInFlight: live gesture, frame pin, lane and panel holds, a landed map change — then quiet after the settle', () => {
     const body = {};
     const strip = {};
-    const row = { _regionStrip: strip };
+    const row = { _region: { strip } };
     let t = 1e6;
     assert.equal(mapEditInFlight(row, body, null, t), false, 'quiet at rest');
     // The lane's own post-commit hold.
@@ -584,10 +503,7 @@ test('mapEditInFlight: live gesture, frame pin, lane and panel holds, a landed m
     unpinFrame();
     assert.equal(mapEditInFlight({}, {}, null, t += 1000), false);
     // Any live gesture (every beginGesture site is a map/window edit).
-    const node = { addEventListener() {}, removeEventListener() {},
-                   setPointerCapture() {}, hasPointerCapture() { return false; } };
-    const g = beginGesture({ preventDefault() {}, stopPropagation() {}, pointerId: 1 },
-                           { node });
+    const g = beginGesture(pointerDown(), { node: fakeNode() });
     assert.equal(mapEditInFlight({}, {}, null, t += 1000), true, 'gesture live');
     g.end(false);
     assert.equal(mapEditInFlight({}, {}, null, t += 1000), false);

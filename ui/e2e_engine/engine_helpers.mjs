@@ -175,23 +175,23 @@ export function displayInnerQ(vm, id, q, durationQ) {
     if (!lane || !(lane.periodQ > 0)) return null;
     const tile = (lane.reps || []).find(r => q >= r.startQ && q < r.endQ);
     if (!tile) return { rest: true };
-    // A HEARD lane (a window: srcSegs) tiles on the FRAME grid and bakes
-    // the loop's phase in as content ROTATION (srcTopFrac, display law
-    // 2026-07-23d): the loop's TOP is drawn at srcTopFrac of the tile
-    // (lane_body.js drawRepCanvas rotates the slice so its index 0 lands
-    // there), so position x of the tile shows slice[(x − rot·P) mod P].
-    // (The sign matters only when 2·rot ≢ 0 mod P — every earlier
-    // journey happened to be symmetric; the chain's 12Q take windowed to
-    // 6Q with its top at 5Q was the first to tell.) Single-segment maps
-    // only (the specs' scope).
+    // A tile that carries its mapping (srcSegs: a heard lane's window, a
+    // raw tile's whole take) places its content on the FRAME grid:
+    // srcTopFrac is where the content's top falls there, as a fraction
+    // of the period (a heard lane's rotation, a raw tile's own start —
+    // vm/tiling.js), so frame position q shows slice[(q − rot·P) mod P].
+    // The tile's own start is NOT subtracted: a raw tile off the frame
+    // grid would be counted twice. Single-segment maps only (the specs'
+    // scope).
     if (tile.srcSegs) {
         if (tile.srcSegs.length !== 1) return null;
-        const rel = mod(q - tile.startQ - (tile.srcTopFrac || 0) * lane.periodQ, lane.periodQ);
+        const rel = mod(q - (tile.srcTopFrac || 0) * lane.periodQ, lane.periodQ);
         return { rest: false, innerQ: tile.srcSegs[0][0] * durationQ + rel };
     }
-    // A plain lane tiles on the TAKE grid (takeStartQ mod periodQ; a
-    // wrapped first tile is clamped, so the grid — not the tile — is
-    // the reference) and draws the take from its top.
+    // A tile with no mapping IS its whole material (the trim view's):
+    // it tiles on the TAKE grid (takeStartQ mod periodQ; a wrapped first
+    // tile is clamped, so the grid — not the tile — is the reference)
+    // and draws the take from its top.
     return { rest: false, innerQ: mod(q - (lane.takeStartQ || 0), lane.periodQ) };
 }
 

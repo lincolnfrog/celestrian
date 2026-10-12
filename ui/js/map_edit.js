@@ -1,30 +1,25 @@
 /**
- * Map-editor algebra (time_maps.md §4, phase 3 — CUT BANDS, the
- * owner-chosen design) — pure Q-space interval math. No DOM, no state.
+ * Map-editor algebra (time_maps.md §4): pure Q-space interval math for
+ * the loop region's gestures. No DOM, no state.
  *
- * The vocabulary split: leading/trailing exclusions belong to the
- * WINDOW (the bracket gesture); INNER gaps are CUT BANDS — visible
- * objects with their own handles. A cut's length is ALWAYS a whole
- * number of Qs (the seam theorem: groove-transparent iff removed length
- * ≡ 0 mod Q; this is categorical — edits can only snap to Q unless
- * they modify the Q-defining clip itself). Cuts slide FREELY in
- * POSITION — excising exactly 1Q off the grid is the design's reason
- * to exist — but only within their kept neighbourhood (cutBounds), so
- * a cut meets a neighbouring gap at exact adjacency (whole ∪ whole
- * stays whole), never by fractional overlap.
+ * Leading and trailing exclusions belong to the WINDOW; INNER gaps are
+ * CUTS. A cut's LENGTH is always a whole number of Qs — THE SEAM
+ * THEOREM: an edit is groove-transparent iff the removed length ≡ 0
+ * (mod Q). Its POSITION is free, but only within its kept neighbourhood
+ * (cutBounds), so a cut meets a neighbouring gap at exact adjacency,
+ * never by fractional overlap.
  *
- * Conventions: segments are [[startQ, endQ), ...] sorted and disjoint
- * — the KEPT (covered) set; `null`/`[]` = no map (the full span
- * sounds). Results covering everything return [] (full span = no map);
- * results that would sound NOTHING or exceed MAX_SEGMENTS return null
- * (refusal — callers keep the previous map).
+ * A segment list is [[startQ, endQ), …], sorted and disjoint: the KEPT
+ * set; null or [] = no map (the full span sounds). A result covering
+ * everything is []; one that would sound nothing, or exceed
+ * MAX_SEGMENTS, is null — a refusal: the caller keeps the previous map.
  */
 
 import { MAX_SEGMENTS } from './time_map.js';
 
 const EPS = 1e-9;
 
-/** Normalize a covered set: sort, drop empties, merge touching runs. */
+/** Normalize a kept set: sort, drop empties, merge touching runs. */
 export function normalizeSegments(segs) {
     const sorted = (segs || [])
         .filter(([s, e]) => e - s > EPS)
@@ -39,13 +34,30 @@ export function normalizeSegments(segs) {
     return out;
 }
 
-/** The covered set of a node's map over [0, totalQ): no map = all. */
+/** The kept set of a node's map over [0, totalQ), normalized; no map =
+ * the full span. */
 export function coveredSet(segs, totalQ) {
     return segs && segs.length ? normalizeSegments(segs) : [[0, totalQ]];
 }
 
-/** Every gap in the covered set over [0, totalQ) — leading, inner,
- * and trailing. */
+/** The kept set AS GIVEN (the caller's own sorted, disjoint list, its
+ * segments left unmerged), or the full span with no map. */
+function givenSet(segs, totalQ) {
+    return segs && segs.length ? segs : [[0, totalQ]];
+}
+
+/** The heard length of a kept set: Σ (end − start). */
+function keptLength(segs) {
+    return segs.reduce((n, [a, b]) => n + (b - a), 0);
+}
+
+/** Whether a normalized set is the full span [0, totalQ): no map. */
+function isFullSpan(norm, totalQ) {
+    return norm.length === 1 && norm[0][0] <= EPS && norm[0][1] >= totalQ - EPS;
+}
+
+/** Every gap in the kept set over [0, totalQ): leading, inner and
+ * trailing. */
 export function cutsOf(segs, totalQ) {
     const covered = coveredSet(segs, totalQ);
     const out = [];
@@ -58,22 +70,19 @@ export function cutsOf(segs, totalQ) {
     return out;
 }
 
-/** Only the INNER gaps — strictly between the first kept start and the
- * last kept end. Leading/trailing exclusions are the window brackets'
- * domain; these are the cut bands. */
+/** Only the INNER gaps — between the first kept start and the last kept
+ * end: the cuts. */
 export function innerCuts(segs, totalQ) {
     const covered = coveredSet(segs, totalQ);
     if (covered.length === 0) return [];
     const lo = covered[0][0];
     const hi = covered[covered.length - 1][1];
-    return cutsOf(segs, totalQ).filter(([a, b]) => a > lo - EPS && b < hi + EPS
-        && a >= lo && b <= hi);
+    return cutsOf(segs, totalQ).filter(([a, b]) => a >= lo && b <= hi);
 }
 
 /**
- * Remove [inQ, outQ) from the covered set — place or reshape a cut; a
- * cut inside a segment splits it. [] = no map restored; null = refusal
- * (nothing would sound, or too many segments).
+ * Remove [inQ, outQ) from the kept set — place or reshape a cut; a cut
+ * inside a segment splits it. [] = no map left; null = refusal.
  */
 export function applyCut(segs, inQ, outQ, totalQ) {
     const covered = coveredSet(segs, totalQ);
@@ -86,37 +95,28 @@ export function applyCut(segs, inQ, outQ, totalQ) {
     const norm = normalizeSegments(out);
     if (norm.length === 0) return null;
     if (norm.length > MAX_SEGMENTS) return null;
-    if (norm.length === 1 && norm[0][0] <= EPS && norm[0][1] >= totalQ - EPS) {
-        return [];
-    }
-    return norm;
+    return isFullSpan(norm, totalQ) ? [] : norm;
 }
 
-/** Add [inQ, outQ) back to the covered set — heal a cut. Collapses to
- * [] when the result covers the full span. */
+/** Add [inQ, outQ) back to the kept set — heal a cut. [] when the
+ * result is the full span. */
 export function healCut(segs, inQ, outQ, totalQ) {
     const norm = normalizeSegments(
         [...coveredSet(segs, totalQ), [inQ, outQ]]);
-    if (norm.length === 1 && norm[0][0] <= EPS && norm[0][1] >= totalQ - EPS) {
-        return [];
-    }
-    return norm;
+    return isFullSpan(norm, totalQ) ? [] : norm;
 }
 
-/** Double-click creation: the 1Q cut for the Q cell containing
- * `clickQ` (cell-snapped; sliding un-snaps it afterwards). */
+/** Double-click creation: the 1Q cut for the Q cell containing `clickQ`
+ * (a slide un-snaps it afterwards). */
 export function cellCutAt(clickQ, totalQ) {
     const cell = Math.max(0, Math.min(totalQ - 1, Math.floor(clickQ)));
     return [cell, cell + 1];
 }
 
-/**
- * The kept neighbourhood of a cut: the healed covered segment that
- * contains it. Slides and resizes are clamped here (categorical
- * coherence): a cut may only meet a neighbouring gap at EXACT
- * adjacency — whole ∪ whole stays whole — never by fractional overlap,
- * which would mint a fractional period.
- */
+/** The kept neighbourhood of a cut: the kept segment that would contain
+ * it were it healed. Slides and resizes are clamped to it, so a cut
+ * never overlaps a neighbouring gap by a fraction — which would mint a
+ * fractional period. */
 export function cutBounds(segs, cut, totalQ) {
     const healed = coveredSet(healCut(segs, cut[0], cut[1], totalQ), totalQ);
     for (const [s, e] of healed) {
@@ -125,14 +125,10 @@ export function cutBounds(segs, cut, totalQ) {
     return [0, totalQ];
 }
 
-/**
- * Resize one edge of a cut [a, b): the handle follows `rawQ`; the
- * released length snaps to whole Qs ≥ 1 (linked edges — the OTHER edge
- * holds), capped by the room to the neighbouring gap (loQ/hiQ from
- * cutBounds). No free mode. Returns { inQ, outQ, lenQ, coherent } —
- * coherent stays in the shape for the defensive ⚠ badge; every path
- * through here is coherent.
- */
+/** Resize one edge of a cut [a, b) toward `rawQ`: the length snaps to
+ * whole Qs ≥ 1 (the OTHER edge holds), capped by the room to the
+ * neighbouring gap (loQ / hiQ from cutBounds). Returns { inQ, outQ,
+ * lenQ, coherent }; `coherent` (always true here) feeds a defensive ⚠. */
 export function resizeCutTarget({ cut, edge, rawQ, maxQ,
                                   loQ = 0, hiQ = maxQ }) {
     let [a, b] = cut;
@@ -148,8 +144,8 @@ export function resizeCutTarget({ cut, edge, rawQ, maxQ,
              coherent: Math.abs(got - Math.round(got)) < 1e-6 };
 }
 
-/** Slide a whole cut to start at `rawStartQ`, length held, clamped to
- * its kept neighbourhood (loQ/hiQ from cutBounds — see there). */
+/** Slide a whole cut to start at `rawStartQ`, its length held, clamped
+ * to its kept neighbourhood (loQ / hiQ from cutBounds). */
 export function slideCutTarget({ cut, rawStartQ, maxQ,
                                  loQ = 0, hiQ = maxQ }) {
     const lenQ = cut[1] - cut[0];
@@ -158,19 +154,28 @@ export function slideCutTarget({ cut, rawStartQ, maxQ,
              coherent: Math.abs(lenQ - Math.round(lenQ)) < 1e-6 };
 }
 
-/** Heard-time period of a covered set (null passes through; [] = the
- * full span sounds). */
-export function segsPeriod(segs, totalQ) {
-    if (segs === null) return null;
-    return segs.length
-        ? segs.reduce((n, [a, b]) => n + (b - a), 0)
-        : totalQ;
+/** A window bracket's drag target: the pointer's raw Q snaps to the
+ * NEAREST whole Q, then clamps so the window keeps at least 1Q inside
+ * [0, maxQ] (the lane's intrinsic period). Returns { startQ, endQ }. */
+export function windowDragTarget({ edge, rawQ, startQ, endQ, maxQ }) {
+    const q = Math.round(rawQ);
+    if (edge === 'start') {
+        return { startQ: Math.min(Math.max(0, q), endQ - 1), endQ };
+    }
+    return { startQ, endQ: Math.max(Math.min(maxQ, q), startQ + 1) };
 }
 
-/** Trim one outer bound to an absolute raw position (heal reveals,
- * cut consumes); null = refusal, keep previous. */
+/** Heard length of a kept set; null passes through, [] = the full span
+ * sounds. */
+export function segsPeriod(segs, totalQ) {
+    if (segs === null) return null;
+    return segs.length ? keptLength(segs) : totalQ;
+}
+
+/** Trim one outer bound to an absolute raw position (a heal reveals, a
+ * cut consumes); null = refusal. */
 export function trimBoundTo(segs, edge, boundQ, totalQ) {
-    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
+    const cov = givenSet(segs, totalQ);
     if (edge === 'start') {
         const first = cov[0][0];
         if (boundQ < first - EPS) return healCut(cov, boundQ, first, totalQ);
@@ -181,21 +186,20 @@ export function trimBoundTo(segs, edge, boundQ, totalQ) {
     return applyCut(cov, boundQ, totalQ, totalQ);
 }
 
-/** THE SEAM THEOREM'S SNAP. Coherence is period ≡ 0 (mod Q), not
- * bound ≡ 0: with fractional seam positions inside, the two differ (a
- * whole-Q BOUND over a free-slid cut would commit a fractional PERIOD
- * and explode the engine's cycle LCM). So trims snap the PERIOD and
- * derive the bound. The period is piecewise linear in the bound (slope 1 inside
- * kept material, 0 across cuts) — walk the covered set to the raw
- * position where the kept total is exactly `targetP` (clamped to
- * [1Q, the reachable span]). */
+/**
+ * THE SEAM THEOREM'S SNAP: the outer bound at which the kept total is
+ * exactly `targetP` (clamped to [1Q, the reachable span]). Coherence is
+ * PERIOD ≡ 0 (mod Q), not bound ≡ 0: with a free-slid cut inside, a
+ * whole-Q bound commits a fractional period and explodes the engine's
+ * cycle LCM. So a trim snaps the period and derives the bound.
+ */
 export function trimBoundForPeriod(segs, edge, targetP, totalQ) {
-    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
-    const covP = cov.reduce((n, [a, b]) => n + (b - a), 0);
+    const cov = givenSet(segs, totalQ);
+    const covP = keptLength(cov);
     const first = cov[0][0], last = cov[cov.length - 1][1];
     const maxP = covP + (edge === 'end' ? totalQ - last : first);
     const P = Math.max(1, Math.min(targetP, Math.floor(maxP + EPS)));
-    if (P > covP - EPS) {  // at/past the current span: heal outward
+    if (P > covP - EPS) {  // at or past the current span: heal outward
         return edge === 'end'
             ? Math.min(totalQ, last + (P - covP))
             : Math.max(0, first - (P - covP));
@@ -216,43 +220,40 @@ export function trimBoundForPeriod(segs, edge, targetP, totalQ) {
     return first;
 }
 
-/** ⌥ FREE SLIDE: move the whole covered set by `deltaQ` — any
- * fractional amount — with the period HELD, so Q
- * coherence survives (the anchoring law keeps content in place; only
- * which stretch of the take is heard changes). The delta is clamped so
- * the set stays inside [0, totalQ]; a slide never trims. Returns
- * { segs, deltaQ } with the clamped delta actually applied. A full-span
- * set (nothing to slide against) comes back unchanged. */
+/**
+ * ⌥ FREE SLIDE: move the whole kept set by `deltaQ` — any fraction —
+ * with the period HELD, so Q coherence survives. Clamped so the set
+ * stays inside [0, totalQ]: a slide never trims. Returns { segs, deltaQ }
+ * with the delta actually applied.
+ */
 export function slideSegs(segs, deltaQ, totalQ) {
-    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
+    const cov = givenSet(segs, totalQ);
     const lo = -cov[0][0];
     const hi = totalQ - cov[cov.length - 1][1];
     const d = Math.max(lo, Math.min(hi, deltaQ));
     return { segs: cov.map(([s, e]) => [s + d, e + d]), deltaQ: d };
 }
 
-/* A seam slide never shrinks a segment below this (Q): the prototype's
- * floor — a sliver, but never an empty segment (which would heal a cut
- * the swap meant to keep). */
+/** A seam slide never shrinks a segment below this (Q): a sliver, but
+ * never an empty segment — which would heal a cut the swap meant to
+ * keep. */
 export const SEAM_MIN_Q = 1 / 64;
 
 /**
- * THE SPLICE SWAP (loop_selection.md §4.1, P2.3): slide one splice of
- * the covered set by `deltaQ`, the period HELD. By the anchoring law
- * every sample outside the swept strip keeps its time — only the strip
- * between the old and new splice changes what it plays.
+ * THE SPLICE SWAP (loop_selection.md §4.1; §10, P2.3): slide one splice
+ * of the kept set by `deltaQ`, the period HELD. Only the strip between
+ * the old and the new splice changes what it plays.
  *
- *   j = 0  the WRAP (where the loop's end jumps back to its start): the
+ *   j = 0  the WRAP (the loop's end jumping back to its start): the
  *          first segment's start and the last segment's end move
- *          together, so the inner cuts keep their place on screen — on
- *          one segment this IS slideSegs;
- *   j > 0  inner cut j, between segment j−1 and segment j: segment j−1's
- *          end and segment j's start move together (the cut slides,
- *          its length held).
+ *          together, so the inner cuts keep their place — on one
+ *          segment this IS slideSegs;
+ *   j > 0  inner cut j: segment j−1's end and segment j's start move
+ *          together (the cut slides, its length held).
  *
- * Clamped to the take and so no segment shrinks below SEAM_MIN_Q (the
- * prototype's slideTop / slideCut). Returns { segs, deltaQ } with the
- * clamped delta actually applied; an out-of-range `j` is a no-op.
+ * Clamped to the take, and so that no segment shrinks below SEAM_MIN_Q.
+ * Returns { segs, deltaQ } with the delta actually applied; an
+ * out-of-range `j` is a no-op.
  */
 export function slideSeam(segs, j, deltaQ, totalQ) {
     const cov = coveredSet(segs, totalQ).map(s => s.slice());
@@ -263,8 +264,8 @@ export function slideSeam(segs, j, deltaQ, totalQ) {
         lo = -cov[0][0];
         hi = totalQ - cov[n - 1][1];
         if (n > 1) {
-            // The first segment shrinks by d and the last grows by d
-            // (or the reverse): each keeps at least the floor.
+            // The first segment shrinks by d and the last grows by d (or
+            // the reverse): each keeps at least the floor.
             lo = Math.max(lo, SEAM_MIN_Q - len(n - 1));
             hi = Math.min(hi, len(0) - SEAM_MIN_Q);
         }
@@ -286,19 +287,14 @@ export function slideSeam(segs, j, deltaQ, totalQ) {
 }
 
 /**
- * THE SPLICE SWAP BY WHOLE Qs (the plain drag; owner ruling 2026-09-23:
- * moves snap by whole Q, RELATIVE, so a free offset set earlier is
- * kept — ⌥ alone moves freely): slideSeam by the whole number of Qs
- * nearest `deltaQ` that its clamp allows. slideSeam's clamp is the
- * hard bound — the take's edge, the SEAM_MIN_Q floor — and that bound
- * is rarely a whole Q away: asked for a whole Q it cannot have, it
- * answers with the bound itself, so a plain drag of a cut toward a 1Q
- * neighbour landed 1/64 Q short of it and left a 1/64 Q sliver of
- * material playing at the splice (field audit 2026-10-01), and a drag
- * into the take's edge re-gridded a free offset. Here the move steps
- * back to the largest whole number of Qs inside the bound instead — 0
- * when no whole Q fits: the splice stays where it is, on its own grid.
- * Returns { segs, deltaQ } like slideSeam.
+ * THE SPLICE SWAP BY WHOLE Qs — the plain drag (⌥ moves freely):
+ * slideSeam by the whole number of Qs nearest `deltaQ` that its clamp
+ * allows; RELATIVE, so a free offset set earlier is kept. slideSeam's
+ * clamp is rarely a whole Q away, and asked for a whole Q it cannot
+ * have it answers with the bound itself — a sliver of material left at
+ * the splice, or a free offset re-gridded at the take's edge. So the
+ * move steps back to the largest whole number of Qs inside the bound; 0
+ * when none fits. Returns { segs, deltaQ } like slideSeam.
  */
 export function slideSeamWhole(segs, j, deltaQ, totalQ) {
     const stay = () =>
@@ -316,19 +312,16 @@ export function slideSeamWhole(segs, j, deltaQ, totalQ) {
 }
 
 /**
- * ⇧ AT A SPLICE = THE LENGTH THERE (loop_selection.md P2.4): move the
- * END of the material just BEFORE splice `j` by whole Qs — the last
+ * ⇧ AT A SPLICE = THE LENGTH THERE (loop_selection.md §10, P2.4): move
+ * the END of the material just BEFORE splice `j` by whole Qs — the last
  * segment's end at the wrap (j = 0), segment j−1's end at cut j. Right
- * (+) = more material: a longer loop, or a smaller cut; left = less.
- * Whole Q, so the period changes by whole Qs and stays coherent.
+ * (+) = more material: a longer loop, or a smaller cut.
  *
  * Clamped so the moved segment keeps some material, the period stays
- * ≥ 1Q, the wrap stays inside the take and a cut can only close — a
- * cut shrunk to nothing HEALS (the touching segments merge). A loop
- * grown to the whole take is no map at all ([], like healCut). A
- * sub-Q period (an exact divisor of Q) has no whole-Q length to change:
- * the delta is 0. Returns { segs, deltaQ } with the whole-Q delta
- * actually applied.
+ * ≥ 1Q, the wrap stays inside the take and a cut can only close — shrunk
+ * to nothing it HEALS. A loop grown to the whole take is no map ([]); a
+ * sub-Q period has no whole-Q length to change (delta 0). Returns
+ * { segs, deltaQ } with the whole-Q delta actually applied.
  */
 export function lengthAtSeam(segs, j, deltaQ, totalQ) {
     const cov = coveredSet(segs, totalQ).map(s => s.slice());
@@ -336,7 +329,7 @@ export function lengthAtSeam(segs, j, deltaQ, totalQ) {
     const cut = j > 0 && j < n;
     const gi = cut ? j - 1 : n - 1;
     const bound0 = cov[gi][1];
-    const S0 = cov.reduce((p, [a, b]) => p + (b - a), 0);
+    const S0 = keptLength(cov);
     const room = cut ? cov[j][0] - bound0 : totalQ - bound0;
     let k = 0;
     if (S0 >= 1 - EPS) {
@@ -347,8 +340,5 @@ export function lengthAtSeam(segs, j, deltaQ, totalQ) {
     }
     cov[gi][1] = bound0 + k;
     const norm = normalizeSegments(cov);
-    if (norm.length === 1 && norm[0][0] <= EPS && norm[0][1] >= totalQ - EPS) {
-        return { segs: [], deltaQ: k };
-    }
-    return { segs: norm, deltaQ: k };
+    return { segs: isFullSpan(norm, totalQ) ? [] : norm, deltaQ: k };
 }

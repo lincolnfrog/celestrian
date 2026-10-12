@@ -11,25 +11,24 @@
  *      actual deriveViewModel to assert DISPLAY invariants (frame
  *      stability, playhead continuity) against engine-real data.
  *
- * The scenario mirrors the 2026-07-10 field flow: first take establishes
- * Q, second take grows the cycle and is stopped just PAST a boundary
- * (inside the 15% hysteresis snap-down window — the "stretch then
- * squish" report).
+ * The scenario: the transport runs a while, then the first take
+ * establishes Q; the second grows the cycle and is stopped just PAST a
+ * boundary, so it runs on to the next one.
  *
  * Regenerate the fixture by running CelestrianTests (Debug binary).
  */
 
 #include <juce_core/juce_core.h>
 
-#include <vector>
-
 #include "../src/audio_engine.h"
 #include "test_utils.h"
 
+using celestrian::test_utils::rootProp;
 using celestrian::test_utils::childDuration;
 using celestrian::test_utils::childId;
 using celestrian::test_utils::childIsRecording;
 using celestrian::test_utils::childVar;
+using celestrian::test_utils::driveEngine;
 using celestrian::test_utils::firstNodeId;
 
 class UiContractTests : public juce::UnitTest {
@@ -41,6 +40,7 @@ class UiContractTests : public juce::UnitTest {
 
     const int Q = 1000;
     const int BLOCK = 100;  // fine-grained polls: one per block
+    const int PRE_ROLL = 44100 + 370;  // one second and a bit, at 44.1 kHz
 
     AudioEngine engine;
     juce::Array<juce::var> capture;
@@ -51,17 +51,25 @@ class UiContractTests : public juce::UnitTest {
       capture.add(state);
     };
 
-    // --- Take 1: establishes Q = 1000 ---
+    // --- Take 1: establishes Q = 1000. The transport has already run
+    //     for no whole number of seconds, so the pre-Q cursor (folded on
+    //     one second) stands mid-second when the take is armed. ---
     engine.createNode("stack");
     auto stackId = firstNodeId(engine);
     engine.createNode("clip", stackId);
     auto clipA = childId(engine, 0);
+    engine.togglePlayback();
+    driveEngine(engine, PRE_ROLL);
     poll("pre-rec-1");
 
     engine.startRecordingInNode(clipA);
     for (int i = 0; i < Q / BLOCK; ++i) {
-      processSilence(engine, BLOCK);
+      driveEngine(engine, BLOCK);
       poll("rec-1");
+      // Contract: before Q the view draws the cursor from masterPos, and
+      // the first take's cursor is the take's own position.
+      expectEquals((int64_t)masterPosD(engine), childDuration(engine, 0),
+                   "the first take's cursor is the take's length");
     }
     engine.stopRecordingInNode(clipA);
     poll("commit-1");
@@ -70,14 +78,14 @@ class UiContractTests : public juce::UnitTest {
 
     // --- Loop a while (idle view must stay wrapped in [0, Q)) ---
     for (int i = 0; i < 7; ++i) {
-      processSilence(engine, BLOCK);
+      driveEngine(engine, BLOCK);
       poll("looping");
       double mp = masterPosD(engine);
       expect(mp >= 0 && mp < (double)Q, "idle masterPos wrapped into cycle");
     }
 
     // --- Take 2: arm mid-loop, record past TWO boundaries, stop just
-    //     past a boundary (inside the 15% snap-down window) ---
+    //     past a boundary ---
     engine.createNode("clip", stackId);
     auto clipB = childId(engine, 1);
     engine.startRecordingInNode(clipB);
@@ -85,10 +93,10 @@ class UiContractTests : public juce::UnitTest {
 
     double lastView = masterPosD(engine);
     int64_t lastDur = 0;
-    // 2Q of content + 100 samples past the next boundary (100 < 150)
+    // 2Q of content + 100 samples past the next boundary
     const int recBlocks = (2 * Q + 100 + (Q - (int)lastView % Q)) / BLOCK;
     for (int i = 0; i < recBlocks; ++i) {
-      processSilence(engine, BLOCK);
+      driveEngine(engine, BLOCK);
       poll("rec-2");
       // Contract: the recording view grows monotonically, never wraps
       double mp = masterPosD(engine);
@@ -99,25 +107,25 @@ class UiContractTests : public juce::UnitTest {
       lastDur = dur;
     }
 
-    const int64_t zeroBefore = islandZero(engine);
+    const int64_t zeroBefore = rootProp(engine, "islandZero");
     engine.stopRecordingInNode(clipB);
     poll("stop-requested");
-    // CONTRACT (learned from this harness's first run): the engine has
-    // NO downward snap — stopRecording always awaits the NEXT boundary
-    // (nextStopBoundary), continuing to record until it lands. The UI
-    // must treat isAwaitingStop as "finishing to a known boundary".
+    // CONTRACT: the engine has NO downward snap — stopRecording always
+    // awaits the NEXT boundary (nextStopBoundary), continuing to record
+    // until it lands. The UI must treat isAwaitingStop as "finishing to
+    // a known boundary".
     expect(childAwaitingStop(engine, 1),
            "a mid-Q stop request enters awaiting-stop");
 
     int guard = 0;
     while (childIsRecording(engine, 1) && guard++ < 40) {
-      processSilence(engine, BLOCK);
+      driveEngine(engine, BLOCK);
       poll("awaiting-stop");
     }
     expect(guard < 40, "awaiting-stop commits within a cycle");
     poll("committed");
     for (int i = 0; i < 8; ++i) {
-      processSilence(engine, BLOCK);
+      driveEngine(engine, BLOCK);
       poll("post-commit");
     }
 
@@ -126,11 +134,12 @@ class UiContractTests : public juce::UnitTest {
                  "stop pads forward to the next boundary (no snap-down)");
     // No commit moves the island zero (docs/frame.md): the JS replay
     // seats the new take from the lanes.
-    const int64_t zeroAfter = islandZero(engine);
+    const int64_t zeroAfter = rootProp(engine, "islandZero");
     expectEquals(zeroAfter, zeroBefore, "the zero stays through growth");
 
     // --- Dump the capture for the JS replay ---
-    auto outFile = repoFile("shared/ui_contract_capture.json");
+    auto outFile = celestrian::test_utils::sharedCaptureFile(
+        "ui_contract_capture.json");
     juce::DynamicObject::Ptr root = new juce::DynamicObject();
     root->setProperty("meta", metaObject(Q, BLOCK));
     root->setProperty("polls", capture);
@@ -150,47 +159,9 @@ class UiContractTests : public juce::UnitTest {
     return juce::var(m.get());
   }
 
-  juce::File repoFile(const juce::String& rel) {
-    auto dir = juce::File::getCurrentWorkingDirectory();
-    for (int i = 0; i < 8; ++i) {
-      if (dir.getChildFile("shared").isDirectory())
-        return dir.getChildFile(rel);
-      dir = dir.getParentDirectory();
-    }
-    // Fall back to source-relative
-    return juce::File(__FILE__)
-        .getParentDirectory()
-        .getParentDirectory()
-        .getChildFile(rel);
-  }
-
-  void processBlock(AudioEngine& engine, const float* in, int n) {
-    std::vector<float> outL((size_t)n, 0.0f), outR((size_t)n, 0.0f);
-    const float* ins[] = {in};
-    float* outs[] = {outL.data(), outR.data()};
-    engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-  }
-
-  void processSilence(AudioEngine& engine, int n) {
-    std::vector<float> in((size_t)n, 0.0f);
-    processBlock(engine, in.data(), n);
-  }
-
   double masterPosD(AudioEngine& engine) {
     return (double)engine.getGraphState().getDynamicObject()->getProperty(
         "masterPos");
-  }
-
-  int64_t islandZero(AudioEngine& engine) {
-    return (int64_t)(double)engine.getGraphState()
-        .getDynamicObject()
-        ->getProperty("islandZero");
-  }
-
-  int64_t childOrigin(AudioEngine& engine, int index) {
-    return (int64_t)(double)childVar(engine, index)
-        .getDynamicObject()
-        ->getProperty("origin");
   }
 
   bool childAwaitingStop(AudioEngine& engine, int index) {

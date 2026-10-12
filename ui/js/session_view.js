@@ -11,25 +11,26 @@
  * interactions are injected as callbacks from app.js.
  *
  * The implementation lives in js/session_view/; this file is the
- * public barrel — the names app.js imports:
+ * public barrel — exactly the names app.js imports:
  *
  *   init.js      — one-time wiring + the view's key bindings (keys.js)
  *   patch.js     — patchSessionView (top-level per-poll patch)
- *   drag_pin.js  — the map-gesture frame pin (mapDragPinQ/…FoldQ)
+ *   drag_pin.js  — the map-gesture frame pin (mapDragPinQ / …FoldQ /
+ *                  …Zero)
  *   reseat_tween.js — the re-seat tween (reseatOptions, noteReseat,
  *                  reseatInMotion)
  *   pending_edits.js — a gesture's local preview (pendingEditsFor;
  *                  clearAllPendingEdits when an undo replaces the graph)
  *   render_request.js — requestRender's renderer (setRenderer)
  *   gesture.js   — isGestureLive (a hand on the frame)
- *   selection.js — activeSelectedId (the keyboard verbs' target)
- *   sv_util.js   — isTypingTarget (the dispatcher's typing guard)
+ *   selection.js — the selection set, activeSelectedId (the keyboard
+ *                  verbs' target), selectWhenPresent (select a new lane
+ *                  once a patch lists it)
+ *   sv_util.js   — setText / setTitle (the guarded DOM writes app.js's
+ *                  own chrome patches use)
  *
- * plus the internal modules: context (shared ctx + expando contract),
- * sv_util, selection, zoom, animator, teleport (nav dock + [ / ]),
- * ruler, dials, input_menu, fx_row, dims, window_edit, map_bands
- * (cut bands / seams / trim / expanded drag), lane_body, lane_build,
- * rail.
+ * Every other module in js/session_view/ is internal to the patch
+ * layer.
  */
 
 export { initSessionView } from './session_view/init.js';
@@ -41,4 +42,4 @@ export { pendingEditsFor, clearAllPendingEdits } from './session_view/pending_ed
 export { setRenderer } from './session_view/render_request.js';
 export { isGestureLive } from './session_view/gesture.js';
 export { activeSelectedId, selection, selectWhenPresent } from './session_view/selection.js';
-export { isTypingTarget } from './session_view/sv_util.js';
+export { setText, setTitle } from './session_view/sv_util.js';

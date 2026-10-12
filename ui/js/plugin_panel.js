@@ -1,44 +1,41 @@
 /**
- * Plugin registry panel (docs/vst3.md phase 1).
- *
- * A status-strip popover (it reuses the .audio-panel styles the
- * preferences panel wears): lists the known VST3 plugins and
- * drives a rescan. Scanning runs on a backend background thread; while
- * it runs this panel polls getPluginScanStatus and re-fetches the list
- * on completion. This panel is the registry view only: adding a
- * plugin to a node's chain is the fx row's "+" picker
- * (session_view/fx_row.js, phase 3), fed by the same known-plugin list.
+ * The plugin registry panel (docs/vst3.md): a status-strip popover
+ * (popover.js, in the preferences panel's .audio-panel styles) that
+ * lists the known VST3 plugins and drives a rescan. A scan runs in the
+ * backend's background and OUTLIVES THE PANEL: its status is polled
+ * until it ends, so the status line reports the result with the panel
+ * closed, and a panel opened meanwhile shows the scan running. The open
+ * panel reads the list again when the scan ends. The registry view
+ * only: adding a plugin to a chain is the fx row's "+" picker
+ * (session_view/fx_row.js).
  */
 
-import { registerKey, SCOPE, ANY_MODIFIERS } from './keys.js';
+import { wirePopover } from './popover.js';
 
-let panel = null;
+const SCAN_POLL_MS = 250;  // how often an open panel asks a scan's status
+
+let panel = null;          // the open panel's element; null while closed
 let callNative = null;
 let onLog = () => { };
-let pollTimer = null;
+let pollTimer = null;      // set while a scan this panel started runs
 
 /** Wires the status-strip button. `log` writes to the status line. */
 export function initPluginPanel(callNativeFn, log) {
     callNative = callNativeFn;
     if (log) onLog = log;
 
-    const btn = document.getElementById('plugins-btn');
-    if (!btn) return;
-    btn.addEventListener('click', () => togglePanel());
-
-    // Close on outside click / Escape, like the device panel (the
-    // panel scope wins Escape while open — keys.js).
-    document.addEventListener('click', (e) => {
-        if (!panel) return;
-        if (panel.contains(e.target) || e.target === btn) return;
-        closePanel();
+    const button = document.getElementById('plugins-btn');
+    if (!button) return;
+    wirePopover({
+        button,
+        isOpen: () => !!panel,
+        open: openPanel,
+        close: closePanel,
+        holds: target => panel.contains(target),
     });
-    registerKey({ key: 'Escape', scope: SCOPE.PANEL, ignore: ANY_MODIFIERS,
-                  whileTyping: true, when: () => !!panel, handler: closePanel });
 }
 
 function closePanel() {
-    stopPolling();
     if (panel) { panel.remove(); panel = null; }
 }
 
@@ -46,8 +43,7 @@ function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
-async function togglePanel() {
-    if (panel) { closePanel(); return; }
+async function openPanel() {
     panel = document.createElement('div');
     panel.className = 'audio-panel open';
     panel.innerHTML = '<div class="ap-head">Plugins</div>' +
@@ -56,18 +52,10 @@ async function togglePanel() {
     await render();
 }
 
-async function fetchPlugins() {
-    try {
-        return await callNative('getKnownPlugins') || [];
-    } catch (err) {
-        onLog('plugin list failed: ' + err.message);
-        return [];
-    }
-}
-
 async function render() {
     if (!panel) return;
-    const plugins = await fetchPlugins();
+    // A lost call (null) lists nothing.
+    const plugins = await callNative('getKnownPlugins') || [];
     if (!panel) return;  // closed while awaiting
 
     const rows = plugins.map(p =>
@@ -90,29 +78,32 @@ async function render() {
 
     panel.querySelector('#plugin-scan-btn')
         .addEventListener('click', () => startScan());
+    setScanBusy(!!pollTimer);
+}
+
+/** Enable or disable the Scan button of the open panel. */
+function setScanBusy(busy) {
+    const btn = panel && panel.querySelector('#plugin-scan-btn');
+    if (btn) btn.disabled = busy;
 }
 
 async function startScan() {
-    try {
-        await callNative('scanPlugins');
-    } catch (err) {
-        onLog('plugin scan failed to start: ' + err.message);
+    if (await callNative('scanPlugins') === null) {
+        onLog('plugin scan not started — the engine did not answer');
         return;
     }
-    const btn = panel && panel.querySelector('#plugin-scan-btn');
-    if (btn) btn.disabled = true;
+    setScanBusy(true);
     stopPolling();
-    pollTimer = setInterval(pollScan, 250);
+    pollTimer = setInterval(pollScan, SCAN_POLL_MS);
 }
 
 async function pollScan() {
-    if (!panel) { stopPolling(); return; }
-    let status;
-    try {
-        status = await callNative('getPluginScanStatus');
-    } catch (err) {
+    const status = await callNative('getPluginScanStatus');
+    if (!status) {
+        // A lost call: stop asking, and leave the panel usable.
         stopPolling();
-        onLog('plugin scan poll failed: ' + err.message);
+        setScanBusy(false);
+        onLog('plugin scan status lost — the engine did not answer');
         return;
     }
     const line = panel && panel.querySelector('#plugin-scan-status');

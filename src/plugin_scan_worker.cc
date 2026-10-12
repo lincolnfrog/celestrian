@@ -41,17 +41,20 @@ void emit(juce::FileOutputStream& out, const juce::String& line) {
 
 }  // namespace
 
+void addHostedFormats(juce::AudioPluginFormatManager& manager) {
+  manager.addFormat(new juce::VST3PluginFormat());
+#if JUCE_PLUGINHOST_AU && JUCE_MAC
+  manager.addFormat(new juce::AudioUnitPluginFormat());
+#endif
+}
+
 bool isWorkerInvocation(const juce::StringArray& args) {
   return args.size() > 0 && args[0] == kFlag;
 }
 
 int probeFiles(const juce::StringArray& files, const juce::File& results) {
-  // The coordinator's formats, mirrored (docs/vst3.md §11).
   juce::AudioPluginFormatManager formats;
-  formats.addFormat(new juce::VST3PluginFormat());
-#if JUCE_PLUGINHOST_AU && JUCE_MAC
-  formats.addFormat(new juce::AudioUnitPluginFormat());
-#endif
+  addHostedFormats(formats);
 
   juce::FileOutputStream out(results);
   if (out.failedToOpen()) return kUnreadableList;

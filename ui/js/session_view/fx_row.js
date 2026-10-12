@@ -1,21 +1,20 @@
 /**
- * Effects panel (docs/session_view.md effects bar; docs/vst3.md phase 2).
+ * The effects panel (docs/session_view.md effects bar; docs/vst3.md): a
+ * synthetic row under the lane. One card per built-in CHAIN SLOT
+ * (EFFECT_SCHEMA) — a power switch, a visualization and sliders — one
+ * chip per VST3 slot, and a "+" chip whose picker adds a plugin.
  *
- * A synthetic row under the lane: one card per built-in CHAIN SLOT
- * (EFFECT_SCHEMA), each a power switch + sliders, plus a "+" chip
- * whose picker (fed by the injected getKnownPlugins callback) adds a
- * VST3 plugin to the chain (docs/vst3.md phase 3). Built once from
- * EFFECT_SCHEMA; values PATCH in place, and
- * the patch keeps the DOM card order in CHAIN order (a reorder — undo,
- * load — just re-appends the cards). Bridge edits are keyed by the
- * published slot uuid (card.dataset.slot, refreshed each patch). A
- * slider being dragged is never overwritten by the 50ms tick (the
- * rename-editor lesson applied to inputs: `_hot` between pointerdown
- * and pointerup).
+ * The cards are built once; their values PATCH in place, and the DOM
+ * keeps them in CHAIN order. Bridge edits are keyed by the published
+ * slot uuid (`card.dataset.slot`, refreshed each patch). A slider is a
+ * held control (context.js): while `_hot` the patch leaves it, and its
+ * value label, alone.
  */
 
 import { ctx } from './context.js';
-import { el, setText } from './sv_util.js';
+import { el, setText, setTitle, holdControl, MAX_INDENT_DEPTH }
+    from './sv_util.js';
+import { openPopover, closePopover, closePopoverOf } from './popover.js';
 import { EFFECT_SCHEMA } from '../effect_schema.js';
 import {
     drawEqViz, drawCompViz, drawEchoViz, drawReverbViz,
@@ -25,12 +24,17 @@ import {
 /* Scrolling compressor envelope: samples kept (one per ~50ms poll —
  * about 4.5s of history at panel scale). */
 const COMP_HISTORY_LEN = 90;
+/* The gain-reduction readout shows above this much reduction (dB). */
+const GR_SHOWN_DB = 0.05;
+/* The tooltip of a chip whose plugin refused the stereo layout. */
+const UNSUPPORTED_TITLE = 'This plugin would not run in stereo, so it is ' +
+    'bypassed: the chain plays on without it';
 
-/** Build the fx row once: rail label + one card per EFFECT_SCHEMA
- * entry (power, title, viz canvas, one range slider per param). */
+/** Build the fx row once: rail label, one card per EFFECT_SCHEMA entry
+ * (power, title, viz canvas, one range slider per param), the "+". */
 export function buildFxRow(row, lane) {
     row.classList.add('lane-fx');
-    row.dataset.depth = String(Math.min(lane.depth, 2));
+    row.dataset.depth = String(Math.min(lane.depth, MAX_INDENT_DEPTH));
 
     const rail = el('div', 'fx-rail mono', { textContent: 'EFFECTS' });
 
@@ -69,30 +73,28 @@ export function buildFxRow(row, lane) {
             input.max = String(p.max);
             input.step = String(p.step);
             input.dataset.key = p.key;
-            input.addEventListener('pointerdown', () => { input._hot = true; });
-            input.addEventListener('pointerup', () => { input._hot = false; });
+            // The range tracks the pointer itself: the hold only marks it.
+            holdControl(input, { capture: false });
+            const value = el('span', 'fx-param-value mono');
             input.addEventListener('input', () => {
                 if (!card.dataset.slot) return;
                 ctx.cb.onSetSlotParam(row._lane.ownerId, card.dataset.slot,
                     p.key, parseFloat(input.value));
-                setText(line.querySelector('.fx-param-value'), p.fmt(parseFloat(input.value)));
+                setText(value, p.fmt(parseFloat(input.value)));
             });
-            const value = el('span', 'fx-param-value mono');
             line.append(name, input, value);
             card.appendChild(line);
         });
         body.appendChild(card);
     });
 
-    // The add-plugin affordance (docs/vst3.md phase 3): a "+" chip at
-    // the end of the body opening a picker fed by getKnownPlugins.
     const add = el('button', 'fx-add mono', {
         textContent: '＋',
         title: 'Add a VST3 plugin to this chain',
     });
-    add.addEventListener('click', async (e) => {
+    add.addEventListener('click', e => {
         e.stopPropagation();
-        await openPluginPicker(row, add);
+        togglePluginPicker(row, add);
     });
     body.appendChild(add);
 
@@ -100,17 +102,20 @@ export function buildFxRow(row, lane) {
     return row;
 }
 
-/** Build + show the plugin picker under the "+" chip. One picker at a
- * time; outside click / Escape close it (the popover conventions). */
-async function openPluginPicker(row, anchor) {
-    closePluginPicker();
+/** Open (or close) the plugin picker beside the "+" chip: the known
+ * plugins (getKnownPlugins), fetched on open; a pick adds one to the
+ * chain. */
+async function togglePluginPicker(row, add) {
+    if (closePopoverOf(add)) return;
     const menu = el('div', 'fx-picker');
     menu.appendChild(el('div', 'fx-picker-head mono', { textContent: 'ADD PLUGIN' }));
+    openPopover({ menu, trigger: add, mount: add.parentElement });
     let plugins = [];
     try {
         plugins = ctx.cb.getKnownPlugins
             ? (await ctx.cb.getKnownPlugins()) || [] : [];
     } catch (err) { /* backend without plugin support: empty list */ }
+    if (!menu.isConnected) return;  // closed while fetching
     if (!plugins.length) {
         menu.appendChild(el('div', 'fx-picker-empty',
             { textContent: 'No plugins known — scan from the 🔌 Plugins panel' }));
@@ -122,28 +127,15 @@ async function openPluginPicker(row, anchor) {
         });
         item.addEventListener('click', () => {
             ctx.cb.onAddPlugin(row._lane.ownerId, p.uid, p.name);
-            closePluginPicker();
+            closePopover();
         });
         menu.appendChild(item);
     });
-    anchor.parentElement.appendChild(menu);
-    menu._closeOnOutside = (e) => {
-        if (!menu.contains(e.target) && e.target !== anchor) closePluginPicker();
-    };
-    document.addEventListener('click', menu._closeOnOutside);
-    activePicker = menu;
-}
-
-let activePicker = null;
-function closePluginPicker() {
-    if (!activePicker) return;
-    document.removeEventListener('click', activePicker._closeOnOutside);
-    activePicker.remove();
-    activePicker = null;
 }
 
 /** Build one VST3 chip: power, name (click = open the native editor),
- * missing/latency badges, remove. Values patch in place like cards. */
+ * state/latency badge (patchVst3Chip), remove. Its values patch in
+ * place like a card's. */
 function buildVst3Chip(row, body, entry) {
     const chip = el('div', 'fx-card fx-vst3');
     chip.dataset.fx = 'vst3';
@@ -172,9 +164,8 @@ function buildVst3Chip(row, body, entry) {
     });
     head.append(power, title, badge, remove);
     chip.appendChild(head);
-    // Insert before the "+" chip so the affordance stays last.
-    const add = body.querySelector('.fx-add');
-    body.insertBefore(chip, add || null);
+    // Before the "+" chip, which stays last.
+    body.insertBefore(chip, body.querySelector('.fx-add'));
     return chip;
 }
 
@@ -184,61 +175,22 @@ function chainEntry(lane, slotUuid) {
     return (chain && chain.find(s => s.slot === slotUuid)) || null;
 }
 
-/** Patch the fx row in place: card order + slot bindings follow the
- * published CHAIN; power/off classes, slider values (never over a held
- * slider — `_hot`), formatted value labels, and each card's
- * visualization redrawn per poll (~20 Hz) from the published scope
- * (spectrum / peak / GR) + the card's own parameters. */
+/** Patch the fx row in place: the cards' order and slot bindings follow
+ * the published CHAIN; then each card's power state, slider values and
+ * labels, and its visualization — redrawn every poll from the published
+ * scope (spectrum / peak / GR) and the card's own parameters. */
 export function patchFxRow(row, lane) {
     row._lane = lane;
     const effects = lane.effects;
     if (!effects || !Array.isArray(effects.chain)) return;
     const body = row.querySelector('.fx-body');
-    if (body) {
-        // Reconcile VST3 chips: create for new slots, drop stale ones.
-        const chainSlots = new Set(effects.chain.map(e => e.slot));
-        [...body.querySelectorAll('.fx-vst3')].forEach(chip => {
-            if (!chainSlots.has(chip.dataset.slot)) chip.remove();
-        });
-        effects.chain.forEach(entry => {
-            if (entry.type !== 'vst3') return;
-            if (!body.querySelector(`.fx-card[data-slot="${entry.slot}"]`))
-                buildVst3Chip(row, body, entry);
-        });
-
-        // Keep the DOM cards + chips in chain order — but only MOVE
-        // nodes when the order actually changed (a 20 Hz re-append
-        // would disturb an in-flight slider drag). Built-in cards bind
-        // lazily by type; chips are keyed by slot uuid at creation.
-        const known = effects.chain.filter(e =>
-            e.type === 'vst3' || EFFECT_SCHEMA.some(f => f.type === e.type));
-        const cardFor = entry =>
-            body.querySelector(`.fx-card[data-slot="${entry.slot}"]`) ||
-            body.querySelector(`.fx-card[data-fx="${entry.type}"]`);
-        const want = known.map(e => e.slot).join();
-        const have = [...body.querySelectorAll('.fx-card')]
-            .map(c => c.dataset.slot).join();
-        if (want !== have) {
-            const add = body.querySelector('.fx-add');
-            known.forEach(entry => {
-                const card = cardFor(entry);
-                if (card) body.insertBefore(card, add || null);
-            });
-        }
-    }
+    if (body) reconcileCards(row, body, effects.chain);
+    const scope = effects.scope || null;
     effects.chain.forEach(entry => {
-        const state = entry;
         if (entry.type === 'vst3') {
             const chip = body &&
                 body.querySelector(`.fx-card[data-slot="${entry.slot}"]`);
-            if (!chip) return;
-            chip.classList.toggle('off', !state.enabled);
-            chip.querySelector('.fx-power').classList.toggle('on', !!state.enabled);
-            setText(chip.querySelector('.fx-vst3-name'), state.name || 'plugin');
-            setText(chip.querySelector('.fx-vst3-badge'),
-                state.missing ? 'missing'
-                    : state.latency > 0 ? state.latency + ' smp' : '');
-            chip.classList.toggle('missing', !!state.missing);
+            if (chip) patchVst3Chip(chip, entry);
             return;
         }
         const fx = EFFECT_SCHEMA.find(f => f.type === entry.type);
@@ -246,45 +198,93 @@ export function patchFxRow(row, lane) {
         const card = row.querySelector(`.fx-card[data-fx="${fx.type}"]`);
         if (!card) return;
         card.dataset.slot = entry.slot;
-        card.classList.toggle('off', !state.enabled);
-        card.querySelector('.fx-power').classList.toggle('on', !!state.enabled);
+        card.classList.toggle('off', !entry.enabled);
+        card.querySelector('.fx-power').classList.toggle('on', !!entry.enabled);
         fx.params.forEach(p => {
             const input = card.querySelector(`input[data-key="${p.key}"]`);
-            const v = state[p.key];
-            if (typeof v !== 'number') return;
-            // Never fight the user's drag; otherwise idempotent write
-            if (!input._hot && parseFloat(input.value) !== v) {
-                input.value = String(v);
-            }
+            const v = entry[p.key];
+            if (typeof v !== 'number' || input._hot) return;
+            if (parseFloat(input.value) !== v) input.value = String(v);
             setText(input.parentElement.querySelector('.fx-param-value'), p.fmt(v));
         });
-
-        // Visualization: redrawn per poll (~20 Hz) from the published
-        // scope (spectrum / peak / GR) + the card's own parameters
-        const viz = card.querySelector('.fx-viz');
-        const scope = effects.scope || null;
-        if (fx.type === 'eq') {
-            // Durable line: slow-falling high-water mark of the
-            // spectrum (fx_viz.js), accumulated per poll on the canvas
-            viz._avgSpec = holdSpectrum(viz._avgSpec, scope && scope.spectrum);
-            drawEqViz(viz, scope && scope.spectrum,
-                { low: state.low, mid: state.mid, high: state.high },
-                undefined, viz._avgSpec);
-        } else if (fx.type === 'compressor') {
-            // Scrolling envelope: accumulate the pre-rack peak per poll
-            // (the live_peaks pattern, at panel scale)
-            const hist = viz._hist || (viz._hist = []);
-            hist.push(scope ? scope.peak || 0 : 0);
-            if (hist.length > COMP_HISTORY_LEN) hist.shift();
-            const gr = scope ? scope.gr || 0 : 0;
-            drawCompViz(viz, hist, state.threshold, gr);
-            setText(card.querySelector('.fx-gr'),
-                gr > 0.05 ? '−' + gr.toFixed(1) + ' dB' : '');
-        } else if (fx.type === 'echo') {
-            drawEchoViz(viz, echoTaps(state), scope ? scope.peak : 0);
-        } else if (fx.type === 'reverb') {
-            drawReverbViz(viz, reverbTailSeconds(state), state.mix,
-                scope ? scope.peak : 0);
-        }
+        drawCardViz(card, fx.type, entry, scope);
     });
+}
+
+/** Keep the chips and cards in step with `chain`: a chip per VST3 slot
+ * (made for a new one, dropped with a stale one), and the DOM in chain
+ * order. Nodes MOVE only when the order changed — re-appending every
+ * poll would disturb a slider being dragged. Built-in cards bind to
+ * their slot by type; chips are keyed by slot uuid from creation. */
+function reconcileCards(row, body, chain) {
+    const chainSlots = new Set(chain.map(e => e.slot));
+    [...body.querySelectorAll('.fx-vst3')].forEach(chip => {
+        if (!chainSlots.has(chip.dataset.slot)) chip.remove();
+    });
+    chain.forEach(entry => {
+        if (entry.type !== 'vst3') return;
+        if (!body.querySelector(`.fx-card[data-slot="${entry.slot}"]`))
+            buildVst3Chip(row, body, entry);
+    });
+    const known = chain.filter(e =>
+        e.type === 'vst3' || EFFECT_SCHEMA.some(f => f.type === e.type));
+    const cardFor = entry =>
+        body.querySelector(`.fx-card[data-slot="${entry.slot}"]`) ||
+        body.querySelector(`.fx-card[data-fx="${entry.type}"]`);
+    const want = known.map(e => e.slot).join();
+    const have = [...body.querySelectorAll('.fx-card')]
+        .map(c => c.dataset.slot).join();
+    if (want === have) return;
+    const add = body.querySelector('.fx-add');
+    known.forEach(entry => {
+        const card = cardFor(entry);
+        if (card) body.insertBefore(card, add || null);
+    });
+}
+
+/** Patch one VST3 chip. Its badge names the reason a slot in the chain
+ * does not sound (docs/vst3.md §6) — `missing`: the plugin is not
+ * installed here, the slot a placeholder; `unsupported`: it loaded but
+ * would not run in stereo, so the engine bypasses it — else the
+ * plugin's latency. */
+function patchVst3Chip(chip, entry) {
+    chip.classList.toggle('off', !entry.enabled);
+    chip.querySelector('.fx-power').classList.toggle('on', !!entry.enabled);
+    setText(chip.querySelector('.fx-vst3-name'), entry.name || 'plugin');
+    const unsupported = !entry.missing && !!entry.unsupported;
+    const badge = chip.querySelector('.fx-vst3-badge');
+    setText(badge,
+        entry.missing ? 'missing'
+            : unsupported ? 'no stereo'
+            : entry.latency > 0 ? entry.latency + ' smp' : '');
+    setTitle(badge, unsupported ? UNSUPPORTED_TITLE : '');
+    chip.classList.toggle('missing', !!entry.missing);
+    chip.classList.toggle('unsupported', unsupported);
+}
+
+/** Redraw one built-in card's visualization (fx_viz.js). The canvas
+ * carries what accumulates across polls: `_avgSpec`, the EQ's
+ * slow-falling spectrum high-water mark, and `_hist`, the compressor's
+ * scrolling pre-rack peak envelope. */
+function drawCardViz(card, type, entry, scope) {
+    const viz = card.querySelector('.fx-viz');
+    if (type === 'eq') {
+        viz._avgSpec = holdSpectrum(viz._avgSpec, scope && scope.spectrum);
+        drawEqViz(viz, scope && scope.spectrum,
+            { low: entry.low, mid: entry.mid, high: entry.high },
+            undefined, viz._avgSpec);
+    } else if (type === 'compressor') {
+        const hist = viz._hist || (viz._hist = []);
+        hist.push(scope ? scope.peak || 0 : 0);
+        if (hist.length > COMP_HISTORY_LEN) hist.shift();
+        const gr = scope ? scope.gr || 0 : 0;
+        drawCompViz(viz, hist, entry.threshold, gr);
+        setText(card.querySelector('.fx-gr'),
+            gr > GR_SHOWN_DB ? '−' + gr.toFixed(1) + ' dB' : '');
+    } else if (type === 'echo') {
+        drawEchoViz(viz, echoTaps(entry), scope ? scope.peak : 0);
+    } else if (type === 'reverb') {
+        drawReverbViz(viz, reverbTailSeconds(entry), entry.mix,
+            scope ? scope.peak : 0);
+    }
 }

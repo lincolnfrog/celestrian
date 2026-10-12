@@ -9,31 +9,42 @@
 
 #include "effects.h"
 
+namespace celestrian {
+
+/** THE BLOCK CEILING (performance.md §1): the largest block the graph
+ * renders without touching the heap. Every per-block scratch — a clip's
+ * pair, a stack's mix and accumulator, a chain's promotion buffer, a
+ * hosted plugin's prepare — is sized for it up front, on the message
+ * thread; device blocks do not exceed it. */
+inline constexpr int kMaxBlockSamples = 8192;
+
+}  // namespace celestrian
+
 namespace celestrian::dsp {
 
 /**
- * The dynamic per-node effect chain (docs/vst3.md §3): an ordered
- * vector of SLOTS. A slot wraps one of the four built-in effects
- * (effects.h — the DSP classes know nothing of slots) or a VST3 plugin
- * (vst3_slot.h) as a peer.
+ * The per-node effect chain (docs/vst3.md §3): an ordered vector of
+ * SLOTS. A slot wraps one of the four built-in effects (effects.h) or a
+ * hosted plugin (vst3_slot.h) as a peer.
  *
- * Publication is the content-buffer discipline (performance.md §1): a
- * node reaches its chain through ONE atomic
- * pointer; the MESSAGE thread builds a successor (sharing the untouched
- * slot objects, so DSP state survives a reorder), publishes it with one
- * exchange, and retires the predecessor through the engine reclaimer.
- * The audio thread loads the pointer and only ever READS the slot
- * vector; parameter/enable changes are slot-internal atomics shared by
- * predecessor and successor — dial drags never republish.
+ * PUBLICATION (performance.md §1): a node reaches its chain through ONE
+ * atomic pointer. The MESSAGE thread builds a successor that shares the
+ * untouched slot objects (shared_ptr — their DSP state survives a
+ * reorder and dies with the last chain holding them), publishes it with
+ * one exchange (AudioNode::exchangeFxChain) and retires the predecessor
+ * through the engine reclaimer. The audio thread loads the pointer and
+ * only READS the slot vector; parameter and enable changes are
+ * slot-internal atomics, so a dial drag never republishes.
  *
- * Slots are identified by a stable SLOT UUID (persisted): the bridge
- * and UI address slots by uuid, never by index or type (no back-compat
- * for type-id addressing).
+ * A slot is addressed by its stable, persisted SLOT UUID — never by
+ * index or type.
  */
 
 /** One slot: a stable identity + enable flag around a processor.
- * `enabled` is a public atomic to match the effects.h house style. */
-class FxSlot {
+ * `enabled` is a public atomic to match the effects.h house style.
+ * Slots live in shared_ptrs (chains share them); a holder outside the
+ * chains takes its own share through weak_from_this. */
+class FxSlot : public std::enable_shared_from_this<FxSlot> {
  public:
   FxSlot() : slot_uuid_(juce::Uuid().toString()) {}
   virtual ~FxSlot() = default;
@@ -46,12 +57,25 @@ class FxSlot {
    * "compressor", "echo", "reverb", "vst3"). */
   virtual const char* typeId() const = 0;
 
-  /** Message thread, before first enable at a given rate. Idempotent
-   * per rate (the slot dedupes), so a re-prepare sweep is safe while
-   * audio runs — a slot only reallocates when the rate actually
-   * changed, which only happens with the device stopped. */
+  /** Message thread, before the first enable: the slot's FIRST prepare
+   * allocates what process reads, at `sample_rate`. A slot that has
+   * been prepared is left alone whatever rate is asked, so the call is
+   * safe on a published chain — the audio thread never sees a prepared
+   * slot's buffers move. A change of rate is followRate's. */
   void prepare(double sample_rate) {
-    if (prepared_sample_rate_ == sample_rate) return;
+    if (prepared_sample_rate_ > 0.0) return;
+    prepared_sample_rate_ = sample_rate;
+    doPrepare(sample_rate);
+  }
+
+  /** Message thread, and ONLY while no callback can run the slot (the
+   * device is starting, or the slot's node is not in the graph): a slot
+   * prepared at another rate re-prepares at this one, reallocating its
+   * buffers. A slot never prepared stays so — its first enable
+   * prepares it. */
+  void followRate(double sample_rate) {
+    if (prepared_sample_rate_ <= 0.0 || prepared_sample_rate_ == sample_rate)
+      return;
     prepared_sample_rate_ = sample_rate;
     doPrepare(sample_rate);
   }
@@ -59,17 +83,18 @@ class FxSlot {
   // Audio thread: in-place, allocation-free.
   virtual void process(float* x, int sample_count) = 0;
   virtual void processStereo(float* l, float* r, int sample_count) = 0;
-  /** Stereo pass WITH live MIDI (docs/vst3.md §8, phase 4). Built-ins
-   * ignore the events; VST3 slots feed them to processBlock. Only ever
-   * called on the stereo path — instruments wantsStereo(), so the
-   * chain promotes before any MIDI consumer runs. */
+  /** Stereo pass WITH live MIDI (docs/vst3.md §8). Built-ins ignore the
+   * events; VST3 slots feed them to processBlock. Only ever called on
+   * the stereo path — instruments wantsStereo(), so the chain promotes
+   * before any MIDI consumer runs. */
   virtual void processStereoMidi(float* l, float* r, int sample_count,
                                  const juce::MidiBuffer& midi) {
     juce::ignoreUnused(midi);
     processStereo(l, r, sample_count);
   }
 
-  /** Message thread. False for an unknown key; values are clamped. */
+  /** Message thread. False for an unknown key; the value is clamped to
+   * the parameter's range (a built-in's is its row in fx_chain.cc). */
   virtual bool setParam(const juce::String& key, double value) = 0;
 
   /** Adds this slot's parameter properties to `out` (metadata/save). */
@@ -82,16 +107,16 @@ class FxSlot {
   }
 
   /** Reported processing latency (docs/vst3.md §3.4). Built-ins are 0;
-   * VST3 slots (phase 3) forward the plugin's report. */
+   * VST3 slots forward the plugin's report. */
   virtual int latencySamples() const { return 0; }
 
   /** True for slots that only process stereo (VST3, Q-V1): the chain
    * PROMOTES a mono signal to stereo at the first enabled such slot. */
   virtual bool wantsStereo() const { return false; }
 
-  /** True for instrument slots (VST3 synths, phase 4): they GENERATE
-   * the signal (processBlock overwrites the buffer — the chain-head
-   * semantic) and consume live MIDI. */
+  /** True for instrument slots (VST3 synths): they GENERATE the signal
+   * (processBlock overwrites the buffer) and consume live MIDI, so the
+   * chain keeps them at its head (FxChain::makeFromSlots). */
   virtual bool isInstrument() const { return false; }
 
   std::atomic<bool> enabled{false};
@@ -103,8 +128,8 @@ class FxSlot {
   double prepared_sample_rate_ = 0.0;
 };
 
-/** The four built-in slots: thin identity/param shells around the
- * effects.h DSP classes (which stay the single source of DSP truth). */
+/** The four built-in slots: identity and parameter shells around the
+ * effects.h DSP classes. */
 class EqSlot : public FxSlot {
  public:
   FxEQ eq;
@@ -167,14 +192,8 @@ class ReverbSlot : public FxSlot {
   void doPrepare(double sample_rate) override { reverb.prepare(sample_rate); }
 };
 
-/**
- * The chain: an IMMUTABLE ordered slot vector (immutable = the vector;
- * slot-internal atomics and DSP state stay live). Structure changes
- * build a successor via the static builders and publish it on the node
- * (AudioNode::exchangeFxChain); slots are shared_ptr so the DSP state
- * they carry survives into the successor and dies only when the LAST
- * chain referencing them is reclaimed.
- */
+/** The chain: an IMMUTABLE ordered slot vector — a structure change
+ * builds a successor with the static builders (PUBLICATION, above). */
 class FxChain {
  public:
   /** The built-in type ids, canonical signal order — the ONE list the
@@ -199,9 +218,12 @@ class FxChain {
   FxSlot* findSlot(const juce::String& slot_uuid) const;
   int indexOfSlot(const juce::String& slot_uuid) const;
 
-  /** Message thread; per-slot idempotent (see FxSlot::prepare). Also
-   * sizes the internal promotion scratch (see run). */
+  /** Message thread: every slot's first prepare (FxSlot::prepare) —
+   * safe on a published chain. */
   void prepare(double sample_rate);
+  /** Message thread, no callback able to run the chain: every prepared
+   * slot moves to `sample_rate` (FxSlot::followRate). */
+  void followRate(double sample_rate);
 
   /**
    * Audio thread: run every ENABLED slot in order, in place.
@@ -217,8 +239,8 @@ class FxChain {
    * A promotion-needing slot with no usable scratch is skipped
    * (fail-silent, the unprepared-echo discipline).
    *
-   * `live_midi` (phase 4): the block's live events for MIDI-consuming
-   * slots — null on every path except a MIDI-armed node's fx pass.
+   * `live_midi`: the block's live events for MIDI-consuming slots —
+   * null on every path except a MIDI-armed node's fx pass.
    */
   bool run(float* l, float* r, int sample_count, bool stereo_in,
            const juce::MidiBuffer* live_midi = nullptr);
@@ -237,10 +259,10 @@ class FxChain {
   bool hasEnabledInstrument() const;
   /** ANY instrument slot (enabled or not, live or placeholder) — what
    * makes a clip a MIDI track: its takes record notes, not audio
-   * (docs/vst3.md §8, phase 5). Message thread (arm-time decision). */
+   * (docs/vst3.md §8). Message thread (arm-time decision). */
   bool hasInstrumentSlot() const;
   /** THE instrument slot — the first one in signal order, whose state
-   * a MIDI take's undo entry carries (docs/vst3.md §11); null without
+   * a MIDI take's undo entry carries (docs/vst3.md §8.4); null without
    * one. Message thread. */
   FxSlot* firstInstrumentSlot() const;
 
@@ -259,12 +281,12 @@ class FxChain {
   int totalLatencySamples() const;
 
  private:
-  explicit FxChain(std::vector<std::shared_ptr<FxSlot>> slots)
-      : slots_(std::move(slots)) {}
+  explicit FxChain(std::vector<std::shared_ptr<FxSlot>> slots);
 
   const std::vector<std::shared_ptr<FxSlot>> slots_;
-  // Promotion scratch (right channel for the fold-back path): sized in
-  // prepare on the message thread, written only by the audio thread.
+  // Promotion scratch (right channel for the fold-back path): sized
+  // when the chain is built, if any slot wants stereo, and written only
+  // by the audio thread from then on. Empty on an all-built-in chain.
   std::vector<float> promotion_scratch_;
 };
 
@@ -282,8 +304,12 @@ class FxScope {
   static constexpr int kScopeSize = 2048;   // power of two
   static constexpr int kSpectrumBins = 24;  // log-spaced 40 Hz..16 kHz
 
-  /** Message thread; idempotent per rate. Sizes the ring. */
+  /** Message thread. Sizes the ring once (before the first setActive)
+   * and records the rate the spectrum is read at; safe on a live node. */
   void prepare(double sample_rate);
+  /** Message thread: a prepared scope reads its spectrum at the
+   * device's new rate. The ring does not depend on the rate. */
+  void followRate(double sample_rate);
 
   /** Audio thread. `right` may be null (mono); when present the ring
    * records the L/R mean. No-op unless a panel is watching. */

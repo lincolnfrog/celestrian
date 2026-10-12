@@ -70,8 +70,8 @@ empty husks while a single active island pays nothing for it.
   The transport's gear opens it (`ui/js/preferences.js`); it holds the
   audio device pickers (`audio_settings.js` renders its
   dependency-chained selects into `#audio-device-host`), latency
-  calibration (`#calibrate-btn` / `#calibration-status`; app.js wires
-  the measurement — performance.md §7), and the **projects root**
+  calibration (`#calibrate-btn` / `#calibration-status`; the panel wires
+  the measurement itself — performance.md §7), and the **projects root**
   (projects.md) read from `getProjectInfo.projectsRoot`, with "Change…"
   picking it natively (`chooseProjectsRoot` answers the new path, `""`
   when cancelled). Per-machine and persisted — distinct from per-project
@@ -127,6 +127,28 @@ empty husks while a single active island pays nothing for it.
   away, and only takes with no honest position in the current frame fall
   back to the first full rep. A group has an origin and its lane carries
   a take mark like a clip's (Q18, composition.md §9).
+- **Every tile carries its mapping.** A tile says which stretch of its
+  material it draws (`srcSegs`, fractions of the raw take in heard
+  order) and where that material's top sits on the frame's grid
+  (`srcTopFrac`) — a plain loop's tiles too (`unrollReps`,
+  `ui/js/vm/tiling.js`). So a tile the frame's end clips draws the part
+  that SOUNDS there, never the whole take squeezed into the piece.
+- **A one-shot lane is drawn from the engine's fold** (Q5,
+  composition.md §9; `shotOf` / `fireReps` over the mirrored
+  `time_map.stackFold`). A one-shot folds on its SCOPE's cycle from its
+  origin: its shot — its active map, else its own period — sounds once
+  per cycle and the remainder rests. The lane draws exactly that: the
+  shot at every firing, clipped to the frame (a firing the frame's end
+  cuts continues at its start), empty between firings. `takeStartQ` is
+  where the shot starts sounding — the place the trim grips, seam
+  handles, bands and comp cells are measured from — and the lane
+  carries the cadence as `shotEveryQ`. A one-shot GROUP's whole subtree
+  — clips and groups, at any depth — is built in the shot's own frame
+  and fired with it: the members restart with every firing and are
+  empty in its rest. A one-shot group that folds nothing (nothing in it
+  loops, or its cycle is no longer than its own period) is drawn as the
+  loop it plays. Pinned by `one_shot_lane.test.mjs`, which sweeps the
+  frame comparing what the lane draws at x with what sounds at x.
 - **Waveforms are display-normalized to the clip's own peak.** Waveforms
   show shape; meters show level. ONE gain per take (2026-09-23): every
   committed tile of a take — whole, heard slice, repeat — draws at the
@@ -245,8 +267,10 @@ instrument in hand.
 
 ```text
 backend state ──▶ deriveViewModel(state)   pure, unit-testable:
-                    view_model.js (display) over timeline_model.js
-                    (kernel math, golden-pinned to src/timing.h)
+                    view_model.js (the facade) over ui/js/vm/*
+                    (the view model's parts), over the timing mirrors
+                    (time_map.js, period_law.js, sequence_program.js,
+                    timeline_model.js — golden-pinned to the engine)
               ──▶ session_view.js + ui/js/session_view/*.js
                     (the patch layer: keyed reconciliation, Q→px)
 ```
@@ -256,20 +280,62 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable:
   geometry in Q units**; the *only* Q→px conversion happens in the patch
   layer with one scale function. I2 holds by construction, and the
   ghost/cursor "abstraction mismatch" bug class dies structurally —
-  extent and cursor come from the same derivation. Kernel math (periods,
-  LCMs, launch points, time-maps) is imported from `timeline_model.js`,
-  never re-derived.
+  extent and cursor come from the same derivation. The file is a
+  FACADE: it holds `deriveViewModel` and re-exports the public names;
+  the parts live in `ui/js/vm/`:
+
+  | part | owns |
+  |---|---|
+  | `published.js` | reading one published node: the period law's providers over the published shape (`publishedLaw`, `frameLaw`), a new take's slot (`retakeSlot`, `isRetaking`, `settledForFrame`), `oneTake`, `rawInnerCycle` / `mapDomain`, `mapOf`, `displayPeriodQ`, `topOf` |
+  | `tiling.js` | tiles: `unrollReps`, `heardReps`, the one-shot's `shotOf` / `fireReps`, a member's slice under a parent map (`childSrcSegsUnderMap`) |
+  | `frame.js` | the frame: the seat (`seatFrameZero`), the re-seat tween's math, the zero drawn (`resolveFrameZero`), the recording frame, the ruler's ticks |
+  | `definer.js` | the Q13 trim view: the provisional definer, the definer stack, `canDefineNode` |
+  | `sequence_rows.js` | the sequencer row (`seqRowFacts`, `buildSeqRow`), its dims and fades, frame health (`attachFrameHealth`, `seqHealthAt`) |
+  | `lane_common.js`, `lane_clip.js`, `lanes.js` | the lane builders: what every lane carries (`armMode`, `takeFields`, `topFields`, `bandGate`), the clip lanes, and the dispatch with the group lane |
+  | `pending_edits.js` | a gesture's local preview applied to the state between polls |
+
+  Kernel math is IMPORTED from the timing mirrors, never re-derived:
+  the map and the render equation (`ui/js/time_map.js`), the period law
+  (`ui/js/period_law.js`), the sequence program
+  (`ui/js/sequence_program.js`), arm and stop targets
+  (`ui/js/timeline_model.js`, which also re-exports the rest for older
+  importers). `time_map.publishedMap(node)` is the reader of a
+  published node's map: use it rather than unpacking `loopStart` /
+  `loopEnd` / `segments` by hand.
+- `ui/js/app.js` is the poll, the frame derive and patch, and boot. The
+  shell's verbs live beside it in modules that load without a DOM:
+  `session_facts.js` (the last poll's facts), `shell_io.js` (the one
+  verb call and the one state read), `content_cache.js` (peaks, notes),
+  `edit_verdict.js` (did a geometry commit land), `record_verbs.js` (●,
+  R, Space), `lane_verbs.js` (a lane's own controls: delete, rename,
+  takes and comp, the song, input, the rack; undo and redo),
+  `structure_verbs.js` (group, move, ungroup), `project_menu.js` (save,
+  open, import, bounce), `popover.js` (the shell's panels).
+- **The status line reads the engine's answer** (the answer law,
+  ui.md). A verb the engine can refuse answers whether it applied, and
+  every user verb is one `call` / `callEach` (`shell_io.js`) whose line
+  is chosen after the answer: what was done, or what was NOT done and
+  why ("Delete refused — a take is live", "Nothing to undo"). A
+  `callEach` sequence stops at its first refusal. An edit that would
+  change nothing is not sent.
 - `ui/js/session_view.js` + `ui/js/session_view/*.js` (`lane_build`,
-  `lane_body`, `rail`, `ruler`, `map_bands`, `region_panel`, `seq_grid`,
-  …) — keyed reconciliation of lanes and reps; no
+  `lane_body`, `rail`, `ruler`, `map_core`, `map_bands`, `map_moves`,
+  `splice_handles`, `splice_spots`, `region_panel` with `region_nav` /
+  `region_nudge` / `region_dock`, `seq_grid` with `seq_columns`,
+  `playhead`, `popover`, …) — keyed reconciliation of lanes and reps; no
   `getBoundingClientRect` per frame; no destroy-and-recreate (display
-  law 4).
+  law 4). Every map drag runs on ONE runner (`map_core.js`
+  `runMapDrag`): the engage gate, throttled live commits under one undo
+  step, Escape = `cancelGesture`, the held picture until the engine
+  answers.
 - **True recursion:** lanes build per node depth, so nested groups render
   at any depth.
 - **Logging is gated behind a DEBUG flag** — no per-frame `nativeLog`.
 - **The bridge grows with features, contract-tested.**
-  `ui/js/protocol.js` carries the method list; every addition lands in
-  all three places or `protocol_contract.test.mjs` fails.
+  `ui/js/protocol.js` carries the method list and each verb's answer
+  KIND (a bool, a value, or nothing to refuse); every addition lands in
+  all three places (`protocol.js`, `src/bridge_dispatch.cc`, the mock),
+  in the same kind, or `protocol_contract.test.mjs` fails.
 
 ---
 
@@ -317,13 +383,36 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable:
   "Clip loop window is fractal").
 - **The window cursor.** An amber heard-time playhead inside active
   brackets (`.win-cursor`, engine-published window phase on `playhead`)
-  — display law 13's coda.
+  — display law 13's coda. A GROUP's lane reads the published phase
+  exactly as a clip's does — under a step audition too, where the
+  engine publishes the phase of the audition's window — so the cursor
+  runs through the step instead of sitting on its first sample. A
+  one-shot publishes the phase of its shot over the map period, and 0
+  while it rests.
 - **Input picker.** A per-clip rail chip (`in N`, `in ·` = device
   default); groups have none, since under Q7 children record from their
   own inputs. The menu fetches `getInputList` on open, so hot-plugged
   interfaces appear without reload; picking calls `setNodeInput`. It is
-  disabled while the lane records. Dismiss with an outside press or
-  Escape.
+  disabled while the lane records.
+- **Popovers: one rule set** (`session_view/popover.js`, built on the
+  shell's `ui/js/popover.js`). The creation menu, the take list, the
+  input menu, the fx "+" picker and both sequencer popovers behave
+  alike: ONE is open at a time; its trigger toggles it (a press on
+  another trigger of the same kind moves it there); a press outside
+  closes it; and Escape closes the popover and NOTHING else — it does
+  not clear the selection, leave comp mode or drop an audition. The
+  shell's panels (preferences, plugins, the Project menu) follow the
+  same rules, and a click inside one is not a click on the transport:
+  the selection stays.
+- **Held controls: one helper** (`sv_util.holdControl`: dials, fx
+  sliders, the sequencer's resize grip). A hold starts on the PRIMARY
+  button only and ends exactly once however it ends — a release, a
+  cancelled pointer, a lost capture, a window blur; a hold that is
+  taken away commits nothing. While a control is held the poll does not
+  write it, nor the value label beside it (display law 2).
+- **Stepping keys repeat while held**: + / − (zoom), `[` / `]` (the
+  handle walk), ← / → (nudge), ⌘Z / ⌘⇧Z (undo / redo). Escape,
+  Z / ⇧Z, `{` / `}`, Space and R are one press each.
 - **Drag.** HTML5 rail drag where **drop-on-clip COMBINES** the two into
   a new group, drop-on-group moves the track inside, and the ＋ Track row
   is the drag-out target. A selected rail carries the whole selection.
@@ -448,10 +537,23 @@ time_maps.md §6.
     shared `heardViewFields` for clip and group builders). Its chip and
     every cycle it feeds — the island frame, the transport readout, the
     root and nested "+ step" units, the seed step — read the EFFECTIVE
-    period, mirroring the engine's `getEffectivePeriod`
-    (`timeline_model.stackEffectivePeriod`: window, else sequence, else
-    the children's effective LCM, nested windows shortening it all the
-    way up).
+    period, mirroring the engine's `getEffectivePeriod` — the period
+    law (`ui/js/period_law.js`, the twin of `src/period_law.h`: an
+    active map, else an active sequence, else the fold of the
+    children's contributions), read over the published tree
+    (`publishedLaw` / `frameLaw`, `ui/js/vm/published.js`). The frame
+    IS the law's island cycle, so it follows the engine wherever the
+    engine's cycle goes: a window that divides Q shortens its part at
+    any depth, an audition at any depth shortens the audible loop, and
+    a plain group whose composite fits no whole number of Qs reads
+    drifting (law 18).
+
+    A group's authored window is a map only while it selects LESS than
+    the domain it selects over — the group's raw inner cycle
+    (`rawInnerCycle`, the twin of `StackNode::getIntrinsicDuration`),
+    which can be longer than what the group plays when a member is
+    windowed. A window between the two is still the group's map: the
+    lane shows its chip, and the heard lane is drawn over that domain.
 
     The raw extent lives on the selected track's REGION PANEL (the
     edit bar at the foot of the view, loop_selection.md §15) and,

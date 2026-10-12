@@ -2,7 +2,9 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "qtime.h"
@@ -40,22 +42,21 @@ namespace celestrian {
  *    (the period law, §2) — visits CONCATENATE, they never LCM.
  *  - Absent uuid in `gates` = inherit ON everywhere (a track added
  *    after the sequence was written sounds until told otherwise).
- *  - The gate is applied PRE-FX with a fade (S7 smoothness law) — the
- *    envelope below is a PURE function of position, so render output
- *    never depends on block boundaries (render purity).
+ *  - The gate envelope below is a PURE function of position, so render
+ *    output never depends on block boundaries. The node applies it
+ *    through its pre-fx gate (AudioNode::gateEndpoints).
  *
- * Threading (the FxChain discipline): an immutable
- * heap object behind ONE atomic pointer on StackNode. The MESSAGE
- * thread builds a fresh Sequence (finalize() before publishing) and
- * retires the predecessor through the engine reclaimer; the audio
- * thread only loads the pointer and reads.
+ * Threading: an immutable heap object behind one atomic pointer on
+ * StackNode (the one-pointer discipline, AudioNode::fxChain);
+ * finalize() before publishing.
  */
 struct Sequence {
   static constexpr int kMaxSteps = 64;  // gate rows are uint64 bitmasks
   /** The radio HORIZON: how many visits a period-less program unrolls
-   * before it repeats (sequencer.md §14). A periodic program never
-   * needs more than kMaxSteps. */
+   * before it repeats (sequencer.md §14). A periodic program closes
+   * within kMaxSteps visits, so it never reaches the horizon. */
   static constexpr int kMaxVisits = 256;
+  static_assert(kMaxVisits >= kMaxSteps, "a periodic program must fit");
 
   struct Successor {
     int to = 0;      // a step index
@@ -65,13 +66,10 @@ struct Sequence {
     int64_t len = 0;  // samples (whole-Q by UI construction; engine
                       // accepts free lengths — S10: permitted, badged)
     juce::String name;
-    // CUE (S11, docs/sequencer.md §3 — the Q6 serial primitive): a cued
-    // step re-bases the subtree's received frame to the visit top —
-    // children hear t' = zero + (songRel - visitStart), so a cued
-    // child starts from its own top on every entrance (verse-box then
-    // chorus-box; the radio's song-after-song). Playback-only here:
-    // the envelope below treats cued-visit edges as hard cuts (S20);
-    // the re-base itself lives in StackNode::childContext.
+    // CUE (S11, sequencer.md §3): a cued step's children start from
+    // their own top on every entrance — the re-base is
+    // StackNode::childContext's. Here it only makes the visit's edges
+    // hard cuts in the envelope below (S20).
     bool cue = false;
     // The successor graph (§6): empty = the loop successor (i+1) mod n.
     std::vector<Successor> next;
@@ -116,18 +114,18 @@ struct Sequence {
     for (int i = 0; i < kMaxSteps; ++i) first_visit[i] = -1;
     bounds[0] = 0;
     if (n <= 0) return;
-    // `any_cue` is derived INSIDE the walk (per visit, below), never from
-    // the step list: a cued step the program does not reach is an orphan,
-    // and an orphan cue that still set the flag would make `runAround`
-    // walk forever on a mask that is on across every visit (no off
-    // visit, no cued visit — nothing to stop at). The fast paths in
-    // gainAt/cornerDistance and the cue re-base all key off this flag.
     // THE WALK (§14): from step 0, one visit per iteration. It stops
     // early only when it is deterministic so far AND returns to step
     // 0 — the loop closed, the program is periodic. Any draw, or a
     // deterministic return to a step other than 0 (an intro that is
     // never replayed), makes the program period-less: the walk runs
     // to the horizon and the sequence is a radio.
+    //
+    // `any_cue` is set per VISIT, never from the step list: a cued step
+    // the program does not reach must not set it, otherwise the
+    // constant-gain fast paths in gainAt / cornerDistance switch off
+    // and an all-on mask reaches runAround with no off or cued visit to
+    // stop at — a run whose ramp edges sit at an arbitrary visit.
     bool deterministic = true;
     int step = 0;
     while (visit_count < kMaxVisits) {
@@ -147,7 +145,6 @@ struct Sequence {
     }
     bounds[visit_count] = total;
     if (!deterministic) radio = true;
-    if (deterministic && !radio && visit_count >= kMaxVisits) radio = true;
   }
 
   /** Drop every explicit successor (the sequence becomes the plain
@@ -167,6 +164,39 @@ struct Sequence {
       if (visit_step[k] != k) return false;
     }
     return !radio;
+  }
+
+  /** Do two songs hold the same AUTHORED facts — steps (length, name,
+   * cue, fades, successors in their order), gate rows in their order,
+   * seed? The program is derived from those (finalize) and is not
+   * compared. A gate row speaks for the song's steps alone: mask bits
+   * past the last step do not count. Null is no song, the same only as
+   * null. */
+  static bool sameSong(const Sequence* a, const Sequence* b) {
+    if (a == nullptr || b == nullptr) return a == b;
+    if (a->seed != b->seed || a->steps.size() != b->steps.size() ||
+        a->gates.size() != b->gates.size()) {
+      return false;
+    }
+    const auto same_step = [](const Step& x, const Step& y) {
+      return x.len == y.len && x.name == y.name && x.cue == y.cue &&
+             x.fade_in == y.fade_in && x.fade_out == y.fade_out &&
+             std::equal(x.next.begin(), x.next.end(), y.next.begin(),
+                        y.next.end(),
+                        [](const Successor& s, const Successor& t) {
+                          return s.to == t.to && s.weight == t.weight;
+                        });
+    };
+    const int step_count = (int)a->steps.size();
+    const uint64_t in_song =
+        step_count >= kMaxSteps ? ~0ull : ((1ull << step_count) - 1);
+    const auto same_row = [in_song](const GateRow& x, const GateRow& y) {
+      return x.uuid == y.uuid && (x.mask & in_song) == (y.mask & in_song);
+    };
+    return std::equal(a->steps.begin(), a->steps.end(), b->steps.begin(),
+                      same_step) &&
+           std::equal(a->gates.begin(), a->gates.end(), b->gates.begin(),
+                      same_row);
   }
 
   // --- THE SUCCESSOR FUNCTION (§6, §14) ---
@@ -266,25 +296,18 @@ struct Sequence {
     return i >= 0 && i < numSteps() && ((reachable >> i) & 1ull) != 0;
   }
 
-  /**
-   * S20: the boundary between ADJACENT visits a -> b (b = (a+1) mod
-   * visits, including the wrap) is a HARD CUT when either side is
-   * cued — the child clock jumps there (re-base in or out), so the
-   * gate envelope must dip through zero (the ~10 ms anti-pop micro-
-   * fade) even for a child gated ON across it. Musical crossfades
-   * between cued children (S13) are not built.
-   */
+  /** S20: the boundary between ADJACENT visits a -> b (b = (a+1) mod
+   * visits, the wrap included) is a HARD CUT when either side is cued:
+   * the child clock jumps there (re-base in or out), so the gate
+   * envelope must dip through zero (the anti-pop fade) even for a child
+   * gated ON across it. */
   bool cutBetween(int a, int b) const {
     return cueOfVisit(a) || cueOfVisit(b);
   }
 
-  /**
-   * THE CUE MAP (docs/sequencer.md §3): song position -> content
-   * position. Identity on plain visits; a cued visit selects the song
-   * TOP span [0, len) — the per-visit zero re-base (Q6: a serial group
-   * is a composite whose time-map routes each child a sub-range of the
-   * cycle). `rel` is folded internally.
-   */
+  /** THE CUE MAP (sequencer.md §3): song position -> content position.
+   * Identity on plain visits; a cued visit selects the song TOP span
+   * [0, len). `rel` is folded internally. */
   int64_t songToContent(int64_t rel) const {
     rel = fold(rel);
     const int k = visitAt(rel);
@@ -445,8 +468,13 @@ struct Sequence {
     return (int64_t)(sample_rate * 0.010);
   }
 
-  // --- THE SUCCESSOR WIRE FORMAT: [{to, w}] on a step (metadata,
-  // session, template — one shape everywhere) ---
+  // --- THE WIRE FORMAT, one shape for the bridge, the session and a
+  // template:
+  //   {steps: [{name, <len>, cue?, next?: [{to, w}], <fadeIn>?,
+  //             <fadeOut>?}], seed?, gates?: {child uuid: [0/1 per step]}}
+  // The dialects differ in how a length is spelled (StepKeys) and what
+  // it counts: the bridge sends samples, the files Q. (A template keys
+  // its gates by child index instead and reads them itself.)
 
   static juce::var successorsVar(const Step& st) {
     juce::Array<juce::var> next;
@@ -459,19 +487,115 @@ struct Sequence {
     return next;
   }
 
-  /** Read a step's `next` array; entries out of the step range or with
-   * a non-positive weight are dropped (finalize ignores them anyway). */
-  static void readSuccessors(const juce::var& step_var, Step& st) {
+  /** A step's `next` array into `st.next`. Answers how many entries it
+   * left out: a target outside [0, step_count), or a weight below 1. */
+  static int readSuccessors(const juce::var& step_var, Step& st,
+                            int step_count = kMaxSteps) {
     st.next.clear();
-    auto* next = step_var.getProperty("next", juce::var()).getArray();
-    if (next == nullptr) return;
-    for (const auto& nv : *next) {
-      Successor s;
-      s.to = (int)nv.getProperty("to", -1);
-      s.weight = (int)nv.getProperty("w", 1);
-      if (s.to < 0 || s.to >= kMaxSteps || s.weight <= 0) continue;
-      st.next.push_back(s);
+    int left_out = 0;
+    if (auto* next = step_var.getProperty("next", juce::var()).getArray()) {
+      for (const auto& next_var : *next) {
+        Successor successor;
+        successor.to = (int)next_var.getProperty("to", -1);
+        successor.weight = (int)next_var.getProperty("w", 1);
+        if (successor.to < 0 || successor.to >= step_count ||
+            successor.weight <= 0) {
+          ++left_out;
+          continue;
+        }
+        st.next.push_back(successor);
+      }
     }
+    return left_out;
+  }
+
+  /** A gate row's bits — [0/1 per step] — as its mask. */
+  static uint64_t maskFromBits(const juce::var& bits) {
+    uint64_t mask = 0;
+    if (auto* list = bits.getArray()) {
+      for (int i = 0; i < list->size() && i < kMaxSteps; ++i) {
+        if ((bool)(*list)[i]) mask |= (1ull << i);
+      }
+    }
+    return mask;
+  }
+
+  /** The keys a dialect spells a step's three lengths with. */
+  struct StepKeys {
+    const char* len;
+    const char* fade_in;
+    const char* fade_out;
+  };
+  static constexpr StepKeys kSampleKeys{"len", "fadeIn", "fadeOut"};
+  static constexpr StepKeys kQKeys{"lenQ", "fadeInQ", "fadeOutQ"};
+
+  /** What fromVar could not take from a payload. A LOAD keeps the rest,
+   * so a file from another build still opens; an EDIT refuses a payload
+   * that lost anything, with `what` as its reason. */
+  struct Dropped {
+    int steps_past_limit = 0;      // beyond kMaxSteps
+    int steps_without_length = 0;  // a length of 0 or less
+    int successors = 0;  // naming no step of the payload, or weight < 1
+    bool any() const {
+      return steps_past_limit + steps_without_length + successors > 0;
+    }
+    juce::String what() const {
+      if (steps_past_limit > 0)
+        return "more than " + juce::String(kMaxSteps) + " steps";
+      if (steps_without_length > 0) return "non-positive step length";
+      if (successors > 0) return "successor out of range";
+      return {};
+    }
+  };
+
+  /** THE ONE READER of the wire format. `to_samples(var)` turns a length
+   * field into samples (an absent field arrives void and must read as
+   * 0). Answers the finalized sequence — null when `block` is no object
+   * or no step survives (no song) — and counts in `dropped` everything
+   * it left out. Fades are never negative; one longer than its run
+   * shrinks at render (rampsOf). Step lengths are not judged against Q:
+   * steps concatenate, they never LCM, so a free length is legal (S10). */
+  template <typename ToSamples>
+  static std::unique_ptr<Sequence> fromVar(const juce::var& block,
+                                           const StepKeys& keys,
+                                           ToSamples&& to_samples,
+                                           Dropped& dropped) {
+    auto* object = block.getDynamicObject();
+    if (object == nullptr) return nullptr;
+    auto seq = std::make_unique<Sequence>();
+    if (auto* steps = object->getProperty("steps").getArray()) {
+      const int listed = steps->size();
+      for (const auto& step_var : *steps) {
+        if ((int)seq->steps.size() >= kMaxSteps) {
+          ++dropped.steps_past_limit;
+          continue;
+        }
+        Step step;
+        step.len = to_samples(step_var.getProperty(keys.len, {}));
+        step.name = step_var.getProperty("name", {}).toString();
+        step.cue = (bool)step_var.getProperty("cue", false);
+        step.fade_in = std::max<int64_t>(
+            0, to_samples(step_var.getProperty(keys.fade_in, {})));
+        step.fade_out = std::max<int64_t>(
+            0, to_samples(step_var.getProperty(keys.fade_out, {})));
+        dropped.successors +=
+            readSuccessors(step_var, step, std::min(listed, (int)kMaxSteps));
+        if (step.len <= 0) {
+          ++dropped.steps_without_length;
+          continue;
+        }
+        seq->steps.push_back(std::move(step));
+      }
+    }
+    seq->seed = (uint32_t)(int64_t)(double)object->getProperty("seed");
+    if (auto* gates = object->getProperty("gates").getDynamicObject()) {
+      for (const auto& gate : gates->getProperties()) {
+        seq->gates.push_back({gate.name.toString(), maskFromBits(gate.value)});
+      }
+    }
+    if (seq->steps.empty()) return nullptr;
+    seq->finalize();
+    return seq;
   }
 };
 

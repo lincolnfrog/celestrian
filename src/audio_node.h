@@ -1,25 +1,27 @@
 #pragma once
 
 /**
- * AudioNode — the fractal node of the Celestrian graph. A node is either
- * a ClipNode (a leaf: one take, audio samples or MIDI notes) or a
- * StackNode (a container that sums its children); stacks nest without
- * limit, and the session root is itself a stack — the island root that
- * owns Q and the zero.
+ * AudioNode — the fractal node of the Celestrian graph: a ClipNode (a
+ * leaf: one take, audio samples or MIDI notes) or a StackNode (a
+ * container that sums its children). Stacks nest without limit; the
+ * session root is a stack — the island root that owns Q and the zero.
  *
- * Every node splits its per-block work in two (the control/render
- * split, §2.3): control() is the mutating pass — recording decisions,
- * capture, take lifecycle — and render() is a CONST pass that only
- * produces output for the received clock. The output stage is the same
- * for every node: render (leaf) or sum (stack) → time-map → pre-fx gate
- * (mute / solo / sequencer, ramped) → fx rack → gain·pan (balance law)
- * → parent. Mute is that ramped gate, not a fader value, so an effect
- * tail rings through a closed gate.
+ * PHASES (performance.md §1): each block runs control() over the whole
+ * graph — the mutating pass: recording decisions, capture, take
+ * lifecycle — then render(), a CONST pass that only produces output for
+ * the received clock.
  *
- * ProcessContext is the bundle of per-block facts a parent hands DOWN
- * to each child. Nothing on the audio thread walks UP: island facts,
- * ancestry and structure arrive in the context (and its whole-graph
- * snapshot), never through parent pointers.
+ * SIGNAL PATH, the same for every node: render (leaf) or sum (stack) →
+ * time-map → pre-fx gate (gateEndpoints) → fx rack → gain·pan
+ * (sumOutputStage) → parent.
+ *
+ * THREADING (performance.md §1): the audio thread never walks a parent
+ * pointer and never reads a stack's ownership vector — the message
+ * thread reparents and resizes them unsynchronized. Structure reaches
+ * it as the whole-graph snapshot (ProcessContext::snap,
+ * graph_snapshot.h) and island facts as fields of the ProcessContext a
+ * parent hands DOWN to each child. Parent pointers, the ownership tree
+ * and every function that walks them are MESSAGE THREAD ONLY.
  */
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -40,207 +42,151 @@ struct GraphSnapshot;
 /**
  * The per-block facts, passed DOWN the graph: the engine builds one per
  * callback and every stack copies and re-scopes it for its children
- * (StackNode::childContext). POD-only: copied per stack per block on the
- * audio thread, so it must never carry heap-owning members (juce::String).
+ * (StackNode::childContext). POD-only: it is copied per stack per run on
+ * the audio thread, so it must never carry a heap-owning member.
  *
  * Field groups:
- *  - Clock facts: master_pos is the RECEIVED clock (re-based by a
- *    windowed stack, folded by an active map on the way down — what
- *    render positions against); island_pos / island_zero are the
- *    INVARIANT island clock and its origin (through-map arm triggers,
- *    origin math); frame_top is the received frame's cycle top (window
- *    phase); map_heard_top is the heard grid anchor under an active map
- *    (arm targets in heard time).
+ *  - Clocks: master_pos is the RECEIVED clock (re-based and folded by
+ *    each mapping stack on the way down — what render positions
+ *    against); island_pos / island_zero are the INVARIANT island clock
+ *    and its origin; frame_top is the received frame's cycle top.
  *  - Island facts: quantum, island (the lifecycle-event target), and the
- *    island / stop generations that let the audio thread adopt multi-field
- *    edits as one fact.
- *  - Recording context: the latency compensation (arm math folds on
- *    context_cycle — the one scope cycle, composition.md §3).
- *  - Render context: context_cycle (the Q5 one-shot period), map +
- *    map_count (the innermost active map), gate_g0/g1 (the sequencer gate
- *    ramp), any_solo.
- *  - Capture plumbing: the pre-record ring + input_clock, live_midi,
- *    midi_history + midi_latency.
- *  - Structure: snap + self (the whole-graph snapshot and this node's
- *    entry in it).
+ *    island / stop generations that let the audio thread adopt a
+ *    multi-field edit as one fact.
+ *  - Scope: context_cycle (the one scope cycle, composition.md §3), the
+ *    innermost active map with its origin and heard top, gate_g0/g1,
+ *    content_silent and resting, any_solo.
+ *  - Capture: input_latency, the pre-record ring + input_clock,
+ *    live_midi, midi_history + midi_latency.
+ *  - Structure: snap + self.
+ *
+ * BLOCK-RELATIVE fields — gate_g0/g1 and live_midi — describe THIS
+ * context's [0, num_samples). Whoever hands down a shorter run must
+ * re-slice both, otherwise a gate ramp replays per run and a MIDI event
+ * arrives twice or never (StackNode::forEachSeamRun is that hand-down).
  */
 struct ProcessContext {
-  // Default is a test-only fallback; the engine always overwrites this
-  // with the actual device rate (cached in audioDeviceAboutToStart).
+  // Hz. The engine sets the device rate; the default serves tests.
   double sample_rate = 44100.0;
   int num_samples = 0;
   bool is_playing = false;
 
-  // Global transport master position (in samples)
+  // Samples, RECEIVED frame: the transport position at the root,
+  // re-based and folded by each mapping stack on the way down.
   int64_t master_pos = 0;
 
-  // Recording alignment (in samples): the whole round trip a performer
-  // plays against — input + output device latency, or the calibrated
-  // round trip when one was measured (the engine folds both in here).
+  // Samples: the round trip a performer plays against — device input +
+  // output latency, or the calibrated value. Set by the engine.
   int input_latency = 0;
 
-  // Solo canon (Q16): true when ANY node in the island is soloed —
-  // computed once per callback from the snapshot's per-node atomic
-  // flags (additive: solos sum; island-wide: a solo anywhere silences
-  // every leaf without a soloed ancestor; fractal: leaves resolve
-  // ancestry through the snapshot's parent indices).
+  // Any node in the island is soloed (AudioNode::is_soloed). Set by the
+  // engine once per callback.
   bool any_solo = false;
 
-  // The received frame's cycle top (time_maps.md): the engine sets this
-  // to the island zero; a stack with an ACTIVE loop window re-bases it
-  // for its children to the window start. Window phase is always
-  // (master_pos − frame_top) mod window_len — a pure function of the
-  // received clock, never of view state or a private counter.
+  // Samples, received frame: the cycle top — an unanchored stack's
+  // frame origin (AudioNode::frameOrigin). The engine sets the island
+  // zero; a mapping stack and a cued step re-base it (childContext).
   int64_t frame_top = 0;
 
-  // --- Pre-record ring (docs/performance.md §3) ---
-  // The engine continuously copies device input into a ring indexed by a
-  // monotonic input clock (total input samples since engine start — unlike
-  // master_pos it never wraps or resets). Recording clips read their
-  // capture window from this ring instead of the live block, so a clip
-  // position can map to any recent arrival time — including times earlier
-  // in the current block or slightly in the past.
-  // Null when no backend ring exists (unit tests driving nodes directly);
-  // clips then fall back to live block capture.
+  // The pre-record ring (performance.md §3): recent device input,
+  // indexed by input_clock, so a take can read any recent arrival time.
+  // Null in node-level tests: clips then capture the live block.
   const float* const* prerecord_ring = nullptr;
   int prerecord_ring_len = 0;       // samples per channel
   int prerecord_ring_channels = 0;  // valid channels in the ring
-  int64_t input_clock = 0;          // arrival index of this block's sample 0
+  // Samples: the arrival index of this context's sample 0 — total input
+  // since engine start, never wrapped or reset.
+  int64_t input_clock = 0;
 
-  // --- Whole-graph snapshot (unification_audit.md §2.2) ---
-  // The engine loads ONE snapshot per callback and passes it down; each
-  // node receives its own entry index (`self`) from its parent. All
-  // audio-thread structure traversal (children, ancestors) goes through
-  // `snap` — never through per-node pointers. Never null when a node
-  // is processed: node-level unit tests build a real snapshot
-  // (tests/test_utils.h NodeContext, the callback's twin).
+  // The whole-graph snapshot (one engine load per callback) and this
+  // node's entry index in it, set by its parent. Never null in process.
   const GraphSnapshot* snap = nullptr;
-  int self = 0;  // this node's entry index in `snap`
+  int self = 0;
 
-  // Island facts, passed DOWN so leaves never walk up: the island
-  // quantum (0 = unestablished), the
-  // INVARIANT island zero (unlike frame_top, never re-based by
-  // windowed stacks on the way down), and the island root — the target
-  // of take lifecycle events and establishIsland. Like `snap`, never
-  // null when a node is processed.
+  // Island facts, set by the engine and never re-scoped on the way
+  // down: quantum (samples per Q, 0 = unestablished), island_zero
+  // (samples, island frame) and the island root — the target of the
+  // take-lifecycle events, never null in process.
   int64_t quantum = 0;
   int64_t island_zero = 0;
   AudioNode* island = nullptr;
 
-  // The CONTEXT CYCLE for this scope — THE one scope cycle (the Q5
-  // one-shot period AND the arm grid a take wraps against): each stack
-  // sets it for its children from its OWN period (period_law.h) — its
-  // active map's period when mapped, its song under a sequence, else
-  // lcm(quantum, its LOOPING children's contributions) — falling back
-  // to the received value when the scope has no looping content of
-  // its own. A one-shot node's period IS this value; it is what
-  // "sounds once per cycle" means. Passed DOWN.
+  // Samples: the scope cycle — a one-shot's period and the grid a take
+  // wraps on. Set by each stack for its children (period_law::scopeCycle).
   int64_t context_cycle = 0;
 
-  // --- Time-map facts (time_maps.md phase 2) ---
-  // The INVARIANT monotonic island clock: the engine's transport
-  // position, never folded by a mapping stack on the way down (the
-  // master_pos twin of island_zero). Through-map arm triggers compare
-  // against THIS clock — the folded master_pos wraps every map period
-  // and never crosses a target at/past the map's end.
+  // Samples, ISLAND frame: the engine's transport position, never
+  // folded on the way down. Through-map arm triggers compare against
+  // it: the folded master_pos wraps every map period and never crosses
+  // a target at or past the map's end.
   int64_t island_pos = 0;
-  // GROUP STOP GENERATION: a group stop parks a
-  // pending generation on every member and then publishes it once at
-  // the island root; members flip to stop-requested at the block top
-  // that first sees it — all in the SAME block, so N mics compute one
-  // boundary and commit one duration. Read once per callback.
+  // The island root's group-stop generation, read once per callback:
+  // every member parked on it stops at the block top that first sees
+  // it, so N mics commit one duration.
   uint32_t stop_generation = 0;
-  // ISLAND GENERATION: a message-thread
-  // edit that moves the zero AND clip origins together (definer trim,
-  // seek) writes the origins, then the island facts, then bumps this.
-  // Clips adopt a new origin for RENDERING (origin_rt_) only at a block
-  // top whose context carries the generation the writer named — the
-  // same block top that read the new zero — so no block ever renders
-  // a new zero against old origins or vice versa. Read once per
-  // callback with the island facts.
+  // The island generation, read once per callback with (Q, zero): gates
+  // origin adoption (AudioNode::adoptOriginGate).
   uint32_t island_generation = 0;
-  // Live MIDI (docs/vst3.md §8, phase 4): the block's incoming events,
-  // drained once per callback by the engine from the lock-free queue.
-  // Consumed ONLY by a node whose midi_armed_ flag is set (the single
-  // live play-through target). Null in unit tests driving nodes
-  // directly and on engines with no MIDI devices.
+  // Block-relative: this context's incoming MIDI (vst3.md §8), drained
+  // once per callback by the engine. Only the midi-armed node consumes
+  // it. Null in node-level tests and with no MIDI device.
   const juce::MidiBuffer* live_midi = nullptr;
-  // MIDI recording facts (docs/vst3.md §8, phase 5). `midi_history` is
-  // the arrival-indexed history ring (midi_input_queue.h) MIDI takes
-  // capture from — the note twin of the pre-record ring; null in unit
-  // tests driving nodes directly (takes then capture from live_midi
-  // at block offsets, the live-block fallback). `midi_latency` is the
-  // compensation for a MIDI arrival: the performer plays against what
-  // they HEAR, and a key pressed on the heard beat reaches the callback
-  // OUTPUT-latency later — unlike audio there is no input-side device
-  // delay to add. Content position of an arrival = heard time − this.
+  // The arrival-indexed MIDI history a take captures from
+  // (midi_input_queue.h). Null in node-level tests: live_midi stands in.
   const MidiHistory* midi_history = nullptr;
+  // Samples: a MIDI arrival's compensation — OUTPUT latency only (a key
+  // pressed on the heard beat reaches the callback that much later).
+  // Content position of an arrival = heard time − this.
   int midi_latency = 0;
 
-  // --- Sequencer gate (docs/sequencer.md, S7 smoothness law) ---
-  // The parent stack's per-child dry-gain ramp for this block: linear
-  // endpoints, exact because the parent splits blocks at envelope
-  // corners (Sequence::cornerDistance). 1,1 when no sequence gates the
-  // node. Applied by the child PRE-FX (composed with its own mute/solo
-  // gate in gateEndpoints) so effect tails ring through a closed gate.
+  // Block-relative: the parent sequence's dry-gain ramp for this node,
+  // linear endpoints over [0, num_samples); 1,1 when ungated. Composed
+  // into the pre-fx gate (AudioNode::gateEndpoints).
   float gate_g0 = 1.0f;
   float gate_g1 = 1.0f;
 
-  // THE BOUNCE TAIL (docs/bounce.md): true past the bounced span —
-  // every leaf renders SILENCE into its rack in place of content (a
-  // closed gate with no ramp) while gates, racks and output stages run
-  // unchanged, so effect tails ring past the end. Stacks pass it down
-  // untouched; the live callback never sets it.
+  // Every leaf renders silence in place of content while gates, racks
+  // and output stages run on. Set past a bounced span (bounce.md) and by
+  // a resting one-shot stack for its subtree (StackNode::childContext).
   bool content_silent = false;
+  // WHY the content is silent, for content that tells a pause from an
+  // end (a MIDI clip's notes, vst3.md §8.3). True: a one-shot stack
+  // above is in its REST — the content sounds again at the next firing.
+  // False under content_silent: the content has STOPPED. Set only by
+  // StackNode::childContext, and never over a stop handed down to it.
+  bool resting = false;
 
-  // The innermost enclosing ACTIVE map (empty when none): set by a
-  // mapping stack in childContext for its whole subtree, alongside
-  // map_heard_top — the RECEIVED frame's cycle top at that stack,
-  // i.e. the heard grid anchor (pass tops occur at island times
-  // ≡ map_heard_top mod map.period()). map_count counts active maps
-  // on the delivered chain: > 1 means composed maps (multi-segment
-  // product), which recording refuses.
+  // The innermost enclosing ACTIVE map (empty = none), set by the
+  // mapping stack for its subtree, in samples. map_origin is that
+  // stack's origin O — the map's inner positions are offsets from it
+  // (Q18, composition.md §2). map_heard_top = O + mapOffset(0), the
+  // heard grid anchor: pass tops fall at island times ≡ it mod
+  // map.period().
   timing::TimeMap map{};
   int64_t map_heard_top = 0;
-  // The mapping stack's ORIGIN (Q18, composition.md §2): the map's
-  // inner positions are offsets from it, so a through-map take's inner
-  // origin is map_origin + mapOffset(heard offset). map_heard_top
-  // above is map_origin + mapOffset(0) — the heard grid anchor.
   int64_t map_origin = 0;
-  int map_count = 0;
 };
 
-/**
- * Enumeration of available node types in the Celestrian ecosystem.
- */
 enum class NodeType { Clip, Stack, Unknown };
 
-/** The period-source knob's two positions (Q5): a LOOP's period is its
- * own length; a ONE-SHOT adopts the context cycle (sounds once per
- * scope cycle at its origin, then rests). */
+/** The period-source knob (Q5): a LOOP's period is its own length; a
+ * ONE-SHOT's is the context cycle — it sounds once per scope cycle at
+ * its origin, then rests. */
 enum class PeriodSource { OWN_LENGTH, CONTEXT_CYCLE };
 
-/**
- * Pan gains, BALANCE law: center is unity on both channels, panning
- * attenuates the far channel only — no boost anywhere, so a full-scale take hard-panned
- * cannot clip the device. pan ∈ [−1 (L) .. +1 (R)].
- */
+/** Pan gains, BALANCE law: center is unity on both channels and panning
+ * attenuates the far channel only, so a full-scale take hard-panned
+ * cannot clip the device. pan ∈ [−1 (L) .. +1 (R)]. */
 inline void panGains(float pan, float& gain_l, float& gain_r) {
   const float p = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
   gain_l = p > 0.0f ? 1.0f - p : 1.0f;
   gain_r = p < 0.0f ? 1.0f + p : 1.0f;
 }
 
-/**
- * THE OUTPUT STAGE scalars (unification_audit.md §2.4): every node's
- * signal reaches its parent through one resolution — render/sum →
- * time-map → pre-fx gate → fx → gain·pan → parent. `gl`/`gr` are that
- * stage's channel gains: the balance-law pan gains scaled by the fader;
- * `fader` is the mono/extra-channel scalar (pan does not apply there).
- * Mute is NOT a fader value here: it is the PRE-FX ramped gate
- * (gateEndpoints, S7), so a muted node's effect tail still reaches its
- * parent while it rings out.
- */
+/** The output-stage gains, the last step of the signal path: `gl`/`gr`
+ * are the balance-law pan gains scaled by the fader; `fader` alone
+ * scales a mono or extra channel, where pan does not apply. Mute is
+ * never a fader value (gateEndpoints). */
 inline void outputStageGains(float pan, float gain, float& gl, float& gr,
                              float& fader) {
   panGains(pan, gl, gr);
@@ -249,10 +195,39 @@ inline void outputStageGains(float pan, float gain, float& gl, float& gr,
   gr *= fader;
 }
 
-/**
- * Interface for all audio-producing or processing nodes in the Celestrian
- * graph.
- */
+/** THE OUTPUT STAGE, the one every node's signal leaves through: `l` —
+ * and `r` when the signal is stereo (null: mono) — summed into the
+ * parent's `n_out` channels under outputStageGains(pan, gain). Channel 0
+ * is L and 1 is R: a mono signal pans between them, a stereo one
+ * balances. A stereo pair folds to a mono device as equal halves; a
+ * channel past the pair gets `l` at the fader. Null channels are
+ * skipped. Audio thread: no heap, no locks. */
+inline void sumOutputStage(float* const* out, int n_out, const float* l,
+                           const float* r, int n, float pan, float gain) {
+  if (out == nullptr) return;
+  float gl = 1.0f, gr = 1.0f, fader = 1.0f;
+  outputStageGains(pan, gain, gl, gr, fader);
+  const bool pair_out = n_out >= 2;
+  for (int ch = 0; ch < n_out; ++ch) {
+    if (out[ch] == nullptr) continue;
+    if (r != nullptr && !pair_out) {
+      if (fader <= 0.0f) continue;
+      juce::FloatVectorOperations::addWithMultiply(out[ch], l, 0.5f * fader, n);
+      juce::FloatVectorOperations::addWithMultiply(out[ch], r, 0.5f * fader, n);
+      continue;
+    }
+    const bool right = pair_out && ch == 1;
+    const float* src = right && r != nullptr ? r : l;
+    const float g = pair_out && ch < 2 ? (right ? gr : gl) : fader;
+    if (g == 1.0f) {
+      juce::FloatVectorOperations::add(out[ch], src, n);
+    } else if (g > 0.0f) {
+      juce::FloatVectorOperations::addWithMultiply(out[ch], src, g, n);
+    }
+  }
+}
+
+/** The node base (see the file header). */
 class AudioNode {
  public:
   AudioNode(juce::String node_name)
@@ -263,39 +238,27 @@ class AudioNode {
     delete chain_.load();
   }
 
-  /**
-   * CONTROL/INGEST phase (unification_audit.md §2.3 — the control
-   * plane): everything that DECIDES or CAPTURES. Arm targets, stop
-   * boundaries, input capture, commit events (and their one island
-   * consequence: the first establishment). Mutates node state.
-   * Inputs flow in here; nothing is rendered.
-   */
+  /** CONTROL phase: everything that decides or captures — arm targets,
+   * stop boundaries, input capture, commit (and its one island write,
+   * the first establishment). Mutates node state; renders nothing. */
   virtual void control(const float* const* input_channels,
                        int num_input_channels,
                        const ProcessContext& context) = 0;
 
-  /**
-   * RENDER phase (§2.3 — the data plane): the kernel playback equation
-   * as a PURE function of (structure, settled state, t). CONST-ENFORCED:
-   * render decides nothing and mutates no musical state — the only
-   * `mutable` members are DSP scratch (mix/fx buffers, effect state)
-   * and view telemetry (playhead phase), both explicitly marked.
-   * Outputs flow out of here; inputs are not visible.
-   */
+  /** RENDER phase: the playback equation as a pure function of
+   * (structure, settled state, received clock). CONST: render decides
+   * nothing and mutates no musical state. The `mutable` members it
+   * writes are the one sanctioned exception: DSP scratch (mix and fx
+   * buffers, effect and gate-ramp state, the fx scope) and view
+   * telemetry (playhead_pos). Nothing musical may join them. */
   virtual void render(float* const* output_channels, int num_output_channels,
                       const ProcessContext& context) const = 0;
 
-  /**
-   * Phase sequencer: control, then render. NON-virtual — the split is
-   * the contract. Called at the ROOT by the engine, this yields
-   * whole-graph phase separation: every decision in the graph settles
-   * before the first sample renders, so render never observes state
-   * that changes mid-pass (§2.3 "events applied between blocks").
-   * Node-level tests call it directly on a single node with a context
-   * built the way the callback builds one (tests/test_utils.h
-   * NodeContext): the snapshot and the island root are the audio
-   * thread's only structure and island facts.
-   */
+  /** control, then render. NON-virtual: called at the root, it settles
+   * every decision in the graph before the first sample renders, so
+   * render never observes state that changes mid-pass. Node-level tests
+   * call it on one node with a context built the way the callback
+   * builds one (tests/test_utils.h NodeContext). */
   void process(const float* const* input_channels,
                float* const* output_channels, int num_input_channels,
                int num_output_channels, const ProcessContext& context) {
@@ -304,15 +267,10 @@ class AudioNode {
     render(output_channels, num_output_channels, context);
   }
 
-  /**
-   * Generates waveform peaks for visualization.
-   * @param num_peaks The number of peak samples to return.
-   */
+  /** `num_peaks` waveform peaks for the UI. Message thread. */
   virtual juce::var getWaveform(int num_peaks) const = 0;
 
-  /**
-   * Returns a JSON object containing node metadata for UI rendering.
-   */
+  /** The node's published state for the UI. Message thread. */
   virtual juce::var getMetadata() const {
     auto* obj = new juce::DynamicObject();
     obj->setProperty("id", node_uuid);
@@ -326,16 +284,12 @@ class AudioNode {
     const timing::TimeMap stored = storedMap();
     obj->setProperty("loopStart", (double)(stored.n == 1 ? stored.segs[0].start : 0));
     obj->setProperty("loopEnd", (double)(stored.n == 1 ? stored.segs[0].end : 0));
-    // Loop window state — fractal (I5): published for clips and stacks
-    // alike; `playhead` carries the window phase while active.
     obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
     obj->setProperty("windowActive", isLoopWindowActive());
-    // The period-source knob (Q5): "own" = loops at its own length,
-    // "context" = one-shot (sounds once per context cycle).
+    // "own" = a loop, "context" = a one-shot (Q5).
     obj->setProperty("periodSource",
                      period_from_context_.load() ? "context" : "own");
-    // Multi-segment map (phase 3): flat [s0,e0,s1,e1,...] in samples,
-    // present only when an override is installed.
+    // A multi-segment map: flat [s0, e0, s1, e1, ...] in samples.
     if (stored.n >= 2) {
       juce::Array<juce::var> segs;
       for (int i = 0; i < stored.n; ++i) {
@@ -344,14 +298,11 @@ class AudioNode {
       }
       obj->setProperty("segments", segs);
     }
-    // THE TOP (↺, loop_selection.md §9): the raw inner position the
-    // loop reads as starting from — clip or group alike — and the
-    // re-time that has moved it from where it was played.
     obj->setProperty("loopTop", (double)effectiveTop());
     obj->setProperty("retime", (double)retime_.load());
-    // Effect chain state (fractal like windows): {chain: [...slots],
-    // scope: {...}?} — the chain array doubles as the save format
-    // (docs/vst3.md §6); scope telemetry only while a panel watches.
+    // {chain: [...slots], scope?}: the chain array doubles as the save
+    // format (vst3.md §6); the scope is present only while a panel
+    // watches.
     {
       const dsp::FxChain* chain = chain_.load();
       juce::DynamicObject::Ptr fx = new juce::DynamicObject();
@@ -369,22 +320,12 @@ class AudioNode {
     obj->setProperty("isSoloed", (bool)is_soloed.load());
     obj->setProperty("pan", (double)pan.load());
     obj->setProperty("gain", (double)gain.load());
-    // launchPoint is a PROJECTION of origin (kernel.md §2 table):
-    // derived at read time, never stored (the UI derives lane position
-    // from origin).
-    obj->setProperty("launchPoint",
-                     (double)timing::launchPointFor(origin_samples.load(),
-                                                    duration_samples.load()));
     obj->setProperty("origin", (double)origin_samples.load());
-    // Q18: a stack's origin is a stored fact only once anchored; the UI
-    // draws an anchored group's take mark like a clip's.
+    // A stack's origin is a stored fact only once anchored (Q18).
     obj->setProperty("anchored", (bool)anchored_.load());
 
-    // Device-independent musical facts (Q12): the same values
-    // projected onto the island's musical frame through the ONE law
-    // (timing.h). These are the canonical facts the save format
-    // serializes (sample fields above stay for the UI). `qSamples` is the
-    // island exchange rate (physical) that reconstructs them on load.
+    // The same facts as QTime (Q12, timing.h) — what the save format
+    // serializes; `qSamples` is the exchange rate that restores them.
     const int64_t q_samples = getEffectiveQuantum();
     const int64_t zero = getIslandZero();
     obj->setProperty("qSamples", (double)q_samples);
@@ -411,9 +352,8 @@ class AudioNode {
   void setName(const juce::String& new_name) { node_name = new_name; }
   juce::String getName() const { return node_name; }
   juce::String getUuid() const { return node_uuid; }
-  /** Restore a persisted uuid on load (session_io) so save→load→save is
-   * stable and references survive. Message thread, before the node joins
-   * the graph. */
+  /** Restore a persisted uuid on load, so save→load→save is stable.
+   * Message thread, before the node joins the graph. */
   void setUuid(const juce::String& u) { node_uuid = u; }
 
   virtual NodeType getNodeType() const = 0;
@@ -432,31 +372,17 @@ class AudioNode {
   /** Actively capturing (or finishing to a stop boundary). */
   virtual bool isRecording() const { return false; }
 
-  /**
-   * The recording LIFECYCLE is active: armed, capturing, or pending
-   * stop. Wider than isRecording() (an armed clip hasn't captured a
-   * sample yet). Stacks answer for their subtree. This is what engine
-   * bookkeeping (view freeze, sibling context scans) keys on.
-   * Audio-thread safe.
-   */
+  /** The recording LIFECYCLE is active: armed, capturing or pending
+   * stop — wider than isRecording() (an armed clip has captured
+   * nothing yet). A clip answers from its state machine; a stack
+   * answers for its subtree from the ownership tree (message thread). */
   virtual bool isArmedOrRecording() const { return isRecording(); }
 
-  /**
-   * Returns the latest peak sample level for real-time visualization.
-   */
-  virtual float getCurrentPeak() const = 0;
-
-  // Hierarchy. The parent pointer is a MESSAGE-THREAD convenience
-  // (metadata walks, engine helpers); the audio thread resolves
-  // ancestry through the whole-graph snapshot (ProcessContext.snap)
-  // and receives island facts in the context — it never walks these
-  // pointers.
+  // Hierarchy: message thread only (the threading note above).
   void setParent(AudioNode* p) { parent.store(p); }
   AudioNode* getParent() const { return parent.load(); }
 
-  /** Topmost node of this subtree — the island root under the current
-   * one-island model. Message thread only; the audio thread uses
-   * ProcessContext.island. */
+  /** The topmost node of this subtree — the island root. */
   AudioNode* rootNode() {
     AudioNode* n = this;
     while (auto* p = n->getParent()) n = p;
@@ -468,52 +394,37 @@ class AudioNode {
     return getUuid() == uuid ? this : nullptr;
   }
 
-  // --- Island / take-lifecycle events (no-ops except on the island
-  // root, i.e. StackNode). Clips report their recording lifecycle to
-  // `rootNode()` through these instead of the engine detecting edges by
-  // scanning the graph every block (unification_audit.md §1.5).
-  /** Establish (Q, zero) if not yet locked; q == 0 sets a provisional
-   * zero only (first-clip arm: the arm moment is the zero — the
-   * clock itself is never reset). */
+  // --- Island / take-lifecycle events: no-ops except on the island
+  // root (a StackNode). A clip reports its recording lifecycle to the
+  // island root through these, so the engine detects no edges.
+  /** Establish (Q, zero) if Q is not yet set; quantum == 0 sets a
+   * provisional zero only (the first clip's arm moment — the clock
+   * itself is never reset). */
   virtual void establishIsland(int64_t quantum, int64_t zero) {
     (void)quantum;
     (void)zero;
   }
-  /** A take was armed / cancelled / committed in this island. The
-   * commit event carries the take's origin and drives the zero
-   * re-base (simple-extension rule) — see StackNode. */
+  /** A take was armed / cancelled / committed: the island root counts
+   * its live takes (hasActiveTake). A commit moves no island fact
+   * (frame.md). takeArmed() walks the ownership tree, so it is MESSAGE
+   * THREAD ONLY; cancel and commit are called from the audio thread. */
   virtual void takeArmed() {}
   virtual void takeCancelled() {}
-  /** Commit event. `intrinsic_after` = the island's composite duration
-   * INCLUDING the just-committed take — computed by the caller (in
-   * snapshot space on the audio thread; graph_snapshot.h), because the
-   * island's own tree traversal is message-thread-only. */
-  virtual void takeCommitted(int64_t origin, int64_t intrinsic_after) {
-    (void)origin;
-    (void)intrinsic_after;
-  }
-  /** Any take currently armed or capturing in this island. */
+  virtual void takeCommitted() {}
+  /** Any take armed or capturing in this island. */
   virtual bool hasActiveTake() const { return false; }
-  /** The HEARD island cycle the CURRENT take generation was armed
-   * against — the EFFECTIVE cycle (E-C: active windows shorten it), 0
-   * when no take is active / first take. Clips snapshot this at
-   * capture start: it is the take's heard frame (`contextCycle`), the
-   * modulus that folds "which cycle" out of its display anchor (Q14)
-   * AND the audible-equivalence step for the origin fold (Q15). */
+  /** The HEARD island cycle the current take generation was armed
+   * against (active windows shorten it); 0 with no take, and for the
+   * first. A clip snapshots it at capture start as its take's context
+   * frame — the modulus its display anchor folds on (Q14). */
   virtual int64_t activeTakeHeardCycle() const { return 0; }
-  /** The INTRINSIC committed cycle at arm (windows ignored) — the
-   * frame modulus for the origin fold, the take's pre-take cycle.
-   * Windows are reversible view-of-time state and must not leak into
-   * it permanently. */
-  virtual int64_t activeTakeIntrinsicCycle() const { return 0; }
 
-  // --- THE MAP (time_maps.md §2, composition.md §1): ONE storage ---
-  // A node's geometry is one TimeMap value: a single window is the
-  // n == 1 case, a cell/punch map is n >= 2, no geometry is n == 0.
-  // Stored inline behind a seqlock (all-atomic fields, like the island
-  // facts): the MESSAGE thread writes whole values, the audio thread
-  // reads a consistent copy per block — no heap map, no reclaimer.
-  /** The stored geometry, bypass ignored (message or audio thread). */
+  // --- THE MAP (time_maps.md §2, composition.md §1) ---
+  // A node's geometry is ONE TimeMap value: n == 0 none, n == 1 a loop
+  // window, n >= 2 a cell/punch map. It is stored inline behind a
+  // seqlock (seq_locked.h): the message thread writes whole values and
+  // the audio thread reads a consistent copy.
+  /** The stored geometry, bypass ignored (either thread). */
   timing::TimeMap storedMap() const {
     timing::TimeMap m;
     map_lock_.read([&](int slot) {
@@ -540,7 +451,7 @@ class AudioNode {
       }
     });
   }
-  /** The single-window form: [start, end) as one segment (empty when
+  /** The single-window form: [start, end) as one segment (none when
    * end <= start). */
   void setLoopPoints(int64_t start, int64_t end) {
     setMap(timing::TimeMap::single(start, end));
@@ -557,27 +468,20 @@ class AudioNode {
   }
   /** True when the geometry is a cell/punch map (n >= 2). */
   bool hasSegmentMap() const { return storedMap().n >= 2; }
-  /** THE REGION START (timing::regionStart): the map's first start while
-   * the map is active, else 0 — where an unset top reads
-   * (loop_selection.md §9). */
+  /** timing::regionStart of this node: where an unset top reads. */
   int64_t regionStart() const {
     return timing::regionStart(storedMap(), isLoopWindowActive());
   }
 
-  // --- THE TOP AND THE RE-TIME (loop_selection.md §9) — FRACTAL:
-  // every loop node has them, clip or group (owner 2026-09-29: a group
-  // is a loop like any other; Phase 2 had kept them clip-only). THE TOP
-  // (↺) is a raw inner position — where the loop reads as starting — or
-  // timing::kNoTop on a node never edited, when the region start stands
-  // in. Map edits RECONCILE it and store the answer (timing::reconcileTop,
-  // inside every map edit's applier, so undo restores it with the map);
-  // a bypass toggle leaves it alone. THE RE-TIME is the cumulative USER
-  // shift of the origin in samples (0 = as played): only setTiming moves
-  // it, by exactly what it moved the origin (a group's shift moves its
-  // whole subtree, so its members keep their placement inside it) — the
+  // --- THE TOP AND THE RE-TIME (loop_selection.md §9): message-thread
+  // facts of every loop node, clip or group. THE TOP (↺) is a raw inner
+  // position, or timing::kNoTop on a node never edited; every map edit
+  // reconciles and stores it inside its applier, so undo restores it
+  // with the map (time_map.h states the law). THE RE-TIME is the
+  // cumulative USER shift of the origin in samples (0 = as played):
+  // only setTiming moves it, by exactly what it moved the origin — the
   // continuity re-anchor, a Q13 re-trim, a collapse and a seek move the
-  // origin without counting. Message-thread facts: the audio thread
-  // never reads them.
+  // origin without counting.
   int64_t storedTop() const { return loop_top_.load(); }
   void setStoredTop(int64_t t) { loop_top_.store(t); }
   int64_t retime() const { return retime_.load(); }
@@ -594,50 +498,36 @@ class AudioNode {
                                 getIntrinsicDuration(), loop_top_.load());
   }
 
-  // --- Loop window state (time_maps.md phase 1, fractal per I5) ---
-  /**
-   * Whether the map is bypassed. A map is ACTIVE iff it has segments
-   * and is not bypassed — independent of expansion (I6b: collapse is
-   * purely visual). Lives on the BASE node: a clip's loop region is
-   * the single-segment case of the stack's time-map, so window state
-   * and its toggle apply uniformly to clips and stacks.
-   */
+  // --- Loop window state: on the base, shared by clip and stack (I5) ---
+  /** Whether the map is bypassed. A map is ACTIVE iff it has segments
+   * and is not bypassed — independent of expansion (I6b). */
   bool isLoopWindowBypassed() const { return loop_window_bypassed_.load(); }
   void setLoopWindowBypassed(bool bypassed) {
     loop_window_bypassed_.store(bypassed);
   }
-  virtual bool isLoopWindowActive() const {
-    return !loop_window_bypassed_.load() && map_[0].n.load() > 0;
-  }
+  /** Whether the node has an active map (activeTimeMap). */
+  bool isLoopWindowActive() const { return activeTimeMap().active(); }
 
-  /** The period-source knob (Q5): true = one-shot (period := context
-   * cycle). Audio-thread safe (one atomic load). */
+  /** The period-source knob (Q5): true = one-shot. */
   bool periodFromContext() const { return period_from_context_.load(); }
 
-  /**
-   * The node's ACTIVE time-map (time_maps.md §2): the stored geometry,
-   * or none when bypassed. Consumers are segment-general — use
-   * period()/mapOffset()/seamDistance(). VIRTUAL for one reason: a
-   * StackNode's STEP AUDITION (docs/sequencer.md §11.2) derives a
-   * one-segment map from its sequence and overrides the authored map
-   * while it is on — every consumer sees an ordinary map.
-   */
+  /** The node's ACTIVE time-map (time_maps.md §2): the stored geometry,
+   * or none when bypassed. Virtual for StackNode, whose step audition
+   * and window domain decide it (sequencer.md §11.2, §11.8). */
   virtual timing::TimeMap activeTimeMap() const {
     if (loop_window_bypassed_.load()) return timing::TimeMap::none();
     return storedMap();
   }
 
-  // --- The effect chain (docs/vst3.md phase 2) ---
-  /**
-   * The node's effect chain — FRACTAL like windows: a clip's chain
-   * processes its rendered playback; a stack's chain processes the
-   * summed group (so a stack reverb wets the whole kit). Reached
-   * through ONE atomic pointer (the content-buffer discipline): the
-   * MESSAGE thread builds successors (sharing slot objects) and retires
-   * the old chain through the engine reclaimer; the audio thread loads
-   * the pointer per block and only reads. Enable/param changes are
-   * slot-internal atomics — no republish. prepare() before enable.
-   */
+  // --- The effect chain (vst3.md) ---
+  /** The node's effect chain: a clip's processes its rendered playback,
+   * a stack's the summed group. THE ONE-POINTER DISCIPLINE
+   * (performance.md §1): the object is reached through one atomic
+   * pointer; the message thread builds a successor, swaps it in and
+   * retires the old one through the engine reclaimer, and the audio
+   * thread only loads and reads — a delete inline would free what a
+   * callback in flight still reads. Enable/param changes are
+   * slot-internal atomics, with no republish. prepare() before enable. */
   dsp::FxChain* fxChain() const { return chain_.load(); }
   /** Swap in `fresh` (heap-owned); returns the OLD chain, which the
    * caller must retire — never delete inline while the node is live. */
@@ -657,9 +547,7 @@ class AudioNode {
    * with the Q-V1 stereo promotion. `stereo_in` says whether (l, r)
    * already carry two live channels; `r` may be null on a pure-mono
    * path (promotion then folds back internally). Returns whether the
-   * caller's buffers now hold stereo. Called from the CONST render
-   * phase — chain DSP state and the scope ring are DSP scratch
-   * (performance.md §2.3 sanctioned exception). */
+   * caller's buffers now hold stereo. */
   bool fxProcess(float* l, float* r, int n, bool stereo_in,
                  const juce::MidiBuffer* live_midi = nullptr) const {
     fx_scope_.capture(l, stereo_in ? r : nullptr, n);
@@ -672,47 +560,30 @@ class AudioNode {
     return midi_armed.load() ? context.live_midi : nullptr;
   }
 
-  /**
-   * The node's audible period in its parent's frame (E-C,
-   * design_language.md): an ACTIVE loop window makes the node behave
-   * as a window-length clip in the parent's LCM. This is exact, not an
-   * approximation — window phase is island-clock derived, so island
-   * times t and t+len map to identical child times: the subtree's
-   * output is periodic in exactly the window length. THE PERIOD LAW is
-   * stated once in period_law.h (own = map ▸ sequence ▸ content); this
-   * is `period_law::ownPeriodOf(*this)` — the node's OWN period, one-
-   * shot or not, judged against its island Q (a drifting child extends
-   * nothing, Q22). Message thread only (walks the ownership tree); the
-   * audio thread uses the snapshot provider (snapEffectivePeriod).
-   */
+  /** The node's OWN period by the period law (period_law::ownPeriodOf,
+   * judged against its island Q). Message thread: walks the tree. */
   int64_t getEffectivePeriod() const;
 
-  /** The node's ACTIVE sequence length (docs/sequencer.md §2, the
-   * period law) — 0 everywhere except a StackNode with an active
-   * sequence. Lives on the base so the snapshot twins
-   * (graph_snapshot.h) can ask without a cast. Audio-thread safe. */
+  /** The ACTIVE sequence's length: 0 except on a StackNode that has
+   * one. On the base so the period law asks without a cast. */
   virtual int64_t activeSequenceLen() const { return 0; }
 
-  // --- The PRE-FX audibility gate (S7, docs/sequencer.md: "all
-  // transitions smooth as much as possible") ---
+  // --- THE PRE-FX GATE (S7, sequencer.md §5) ---
+  // Mute, solo-loss and sequence gates resolve to ONE dry-signal gain
+  // applied BEFORE the node's fx chain. Edges fade over ~10 ms (a hard
+  // cut pops) and the chain keeps running, so echo and reverb tails
+  // ring out through a closed gate; silencing a node by skipping its
+  // rack or zeroing its fader would freeze them. Every audibility verb
+  // goes through this gate.
   //
-  // Mute, solo-loss, and sequence gates all resolve to ONE dry-signal
-  // gain applied BEFORE the node's fx chain: edges fade over ~10 ms
-  // (never a hard cut — speaker pops), and the chain keeps running, so
-  // echo/reverb tails RING OUT through a closed gate. One mechanism for
-  // every audibility verb; mute is never an output-stage gain 0 with a
-  // skipped rack (that would freeze tails).
-  //
-  // The mute/solo half is a smoothed per-node ramp (user gestures are
-  // not schedulable); the sequence half arrives as exact (g0, g1)
-  // endpoints in the context (schedule-derived — see sequence.h). The
-  // ramp state seeds AT its first observed target, so a freshly built
-  // graph starts silent-or-audible with no phantom fade (deterministic
-  // for tests and loads).
+  // The mute/solo half is a smoothed per-node ramp (a gesture cannot be
+  // scheduled); the sequence half arrives as exact endpoints in the
+  // context (gate_g0/g1). The ramp seeds at its first target, so a
+  // freshly built graph starts with no phantom fade.
 
-  /** Compose this block's dry-gain endpoints: the smoothed mute/solo
-   * ramp toward `audible`, times the context's sequence envelope.
-   * Advances the ramp state (render-phase DSP scratch). */
+  /** This block's dry-gain endpoints: the mute/solo ramp toward
+   * `audible`, times the context's sequence envelope. Advances the
+   * ramp state. */
   void gateEndpoints(const ProcessContext& context, bool audible, float& g0,
                      float& g1) const {
     const float target = audible ? 1.0f : 0.0f;
@@ -737,31 +608,28 @@ class AudioNode {
     return 0;
   }
 
-  /**
-   * The island's zero: the master-clock moment of the visual cycle
-   * top. ALL cycle-relative projections (anchors, slots, effective
-   * positions) must be computed relative to this — mixing zero-relative
-   * views with absolute-frame math re-splits audio from visuals.
-   */
+  /** The island's zero: the clock moment of the cycle top. Every
+   * cycle-relative projection (anchors, slots, effective positions)
+   * must be measured from it — mixing it with absolute-frame math
+   * splits audio from visuals. Answers 0 while Q is 0, even with a
+   * provisional zero stored (StackNode::getZero reads that one). */
   virtual int64_t getIslandZero() const {
     if (auto* p = parent.load()) return p->getIslandZero();
     return 0;
   }
 
-  // Transport state
-  // View telemetry, written by the CONST render phase (§2.3): an output
-  // for the UI, not musical state — the sanctioned exception to render
-  // purity, hence `mutable`.
-  mutable std::atomic<double> playhead_pos{0.0};  // 0.0 to 1.0 (normalized)
-  // The mute/solo gate ramp state (see gateEndpoints): −1 = unseeded.
-  // Render-phase DSP scratch (§2.3 sanctioned mutable) — the audio
-  // thread alone advances it.
+  // View telemetry written by render (`mutable`: see render()), 0..1.
+  // A clip: the heard phase of its pass. A stack: the window phase
+  // fraction — the phase of its active map's pass, 0 with no active map
+  // or in a one-shot's rest.
+  mutable std::atomic<double> playhead_pos{0.0};
+  // The mute/solo gate ramp (gateEndpoints): −1 = unseeded. `mutable`:
+  // DSP scratch (see render()).
   mutable float user_gate_{-1.0f};
   std::atomic<int64_t> duration_samples{0};       // Length of the loop
   std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
-  // THE MAP's storage (see storedMap/setMap): a seqlock over all-atomic
-  // segment fields, in the latch's two copies (map_[0] the primary,
-  // map_[1] the shadow — seq_locked.h); n == 0 means no geometry.
+  // THE MAP's storage (storedMap / setMap): the seqlock and its two
+  // copies — map_[0] the primary, map_[1] the shadow (seq_locked.h).
   SeqLock map_lock_;
   struct MapCopy {
     std::atomic<int> n{0};
@@ -769,83 +637,78 @@ class AudioNode {
     std::atomic<int64_t> end[timing::TimeMap::kMaxSegments]{};
   };
   MapCopy map_[2];
-  // Map bypass flag (time_maps.md). Window phase is pure arithmetic on
-  // the received clock — no private counter, fractal.
   std::atomic<bool> loop_window_bypassed_{false};
-  // THE PERIOD-SOURCE KNOB (Q5, kernel.md §2): false
-  // = the node's period is its own length (a loop, the default); true =
-  // its period is the CONTEXT CYCLE (ProcessContext.context_cycle) — a
-  // ONE-SHOT, sounding once per scope cycle at its origin, then
-  // resting. A period choice, not a clip type. One-shots are EXCLUDED
-  // from every period/duration composition fold (stack LCMs, snapshot
-  // twins): they adopt the scope's cycle, never extend it — that is
-  // what keeps a composite honestly periodic in its claimed period
-  // (I1). Undoable (a musical fact, unlike the mixer knobs).
+  // THE PERIOD-SOURCE KNOB (Q5, kernel.md §2): false = the node loops
+  // on its own length; true = a ONE-SHOT, whose period is the context
+  // cycle (ProcessContext::context_cycle) — it sounds once per scope
+  // cycle at its origin, then rests. A one-shot contributes nothing to
+  // any period fold (period_law.h): it adopts the scope's cycle and
+  // never extends it. Undoable (a musical fact).
   std::atomic<bool> period_from_context_{false};
-  // The effect chain (dsp/fx_chain.h): ONE atomic pointer, message
-  // thread swaps + reclaimer retirement, audio thread loads per block
-  // (see fxChain above). Every node is born with the
-  // default four-built-in chain. The scope is a separate STABLE member
-  // so chain swaps never disturb the telemetry ring; both are touched
-  // from the CONST render phase as sanctioned DSP scratch (§2.3).
+  // The effect chain (fxChain above); every node is born with the
+  // default built-in chain. The scope is a separate member so a chain
+  // swap never disturbs its telemetry ring (`mutable`: see render()).
   std::atomic<dsp::FxChain*> chain_{dsp::FxChain::makeDefault().release()};
   mutable dsp::FxScope fx_scope_;
   std::atomic<bool> is_muted{false};
-  // MIDI arm (docs/vst3.md §8, phase 4): THE live play-through target —
-  // incoming MIDI reaches this node's chain (its instrument slot).
-  // Single-armed: AudioEngine::setMidiArmed clears every other node.
-  // A monitoring gesture like solo: not undoable, not persisted.
+  // MIDI arm (vst3.md §8): THE live play-through target — incoming MIDI
+  // reaches this node's chain. Single-armed (AudioEngine::setMidiArmed
+  // clears every other node); not undoable, not persisted.
   std::atomic<bool> midi_armed{false};
-  // Solo canon (Q16): island-wide, ADDITIVE, fractal.
-  // A per-node flag like mute; the audio thread resolves audibility per
-  // callback from the snapshot (any_solo + ancestor scan), so toggling
-  // never republishes structure. Not undoable (a monitoring gesture —
-  // matches the mock's UNDOABLE set).
+  // SOLO (Q16): island-wide, additive, fractal — while any node in the
+  // island is soloed, a leaf sounds only if it or an ancestor is. A
+  // per-node flag the audio thread resolves per callback from the
+  // snapshot (snapAnySolo, snapIsUnderSolo), so a toggle republishes
+  // nothing. A monitoring gesture: not undoable.
   std::atomic<bool> is_soloed{false};
-  // Stereo mix position (balance law — see panGains). A MIXER fact like
-  // mute, not a musical fact: read by render, edited on the message
-  // thread, deliberately not undoable (dial drags would flood the undo
-  // log; same ruling as effect params).
+  // Stereo position (panGains). A MIXER fact: read by render, edited on
+  // the message thread, not undoable (a dial drag would flood the log).
   std::atomic<float> pan{0.0f};
-  // The volume fader (unification_audit.md §2.4), applied at the
-  // node's output stage after fx. Range
-  // [0, 1]: unity default, attenuate-only per the pan no-boost law (a
-  // full mix of full-scale takes cannot clip the device; boost lives in
-  // the compressor's makeup). A MIXER fact like pan: not undoable.
+  // The fader, applied at the output stage after fx. [0, 1]: attenuate
+  // only (boost lives in the compressor's makeup), so a full mix of
+  // full-scale takes cannot clip the device. A mixer fact like pan.
   std::atomic<float> gain{1.0f};
-  // No view state lives here (I6b, design_language.md): fold/expand and
-  // canvas position are UI-local, never engine facts.
   std::atomic<float> last_block_peak{0.0f};
 
-  // THE canonical timing fact (docs/kernel.md, composition.md §1 — Q18):
-  // the monotonic-clock moment this node's inner time 0 belongs to, in
-  // performance-time samples. A CLIP: the moment content[0] occurred,
-  // set when recording starts. A STACK: the zero of its inner timeline,
-  // set when committed content first enters its subtree (the earliest
-  // descendant's origin — AudioEngine::settleAnchors) and cleared when
-  // the last content leaves. Launch point, lane x, and every map's
-  // anchor are projections of this one value; a parent may move it (and
-  // with it the whole subtree — composition.md §5) but never derive it.
+  // THE ORIGIN (Q18, composition.md §1): the monotonic-clock moment this
+  // node's inner time 0 belongs to, in samples. A CLIP: the moment
+  // content[0] occurred, set when recording starts. A STACK: the zero of
+  // its inner timeline, set when committed content first enters its
+  // subtree (the earliest descendant's origin, AudioEngine::
+  // settleAnchors) and cleared when the last leaves. Lane x and every
+  // map's anchor are projections of it; a parent may move it, and the
+  // whole subtree with it (composition.md §5), but never derives it.
   std::atomic<int64_t> origin_samples{0};
   // ANCHORED (stacks; composition.md §1): true once origin_samples is a
-  // stored fact. An unanchored stack's inner zero is the RECEIVED cycle
-  // top for the block (no member exists to disagree — the empty case,
-  // not a second law). Clips are anchored iff they hold content and
-  // never consult the flag.
+  // stored fact; until then the stack's inner zero is the received
+  // cycle top. `anchored_` is the message thread's fact; the audio
+  // thread reads `anchored_rt_`, adopted together with the origin at a
+  // block top (adoptOriginGate), so no block pairs a new flag with an
+  // old origin and both phases of a block agree on the frame.
   std::atomic<bool> anchored_{false};
+  std::atomic<bool> anchored_rt_{false};
   bool isAnchored() const { return anchored_.load(); }
-  /** Message thread: anchor at `origin` (settleAnchors, Combine, load)
-   * or clear. Gated like every message-thread origin write. */
+  /** Message thread: anchor at `origin`, or clear. The flag is only
+   * ever set while the origin it selects is in place — the origin lands
+   * before an anchor is set and leaves after one is cleared — so a
+   * block top that falls between the two stores still adopts a coherent
+   * pair. */
   void setAnchor(bool anchored, int64_t origin, uint32_t gate) {
-    anchored_.store(anchored);
-    setOriginGated(origin, gate);
+    origin_gate_gen_.store(gate);
+    if (anchored) {
+      origin_samples.store(origin);
+      anchored_.store(true);
+    } else {
+      anchored_.store(false);
+      origin_samples.store(origin);
+    }
   }
   // The origin the AUDIO thread renders with: adopted from
   // origin_samples at a block top whose island generation has reached
-  // origin_gate_gen_ (ProcessContext::island_generation — a writer that
-  // moves origins with the zero names one generation for both, so a
-  // block renders new origins against the new zero or neither).
-  // Audio-thread writers (arm, commit) store both directly.
+  // origin_gate_gen_. A writer that moves origins with the zero names
+  // one generation for both, so a block renders new origins against the
+  // new zero or neither. Audio-thread writers (arm, commit) store both
+  // directly.
   std::atomic<int64_t> origin_rt_{0};
   std::atomic<uint32_t> origin_gate_gen_{0};
   /** Message thread: set the origin so that the audio thread adopts it
@@ -855,27 +718,29 @@ class AudioNode {
     origin_gate_gen_.store(gate);
     origin_samples.store(origin);
   }
-  /** Block-top adoption (call first in control()). */
+  /** Block-top adoption of the origin and the anchor flag (call first
+   * in control()). The flag is read on both sides of the origin: a
+   * setAnchor landing between the reads flips it, and the pair is then
+   * left for the next block top. */
   void adoptOriginGate(const ProcessContext& context) {
-    if (context.island_generation >= origin_gate_gen_.load()) {
-      origin_rt_.store(origin_samples.load());
-    }
+    if (context.island_generation < origin_gate_gen_.load()) return;
+    const bool anchored = anchored_.load();
+    const int64_t origin = origin_samples.load();
+    if (anchored_.load() != anchored) return;
+    origin_rt_.store(origin);
+    anchored_rt_.store(anchored);
   }
-  /** THE FRAME ORIGIN (Q18, composition.md §2): the origin this
-   * node's geometry anchors at on the audio thread — its own rendering
-   * origin once anchored (a clip always is), else the received cycle
-   * top (an empty stack). Message-thread twin: heard::frameOriginOf. */
+  /** THE FRAME ORIGIN (Q18, composition.md §2) a STACK's geometry
+   * anchors at on the audio thread: its own rendering origin once the
+   * anchor is adopted, else the received cycle top (an empty stack).
+   * Asked of stacks only: a clip renders from origin_rt_.
+   * Message-thread twin: heard::frameOriginOf. */
   int64_t frameOrigin(const ProcessContext& context) const {
-    return anchored_.load() ? origin_rt_.load() : context.frame_top;
+    return anchored_rt_.load() ? origin_rt_.load() : context.frame_top;
   }
-  /** The rendering origin (audio thread). */
-  int64_t renderOrigin() const { return origin_rt_.load(); }
 
-  // The audio thread never walks parent chains (island facts and
-  // ancestry ride ProcessContext / the graph snapshot — see setParent).
-  // Readers are message-thread walks (metadata, engine helpers,
-  // rootNode(), getEffectiveQuantum); the atomic is belt-and-braces
-  // for the reorder/combine reparent, not a load-bearing sync point.
+  // Message thread only (the threading note above); atomic for the
+  // reorder/combine reparent, not as a sync point.
   std::atomic<AudioNode*> parent{nullptr};
 
  protected:

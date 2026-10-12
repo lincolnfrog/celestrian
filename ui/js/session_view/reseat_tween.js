@@ -1,15 +1,13 @@
 /**
- * THE RE-SEAT TWEEN (docs/frame.md §1; loop_selection.md §13.2; owner
- * 2026-10-01).
+ * THE RE-SEAT TWEEN (docs/frame.md §1; loop_selection.md §13.2).
  *
  * When the frame's zero moves — the loop that places the frame was
- * swapped, shifted, cut, undone or removed — every lane, the ruler, the
+ * swapped, shifted, cut, undone or deleted — every lane, the ruler, the
  * gridlines, the cursor and the arm marker move onto the new seat
- * TOGETHER over RESEAT_MS, instead of jumping. It is not the edit hold
- * (revoked 2026-09-29) come back: nothing is held and nothing waits.
- * The move starts on the very render that would have jumped, takes the
- * shortest way round the frame (view_model reseatZero) and lands on the
- * seat exactly.
+ * TOGETHER over RESEAT_MS, instead of jumping. Nothing is held and
+ * nothing waits: the move starts on the very render that would have
+ * jumped, takes the shortest way round the frame (view_model
+ * reseatZero) and lands on the seat exactly.
  *
  * It is one picture MOVING. Whatever re-lays the picture out jumps as
  * it always has (session_view.md law 11 — morph only pure moves):
@@ -29,20 +27,18 @@
  * moves the island zero and every origin together — the transport
  * moving, not the frame.
  *
- * Module state, DOM-free. app.js asks reseatOptions before each derive
- * — the answer is the deriveViewModel `reseat` opt — and tells
- * noteReseat what the derive drew. noteReseat answers TRUE when that
- * frame must not be shown: a move began on it (or its seat moved again,
- * or it gave way to a re-layout), and app.js derives once more. While a
- * move runs app.js re-derives every animation frame from the last
- * polled state — never an extra poll — and since progress is wall-clock
- * time, the 50 ms poll alone still lands it where animation frames are
- * throttled.
+ * Module state, DOM-free. The app asks reseatOptions before each derive
+ * (the answer is deriveViewModel's `reseat` opt) and tells noteReseat
+ * what the derive drew; TRUE back means that frame must not be shown —
+ * derive once more. While a move runs the app re-derives every
+ * animation frame from the last polled state, never an extra poll;
+ * progress is wall-clock time, so the poll alone still lands it where
+ * animation frames are throttled.
  */
 
 import { posMod } from '../math_utils.js';
 
-/* The move's length (owner 2026-10-01: "~200 ms"). */
+/* The move's length. */
 export const RESEAT_MS = 200;
 
 /* Zeros within this many samples of each other are one place. */

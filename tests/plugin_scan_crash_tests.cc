@@ -6,13 +6,15 @@
 
 #include "../src/plugin_host_service.h"
 #include "../src/plugin_scan_worker.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
+using test_utils::waitForScan;
+
 /**
- * OUT-OF-PROCESS SCANNING with a REAL crashing plugin (owner-requested
- * 2026-08-26 after a user's scan crashed on a bad VST3): the
- * real-binary proof of docs/vst3.md §4.
+ * OUT-OF-PROCESS SCANNING with a REAL crashing plugin: the real-binary
+ * proof of docs/vst3.md §4.
  *
  * The bad plugin ("Celestrian Test Crash", test_plugin/) takes an
  * invalid memory access when probed. This suite scans a folder holding
@@ -24,7 +26,8 @@ namespace celestrian {
  * and finished with the good plugin found. Also pinned here: the
  * worker protocol itself, a HUNG probe (the worker's test hook), a
  * rescan being a no-op for excluded files, and a worker that cannot
- * launch ending the scan cleanly instead of spinning.
+ * launch ending the scan cleanly instead of spinning. (A scan with no
+ * worker command at all: plugin_host_tests.cc.)
  *
  * Skips honestly (with a log line) when the bundles were not built
  * (CELESTRIAN_BUILD_TEST_PLUGIN=OFF) — never silently.
@@ -71,12 +74,6 @@ class PluginScanCrashTests : public juce::UnitTest {
 #endif
   }
 
-  static bool waitForScan(PluginHostService& service, int max_ms) {
-    for (int waited = 0; waited < max_ms && service.isScanning(); waited += 50)
-      juce::Thread::sleep(50);
-    return !service.isScanning();
-  }
-
   static bool anyEntryContains(const juce::StringArray& entries,
                                const juce::String& needle) {
     for (const auto& entry : entries)
@@ -116,9 +113,7 @@ class PluginScanCrashTests : public juce::UnitTest {
 
     // One folder holding a good plugin and a bad one, the way a user's
     // plugin folder would.
-    const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                          .getChildFile("celestrian_plugin_scan_crash");
-    root.deleteRecursively();
+    const auto root = test_utils::freshTempDir("plugin_scan_crash");
     const auto plugins = root.getChildFile("plugins");
     plugins.createDirectory();
     const auto gain_copy = plugins.getChildFile(gain.getFileName());
@@ -248,29 +243,13 @@ class PluginScanCrashTests : public juce::UnitTest {
       const auto status = service.getScanStatusVar();
       expect(status.getProperty("error", "").toString().isNotEmpty(),
              "status carries the error");
+      expect(!registryHas(service, "Celestrian Test Gain"),
+             "nothing is probed in this process: the good plugin is not "
+             "listed either");
       expectEquals((int)status.getProperty("crashedCount", -1), 0,
                    juce::String("nothing blamed on a plugin"));
       expectEquals(service.knownPlugins().getBlacklistedFiles().size(), 0,
                    juce::String("nothing blacklisted"));
-    }
-
-    beginTest("no worker command: the crasher is never probed in-process");
-    {
-      // The worker is the ONLY probe path (docs/vst3.md §11): with the
-      // command cleared, a scan over the crashing bundle ends with an
-      // error and this process is still here to say so.
-      const auto no_worker_data = root.getChildFile("data_no_worker");
-      PluginHostService service(no_worker_data);
-      service.setScanWorkerCommand({});
-      service.startScan(plugins.getFullPathName(), false);
-      expect(waitForScan(service, 30000), "scan ended");
-      const auto status = service.getScanStatusVar();
-      expect(status.getProperty("error", "").toString().isNotEmpty(),
-             "status carries the no-worker error");
-      expect(!registryHas(service, "Celestrian Test Gain"),
-             "nothing was probed: the good plugin is not listed either");
-      expect((bool)status.getProperty("outOfProcess", false),
-             "probing is out-of-process by construction");
     }
   }
 };

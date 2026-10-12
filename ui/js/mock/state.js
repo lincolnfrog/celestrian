@@ -1,632 +1,436 @@
 /**
- * mock/state.js — the mock engine's single mutable state root, plus the
- * pure graph queries every other mock module builds on (find/walk/count
- * helpers, the island quantum derivation, and graph serialization shared
- * by undo snapshots and the in-memory session "disk").
+ * mock/state.js — the mock engine's one mutable state and the graph
+ * queries every other mock module builds on. The laws live in the engine
+ * (src/engine/definer.cc, island_geometry.cc) and docs/; a function here
+ * names its twin and says only what the mock does differently.
  *
- * The `state` object is a SINGLETON: it is exported `const` and never
- * rebound — mutate its properties (undo restore and session load assign
- * `state.nodes = ...` etc., and every module sees the change through the
- * live binding). The full shape is declared up front so downstream code
- * can read `state.masterPos` / `state.islandQ` without `|| 0` guards.
+ * THE RAW NODE. publish.js lists what is published; the rest is private.
+ * Lengths and positions are samples; "absolute" is the raw clock.
+ *   duration        a clip's committed length — or, while its FIRST take
+ *                   records, that take's live length (see takeLength)
+ *   origin          absolute: where content[0] sounds; a stack's is a
+ *                   fact only while `anchored`
+ *   loopStart, loopEnd   the stored single window, inner positions
+ *   segments        the stored cell map [[start, end], …] — never beside
+ *                   a window (setStoredMap)
+ *   storedTop       the ↺ top, a raw inner position; null/absent = unset
+ *   retime          the cumulative user shift of the origin
+ *   contentBase, collapsedFrom   a lock-collapsed clip: how far its
+ *                   content view moved, and the length it had before
+ *   takes           [{seed, imported?}]; absent = one implicit take
+ *   comp, compCellLen, compOffset   a take index per cell, the cell
+ *                   length, the first cell's inner position
+ *   midi            a MIDI fixture's events [pos, status, data1, data2]
+ *   _scopeOn        a panel watches the rack
+ * A take in flight (gone once it settles):
+ *   isRecording     a take is up here FROM THE ARM (published narrower)
+ *   isPendingStart, pendingStartAt   armed; absolute start
+ *   recordingStartPos                absolute: where capture began
+ *   isAwaitingStop, awaitingStopAt   stop asked; the length it commits at
+ *   _mapArm { C, period, innerOrigin }  a through-map take: its commit
+ *                   length, its one-pass cap, its origin
+ *   _retake { period, captured, cancel? }  a new take of a committed slot
+ *   _retakeDone     'committed' | 'cancelled' until the performance logs
  */
 
-import { singleSegment, mapActive, mapOffset, mapPeriod } from '../time_map.js';
+import { singleSegment, mapActive, mapOffset } from '../time_map.js';
 import { lcm, posMod } from '../math_utils.js';
-import { programOf, visitBounds } from '../sequence_program.js';
+import { activeSeqLen, auditionMapOf } from './seq_query.js';
 
-// In-memory state
-export const state = {
-    isPlaying: false,
-    nodes: [],
-    nextId: 1,
-    masterPos: 0,     // the raw monotonic clock, in samples
-    islandZero: 0,   // the island frame origin (P0-3 stored fact)
-    islandQ: 0,       // the STORED island quantum (0 = unestablished)
-    masterGain: 1,    // the root output stage — the master fader
-    // The synthetic root's rack holder ('mock-root' is not in `nodes`):
-    // effects.js installs the default chain here lazily, like a node.
-    root: { id: 'mock-root', type: 'stack', effects: null },
-    rootAuditionStep: -1,  // the root's step audition (§11.2), −1 = none
-    // THE ROOT'S ANCHOR (docs/frame.md §4; engine parity): the root is
-    // anchored while it carries a song, at the frame zero the view had
-    // seated when the song was authored; its song folds from there.
-    rootAnchored: false,
-    rootOrigin: 0,
-    // THE HANDED-Q DEFINER (Q22, engine parity StackNode's definer
-    // designation): the node Q was handed to (setDefiner) — '' = none,
-    // the definer is then derived (Q13). Cleared when the next take
-    // records new content.
-    definerDesignation: '',
-};
+export const ROOT_ID = 'mock-root';
 
-/** The ROOT'S FRAME TOP (engine AudioEngine::rootFrameTop): its origin
- * while a song anchors it, else the island zero. The cursor fold, the
- * recording view base and a seek measure from here. */
-export function rootFrameTop() {
-    return state.rootAnchored ? (state.rootOrigin || 0) : (state.islandZero || 0);
+/** An empty root: a stack like any other, the island's top. */
+export function freshRoot() {
+    return { id: ROOT_ID, type: 'stack', name: 'Root', nodes: [], gain: 1, pan: 0,
+             auditionStep: -1, anchored: false, origin: 0 };
 }
 
-// Generate unique IDs
+export const state = {
+    isPlaying: false,
+    root: freshRoot(),
+    nextId: 1,
+    masterPos: 0,            // the raw clock
+    islandZero: 0,
+    islandQ: 0,              // 0 = no Q yet
+    definerDesignation: '',  // the node Q was handed to; '' = derived
+    lastImport: null,
+    lastBounce: null,
+    get nodes() { return this.root.nodes; },
+    set nodes(list) { this.root.nodes = list; },
+};
+
+/** The simulation step: how far the clock moves per getState() poll
+ * while the transport runs. A fixed sample count, not a duration — a
+ * test that plays and polls reads the clock at its multiples whatever
+ * the mock's rate. */
+export const DEFAULT_SAMPLES_PER_TICK = 2205;
+
+/** The simulated clock's run state (transport.js drives it). `running`:
+ * each poll ticks the clock. `stepped`: A TEST STEPS THE CLOCK — an arm
+ * still starts the transport, as the engine's does, but not the poll
+ * tick; time passes by advanceBy, or in real time once the test plays
+ * (togglePlayback, startTransport). On from the start outside a page
+ * (the node tests), and on a page that sets `window.__celestrianMockClock
+ * = 'stepped'` before the mock loads (the e2e boot); transport.js
+ * stepClock switches it. */
+export const transport = {
+    running: false,
+    samplesPerTick: DEFAULT_SAMPLES_PER_TICK,
+    speed: 1.0,
+    stepped: typeof window === 'undefined' || globalThis.__celestrianMockClock === 'stepped',
+};
+
 export function generateId() {
     return `node-${state.nextId++}`;
 }
 
-// Find node by ID (recursive for stacks)
+// ---- the tree -----------------------------------------------------------
+
+/** A node BELOW the root, by id. */
 export function findNode(id, nodes = state.nodes) {
     for (const node of nodes) {
         if (node.id === id) return node;
-        if (node.type === 'stack' && node.nodes) {
-            const found = findNode(id, node.nodes);
-            if (found) return found;
-        }
+        const found = findNode(id, node.nodes || []);
+        if (found) return found;
     }
     return null;
 }
 
-// Find parent of a node
-export function findParent(nodeId, nodes = state.nodes, parent = null) {
-    for (const node of nodes) {
-        if (node.id === nodeId) return parent;
-        if (node.type === 'stack' && node.nodes) {
-            const found = findParent(nodeId, node.nodes, node);
-            if (found !== null) return found;
-        }
+/** Any node by id, the root included (engine findNodeByUuid). */
+export function nodeOrRoot(id) {
+    return id === ROOT_ID ? state.root : findNode(id);
+}
+
+/** The stack holding node `id` — the root for a top-level node; null for
+ * the root itself and for an unknown id. */
+export function findParent(id, parent = state.root) {
+    for (const node of parent.nodes || []) {
+        if (node.id === id) return parent;
+        const found = node.type === 'stack' ? findParent(id, node) : null;
+        if (found) return found;
     }
     return null;
 }
 
-// Remove node from parent
-export function removeNodeFromParent(nodeId) {
-    const parent = findParent(nodeId);
-    if (parent && parent.nodes) {
-        parent.nodes = parent.nodes.filter(n => n.id !== nodeId);
-    } else {
-        // Top-level
-        state.nodes = state.nodes.filter(n => n.id !== nodeId);
-    }
+/** The stacks above `node`, nearest first, the root last. */
+export function ancestorsOf(node) {
+    const out = [];
+    for (let p = findParent(node.id); p; p = findParent(p.id)) out.push(p);
+    return out;
 }
 
-/**
- * Depth-first "does ANY node satisfy `pred`" walk — the shared skeleton
- * behind anyNodeRecording, subtreeRecording, and the VU's any-audio
- * probe.
- */
+export function removeNodeFromParent(id) {
+    const parent = findParent(id);
+    if (parent) parent.nodes = parent.nodes.filter(n => n.id !== id);
+}
+
+/** Does `pred` hold for a node in `nodes` or beneath them? */
 export function someNode(pred, nodes = state.nodes) {
-    return (nodes || []).some(n => pred(n) || someNode(pred, n.nodes || []));
+    return nodes.some(n => pred(n) || someNode(pred, n.nodes || []));
 }
 
-// Any armed/capturing take (parity with StackNode::hasActiveTake) —
-// gates provisional re-trim: a performing take already plays against
-// the current grid, so a drag mid-take is an ordinary window edit.
-export function anyNodeRecording() {
-    return someNode(n => n.isRecording);
+/** `visit(node)` for `node` and everything beneath it, parents first. */
+export function eachNode(visit, node = state.root) {
+    visit(node);
+    (node.nodes || []).forEach(c => eachNode(visit, c));
 }
 
-// A live take anywhere in this subtree (parity with the engine's
-// per-node isArmedOrRecording) — gates mid-take map edits.
-export function subtreeRecording(node) {
-    if (!node) return false;
-    return someNode(n => n.isRecording, [node]);
+// ---- takes and content --------------------------------------------------
+
+/** A take is armed or capturing on this node. */
+export const isLive = n => !!(n.isRecording || n.isPendingStart);
+
+/** A take is armed or capturing in `node`'s subtree (the island's by
+ * default) — engine isArmedOrRecording / hasActiveTake. */
+export function takeLive(node = state.root) {
+    return isLive(node) || (node.nodes || []).some(takeLive);
 }
 
-// Committed clips in the island (parity with
-// AudioEngine::islandCommittedClipCount) — drives Q13 mutability.
-export function committedClipCount() {
-    let n = 0;
-    (function visit(nodes) {
-        (nodes || []).forEach(node => {
-            if (node.type === 'clip' && !node.isRecording && (node.duration || 0) > 0) n++;
-            if (node.nodes) visit(node.nodes);
-        });
-    })(state.nodes);
-    return n;
+/** A clip's COMMITTED length (engine getIntrinsicDuration): 0 while its
+ * first take records; the slot's while a new take of it does. */
+export function takeLength(clip) {
+    return clip.isRecording && !clip._retake ? 0 : (clip.duration || 0);
 }
 
-/**
- * The island's single committed clip — the Q13 definer. Pre-order walk,
- * first committed clip wins; only meaningful when committedClipCount()
- * is 1 (the lock-collapse and re-open paths both gate on that first).
- */
-export function findSoleCommittedClip(nodes = state.nodes) {
-    for (const n of nodes || []) {
-        if (n.type === 'clip' && !n.isRecording && (n.duration || 0) > 0) return n;
-        const c = n.nodes && findSoleCommittedClip(n.nodes);
-        if (c) return c;
+export const isCommittedClip = n => n.type === 'clip' && takeLength(n) > 0;
+
+/** A clip's take list: `takes` once materialized, else the one implicit
+ * take of a committed clip (engine takeCount). */
+export function takesOf(clip) {
+    if (Array.isArray(clip.takes) && clip.takes.length) return clip.takes;
+    return takeLength(clip) > 0 ? [{ seed: 0 }] : [];
+}
+
+/** Committed clips in `node`'s subtree, `node` included (engine
+ * countCommittedClips). */
+export function committedClipCount(node = state.root) {
+    if (node.type !== 'stack') return isCommittedClip(node) ? 1 : 0;
+    return (node.nodes || []).reduce((n, c) => n + committedClipCount(c), 0);
+}
+
+function firstCommittedClip(node = state.root) {
+    if (node.type !== 'stack') return isCommittedClip(node) ? node : null;
+    for (const c of node.nodes || []) {
+        const hit = firstCommittedClip(c);
+        if (hit) return hit;
     }
     return null;
 }
 
-/**
- * ONLY GEOMETRY WINS (engine parity hasActiveGeometryOutside): true
- * when any node OUTSIDE `exclude`'s
- * subtree carries an active window or map override. A Q13
- * re-establishment under such geometry would strand it permanently
- * incoherent with the new grid; ancestor warps are covered too (they
- * are outside the subtree). A window spanning a clip's whole take
- * restricts nothing and is not geometry (commit writes none — D4-7).
- */
-export function activeGeometryOutside(exclude, nodes = state.nodes) {
-    for (const n of nodes || []) {
-        if (n === exclude) continue;
-        if (Array.isArray(n.segments) && n.segments.length >= 2 &&
-            !n.loopBypassed) return true;
-        const ls = n.loopStart || 0, le = n.loopEnd || 0;
-        const fullSpanClip = n.type === 'clip' && ls <= 0 &&
-            (n.duration || 0) > 0 && le >= n.duration;
-        if (le > ls && !fullSpanClip && !n.loopBypassed) return true;
-        if (n.type === 'stack' && activeGeometryOutside(exclude, n.nodes)) {
-            return true;
-        }
+/** A node's whole inner span (engine getIntrinsicDuration): a clip's
+ * take; a stack's LCM of its looping children's spans. */
+export function intrinsicOfNode(n) {
+    if (n.type !== 'stack') return takeLength(n);
+    let span = 0;
+    for (const c of n.nodes || []) {
+        if (c.periodSource === 'context') continue;
+        const d = intrinsicOfNode(c);
+        if (d > 0) span = span > 0 ? lcm(span, d) : d;
     }
-    return false;
+    return span;
 }
 
-/**
- * Q13 sole-definer predicate: `node` is a committed clip AND the
- * island's ONLY committed content, with no take in flight — the state
- * in which its window/map edits re-establish Q rather than obey it.
- * (Shared by the setLoopPoints / setSegments guards and re-trims.)
- */
-export function isQ13SoleDefiner(node) {
-    if (!(node.type === 'clip' && (node.duration || 0) > 0 &&
-          committedClipCount() === 1 && !anyNodeRecording())) return false;
-    // ONLY GEOMETRY WINS (see activeGeometryOutside; subsumes the
-    // ancestor-warp guard — ancestors are outside the subtree).
-    return !activeGeometryOutside(node);
-}
+// ---- maps ---------------------------------------------------------------
 
-function committedClipCountIn(nodes) {
-    let n = 0;
-    (function visit(list) {
-        (list || []).forEach(node => {
-            if (node.type === 'clip' && !node.isRecording && (node.duration || 0) > 0) n++;
-            if (node.nodes) visit(node.nodes);
-        });
-    })(nodes);
-    return n;
-}
-
-/**
- * Q13 FOR GROUPS (engine parity `definerStack`): the island's DEFINER
- * STACK — the stack whose direct
- * clip children are the island's ONLY committed content and were
- * recorded as ONE take (identical origin and duration), two or more of
- * them (a single committed clip keeps the clip-definer path). Its
- * window re-establishes (Q, zero) exactly as a sole clip's does.
- * Walks from the root's child list; returns the stack node or null.
- */
-export function definerStackNode(nodes = state.nodes, owner = null) {
-    let direct = 0, origin = 0, duration = 0, nested = null;
-    for (const n of nodes || []) {
-        if (n.type === 'clip') {
-            if (n.isRecording || !(n.duration > 0)) continue;
-            // A one-shot member reads its period from CONTEXT — not
-            // "one take looping as one part" (engine definerStack and
-            // VM definerStackOf agree).
-            if (n.periodSource === 'context') return null;
-            if (direct === 0) { origin = n.origin || 0; duration = n.duration; }
-            else if ((n.origin || 0) !== origin || n.duration !== duration) return null;
-            direct++;
-        } else if (n.type === 'stack' && committedClipCountIn(n.nodes) > 0) {
-            if (nested || direct > 0) return null;
-            nested = n;
-        }
-    }
-    if (nested) {
-        if (direct !== 0) return null;
-        // WRAPPER WARP GUARD (engine parity): a stack on the path that
-        // remaps time — an active override or
-        // its own engaged window — sits between the island clock and
-        // the definer. No definer through a warp.
-        const wrapper = owner || null;
-        if (wrapper && ((Array.isArray(wrapper.segments) &&
-                         wrapper.segments.length >= 2) ||
-                        (!wrapper.loopBypassed &&
-                         (wrapper.loopEnd || 0) > (wrapper.loopStart || 0)))) {
-            return null;
-        }
-        return definerStackNode(nested.nodes, nested);
-    }
-    return direct >= 2 ? owner : null;
-}
-
-/** THE DEFINER (engine parity engine_internal::definer): the node Q was
- * handed to (setDefiner, Q22) while it is still a valid target, else the
- * sole committed clip or the definer stack — through the same gates the
- * edits use (no take in flight, no step audition on a definer stack, the
- * ancestor-warp walk, only geometry wins for the derived definer). Null
- * when the island has none. ONE answer for the published `definerId`,
- * the Q13 re-trims and the setTiming refusal, so the view and the mock
- * agree. */
-export function islandDefiner() {
-    if (anyNodeRecording()) return null;
-    const designated = designatedDefiner();
-    if (designated) return designated;
-    if (committedClipCount() === 1) {
-        const c = findSoleCommittedClip();
-        return c && isQ13SoleDefiner(c) ? c : null;
-    }
-    const ds = definerStackNode();
-    if (ds && typeof ds.auditionStep === 'number' && ds.auditionStep >= 0) return null;
-    return ds && !activeGeometryOutside(ds) ? ds : null;
-}
-
-/** The node Q was handed to (Q22) when it is still a valid definer
- * target — a stale designation (deleted, turned one-shot, grown a
- * second take…) reads as none and stays stored, so an undo can revive
- * it. A definer stack under a step audition is not the definer (the
- * audition derives its own window over it). */
-export function designatedDefiner() {
-    const id = state.definerDesignation;
-    if (!id) return null;
-    const node = findNode(id);
-    if (!node || !validDefinerTarget(node)) return null;
-    if (node.type === 'stack' && typeof node.auditionStep === 'number' &&
-        node.auditionStep >= 0) return null;
-    return node;
-}
-
-/** An ACTIVE song on a holder (the sequence.js rule, restated here — the
- * query layer imports nothing above it). */
-function hasActiveSong(n) {
-    return !!(n && !n.sequenceBypassed && n.sequence &&
-        (n.sequence.steps || []).some(s => s.len > 0));
-}
-
-/**
- * May Q be handed to `node` (Q22, engine parity setDefiner's target
- * rules): a committed looping clip that is not recording, or a stack
- * whose committed DIRECT clips are ONE take (identical origin and
- * duration, two or more, no one-shot among them, no nested content, no
- * song, not itself a one-shot); and no stack between it and the root
- * remaps time (an active map, a song or a one-shot — the warp guard).
- */
-export function validDefinerTarget(node) {
-    if (!node || node.periodSource === 'context') return false;
-    if (node.type === 'clip') {
-        if (node.isRecording || node.isPendingStart || !((node.duration || 0) > 0)) {
-            return false;
-        }
-    } else {
-        if (hasActiveSong(node)) return false;
-        let direct = 0, origin = 0, duration = 0;
-        for (const c of node.nodes || []) {
-            if (c.type === 'stack') {
-                if (committedClipCountIn(c.nodes) > 0) return false;
-                continue;
-            }
-            if (c.isRecording || !((c.duration || 0) > 0)) continue;
-            if (c.periodSource === 'context') return false;
-            if (direct === 0) { origin = c.origin || 0; duration = c.duration; }
-            else if ((c.origin || 0) !== origin || c.duration !== duration) return false;
-            direct++;
-        }
-        if (direct < 2) return false;
-    }
-    // THE WARP GUARD: a stack between it and the root that remaps time —
-    // an active map, a song, or a one-shot's fold — puts the node's loop
-    // on a clock the island's grid does not run on.
-    for (let p = findParent(node.id); p; p = findParent(p.id)) {
-        if (activeMapOf(p) || hasActiveSong(p) || p.periodSource === 'context') {
-            return false;
-        }
-    }
-    return true;
-}
-
-/** Does `node`'s subtree hold EVERY committed clip of the island? The
- * definer re-anchors its origin on a trim only then (Q13 phase-
- * preserving); beside other tracks it keeps its timing (Q22). */
-export function holdsAllContent(node) {
-    return committedClipCountIn([node]) === committedClipCount();
-}
-
-// A node's RAW map geometry (phase 3): the multi-segment override when
-// installed, else the single window. Callers gate on loopBypassed
-// themselves (parity with activeTimeMap's split responsibilities).
-export function nodeMap(n) {
-    if (n.segments && n.segments.length >= 2) return { segs: n.segments };
+/** The node's STORED map, bypass ignored (engine storedMap). */
+export function storedMap(n) {
+    if (Array.isArray(n.segments) && n.segments.length >= 2) return { segs: n.segments };
     return singleSegment(n.loopStart || 0, n.loopEnd || 0);
 }
 
-// The node's ACTIVE map (engine parity: StackNode::activeTimeMap): a
-// stack's step audition (docs/sequencer.md §11.2) is a DERIVED window
-// that wins over the authored one; otherwise the authored window iff
-// not bypassed. Returns null when no map applies. (Defined here, the
-// shared query layer, so cycles/publish/recording all agree.)
+/** Store `segs` ([[start, end], …]) as the node's one map: a cell map,
+ * a single window, or none. */
+export function setStoredMap(n, segs) {
+    if (segs.length >= 2) {
+        n.segments = segs.map(([s, e]) => [s, e]);
+        n.loopStart = 0;
+        n.loopEnd = 0;
+        return;
+    }
+    delete n.segments;
+    [n.loopStart, n.loopEnd] = segs.length && segs[0][1] > segs[0][0] ? segs[0] : [0, 0];
+}
+
+/** Engine storesGeometry: a cell map, or a window that is not a clip's
+ * whole take. */
+export function storesGeometry(n) {
+    const segs = storedMap(n).segs;
+    if (segs.length !== 1) return segs.length >= 2;
+    const span = intrinsicOfNode(n);
+    return !(n.type === 'clip' && segs[0][0] <= 0 && span > 0 && segs[0][1] >= span);
+}
+
+/** A sequence-domain window is suspended while its song is off (S16). */
+export function windowSuspendedOf(n) {
+    return n.type === 'stack' && n.windowDomain === 'sequence' &&
+        !(activeSeqLen(n) > 0) && !n.loopBypassed && mapActive(storedMap(n));
+}
+
+/** The map the node PLAYS, or null (engine activeTimeMap): a stack's
+ * step audition first, else the stored map unless bypassed or suspended. */
 export function activeMapOf(n) {
     if (n.type === 'stack') {
-        const a = auditionMapOf(n);
-        if (a) return a;
-        if (windowSuspendedOf(n)) return null;  // S16
+        const audition = auditionMapOf(n);
+        if (audition) return audition;
+        if (windowSuspendedOf(n)) return null;
     }
     if (n.loopBypassed) return null;
-    const m = nodeMap(n);
+    const m = storedMap(n);
     return mapActive(m) ? m : null;
 }
 
-// S16 (docs/sequencer.md §11.8): a sequence-domain window is SUSPENDED
-// while the sequence is off (bypassed/cleared) — never deleted.
-export function windowSuspendedOf(n) {
-    if (n.type !== 'stack' || n.windowDomain !== 'sequence') return false;
-    const seqOn = !n.sequenceBypassed && n.sequence &&
-        (n.sequence.steps || []).some(s => s.len > 0);
-    if (seqOn) return false;
-    return !n.loopBypassed && mapActive(nodeMap(n));
-}
+// ---- the Q-definer (engine definer.cc) ----------------------------------
 
-// Lazy twin of mock/sequence.js auditionMap (no import cycle: sequence.js
-// imports state.js). Kept minimal and in lockstep: the span is the
-// step's FIRST visit in the PROGRAM (docs/sequencer.md §14).
-export function auditionMapOf(holder) {
-    const i = holder.auditionStep;
-    if (!(i >= 0) || holder.sequenceBypassed) return null;
-    const steps = holder.sequence && holder.sequence.steps;
-    if (!steps || i >= steps.length) return null;
-    const lens = steps.map(s => (s.len > 0 ? Math.round(s.len) : 0));
-    const prog = programOf(steps, holder.sequence.seed || 0);
-    const k = prog.firstVisit[i];
-    if (!(k >= 0)) return null;
-    const b = visitBounds(prog.visits, lens);
-    return b[k + 1] > b[k] ? { segs: [[b[k], b[k + 1]]] } : null;
-}
-
-// The ROOT's active map (the root's audition — the root has no authored
-// window in the mock).
-export function rootActiveMap() {
-    return auditionMapOf({
-        auditionStep: state.rootAuditionStep ?? -1,
-        sequenceBypassed: state.rootSequenceBypassed,
-        sequence: state.rootSequence,
-    });
-}
-
-// Intrinsic composite duration (clip: duration; stack: LCM of the
-// LOOPING children — one-shots excluded, engine parity
-// StackNode::getIntrinsicDuration / composition.md §1).
-export function intrinsicOfNode(n) {
-    if (n.type !== 'stack') return n.isRecording ? 0 : (n.duration || 0);
-    let comp = 0;
-    (n.nodes || []).forEach(c => {
-        if (c.periodSource === 'context') return;
-        const d = intrinsicOfNode(c);
-        if (d > 0) comp = comp > 0 ? lcm(comp, d) : d;
-    });
-    return comp;
-}
-
-// --- Q18: origins on every node (composition.md §5, engine parity
-// AudioEngine::settleAnchors / shiftOriginsGated / cycleTopOf) ---
-
-/** Committed content anywhere in `node`'s subtree (engine
- * hasCommittedContent): a clip with material, or a stack holding one. */
-export function hasCommittedContent(node) {
-    if (node.type !== 'stack') return !node.isRecording && (node.duration || 0) > 0;
-    return (node.nodes || []).some(hasCommittedContent);
-}
-
-/** The earliest committed descendant's origin (Infinity when none). */
-export function earliestCommittedOrigin(node) {
-    if (node.type !== 'stack') {
-        return hasCommittedContent(node) ? (node.origin || 0) : Infinity;
+/** Engine isOneTakeStack: the committed direct clips are one take — two
+ * or more, one duration, one origin, and (once anchored) that origin the
+ * stack's own. */
+function isOneTakeStack(stack) {
+    let direct = 0, origin = stack.origin || 0, duration = 0;
+    for (const c of stack.nodes || []) {
+        if (c.type !== 'clip') {
+            if (committedClipCount(c) > 0) return false;
+            continue;
+        }
+        const d = takeLength(c);
+        if (!(d > 0)) continue;
+        if (c.periodSource === 'context') return false;
+        if (direct === 0) {
+            if (!stack.anchored) origin = c.origin || 0;
+            duration = d;
+        }
+        if ((c.origin || 0) !== origin || d !== duration) return false;
+        direct++;
     }
-    let best = Infinity;
-    for (const c of node.nodes || []) best = Math.min(best, earliestCommittedOrigin(c));
-    return best;
+    return direct >= 2;
 }
 
-/** shiftOrigins (composition.md §5, I11): re-anchoring a node
- * re-anchors its SUBTREE — the node's origin and every descendant's
- * move by the same delta. The one primitive behind the definer trim,
- * continuity, lock-collapse and seek, for clips and stacks alike. */
+function oneTakeStackUnder(stack) {
+    if (isOneTakeStack(stack)) return stack;
+    let nested = null;
+    for (const c of stack.nodes || []) {
+        if (committedClipCount(c) === 0) continue;
+        if (c.type !== 'stack' || nested) return null;
+        nested = c;
+    }
+    return nested ? oneTakeStackUnder(nested) : null;
+}
+
+function geometryInUseOutside(node, exclude) {
+    if (node === exclude) return false;
+    if (!node.loopBypassed && storesGeometry(node)) return true;
+    return (node.nodes || []).some(c => geometryInUseOutside(c, exclude));
+}
+
+/** Engine isDefinerTarget: may Q be handed to `node`? */
+export function isDefinerTarget(node) {
+    if (node === state.root || node.periodSource === 'context' || takeLive(node)) return false;
+    if (node.type === 'clip') {
+        if (!(takeLength(node) > 0)) return false;
+    } else if (activeSeqLen(node) > 0 || !isOneTakeStack(node)) {
+        return false;
+    }
+    return !ancestorsOf(node).some(a => a !== state.root &&
+        (activeMapOf(a) || activeSeqLen(a) > 0 || a.periodSource === 'context'));
+}
+
+/** Engine holdsAllCommittedContent. */
+export function holdsAllContent(node) {
+    const inside = committedClipCount(node);
+    return inside > 0 && inside === committedClipCount();
+}
+
+/** Engine engine_internal::definer — the one node whose map
+ * re-establishes (Q, zero), or null. */
+export function islandDefiner() {
+    if (takeLive()) return null;
+    const handed = state.definerDesignation ? findNode(state.definerDesignation) : null;
+    if (handed && isDefinerTarget(handed) &&
+        !(handed.type === 'stack' && auditionMapOf(handed))) return handed;
+    if (committedClipCount() === 1) {
+        const clip = firstCommittedClip();
+        return geometryInUseOutside(state.root, clip) ? null : clip;
+    }
+    const stack = oneTakeStackUnder(state.root);
+    if (!stack || geometryInUseOutside(state.root, stack)) return null;
+    return auditionMapOf(stack) ? null : stack;
+}
+
+// ---- origins and anchors (engine island_geometry.cc) --------------------
+
+/** Move `node` and its whole subtree by `delta`. */
 export function shiftOrigins(node, delta) {
     if (!delta) return;
-    node.origin = (node.origin || 0) + delta;
-    if (node.type === 'stack') (node.nodes || []).forEach(c => shiftOrigins(c, delta));
+    eachNode(n => { n.origin = (n.origin || 0) + delta; }, node);
 }
 
-/** A stack's anchoring (engine StackNode::isAnchored): true once
- * committed content exists in its subtree and the settle stored an
- * origin. Clips are always anchored. */
-export function isAnchored(node) {
-    return node.type !== 'stack' || !!node.anchored;
-}
-
-/** The RECEIVED cycle top of `node`'s frame (engine AudioEngine::
- * cycleTopOf): the island zero, mapped down through every enclosing
- * active map — each mapping ancestor's child frame tops at
- * O + mapOffset(0), O being its own origin once anchored, else the top
- * it received. The mock's root is synthetic (no node): its frame is
- * the zero, through the root's step audition when one is on. */
-export function cycleTopOf(node) {
-    const parent = findParent(node.id);
-    if (!parent) {
-        const top = state.islandZero || 0;
-        const m = rootActiveMap();
-        return m ? top + mapOffset(m, 0) : top;
+/** Engine liftAncestorsGated: the stacks anchored ON `node` follow it —
+ * each ancestor, nearest first, while `node`'s subtree holds all of its
+ * committed content. One that holds other content stays, and so does
+ * everything above it. */
+export function liftAncestors(node, delta) {
+    if (!delta) return;
+    const inside = committedClipCount(node);
+    for (const p of ancestorsOf(node)) {
+        if (committedClipCount(p) !== inside) break;
+        if (p.anchored) p.origin = (p.origin || 0) + delta;
     }
+}
+
+/** Clips are always anchored; a stack once content anchored it (the
+ * root: while it carries a song). */
+export const isAnchored = node => node.type !== 'stack' || !!node.anchored;
+
+/** Engine cycleTopOf: the island zero, re-based by each mapped ancestor. */
+function cycleTopOf(node) {
+    const parent = findParent(node.id);
+    if (!parent) return state.islandZero || 0;
     const top = cycleTopOf(parent);
     const m = activeMapOf(parent);
     if (!m) return top;
-    const O = parent.anchored ? (parent.origin || 0) : top;
-    return O + mapOffset(m, 0);
+    return (isAnchored(parent) ? (parent.origin || 0) : top) + mapOffset(m, 0);
 }
 
-/** THE ANCHOR (composition.md §2): the origin a node's inner timeline
- * is measured from — its own once anchored (clips always), else the
- * received cycle top (the empty case; engine StackNode::frameOrigin). */
+/** The origin a node measures from: its own once anchored, else the
+ * cycle top it receives. The root's is the frame top the cursor folds
+ * from (engine rootFrameTop). */
 export function frameOriginOf(node) {
     return isAnchored(node) ? (node.origin || 0) : cycleTopOf(node);
 }
 
-/** THE NODE EQUATION (engine heard::nodeInner): the inner position
- * `node` presents at clock `t` under `map` (its active map, else its
- * whole inner span) anchored at `origin`:
- * inner(t) = mapOffset((t − O − a0) mod P). */
-export function innerUnder(map, origin, t) {
-    const period = mapPeriod(map);
-    if (!(period > 0)) return 0;
-    return mapOffset(map, posMod(t - origin - mapOffset(map, 0), period));
+function earliestCommittedOrigin(node) {
+    let best = Infinity;
+    eachNode(n => { if (isCommittedClip(n)) best = Math.min(best, n.origin || 0); }, node);
+    return best;
 }
 
-/** A node's effective map (engine heard::effectiveMap): the active
- * map, else the full inner span [0, D). */
-export function effectiveMapOf(node) {
-    const m = activeMapOf(node);
-    if (m && mapPeriod(m) > 0) return m;
-    return { segs: [[0, intrinsicOfNode(node)]] };
-}
-
-/** nodeInner(node, t): the node equation on the node's current state. */
-export function nodeInner(node, t) {
-    return innerUnder(effectiveMapOf(node), frameOriginOf(node), t);
-}
-
-/** The origin that makes a node present inner position `p` at `t0`
- * under map `m` (engine heard::originForHeard) — or, when the new map
- * no longer covers `p`, the old heard phase `fallbackH` folded into the
- * new period. */
-export function originForHeard(m, t0, p, fallbackH) {
-    const period = mapPeriod(m);
-    let h = heardOffsetOfMap(m, p);
-    if (h < 0) h = posMod(fallbackH, period);
-    return t0 - mapOffset(m, 0) - h;
-}
-
-// (Lazy twin of time_map.heardOffsetOf — kept local so state.js stays
-// the leaf module; identical semantics.)
-function heardOffsetOfMap(map, inner) {
-    let acc = 0;
-    for (const [s, e] of map.segs || []) {
-        if (inner >= s && inner < e) return acc + (inner - s);
-        acc += e - s;
-    }
-    return -1;
-}
-
-/**
- * SETTLE ANCHORS (engine AudioEngine::settleAnchors, composition.md
- * §5): every stack whose anchoring disagrees with its content settles —
- * the first committed content under a stack anchors it at the EARLIEST
- * committed descendant's origin (set once, never re-derived while
- * anchored); the last content leaving un-anchors it. Geometry authored
- * while unanchored was expressed from the received cycle top: it is
- * re-expressed from the new origin so nothing audible moves (a window
- * the new origin cannot carry is cleared — the establishment-scrub
- * discipline). Pre-order, like the engine's forEachStack: a parent's
- * anchoring is settled before its children read their cycle top.
- * Undo needs no riders here: the snapshot restores the exact stored
- * `anchored`/`origin` (the engine's Edit::anchors made observable).
- */
-export function settleAnchors(nodes = state.nodes) {
-    (nodes || []).forEach(n => {
-        if (n.type !== 'stack') return;
-        settleStack(n);
-        settleAnchors(n.nodes);
+/** Engine settleAnchors: every stack below the root whose anchoring
+ * disagrees with its content settles; a map authored before the anchor
+ * is re-expressed from the new origin, or cleared when it would wrap. */
+export function settleAnchors() {
+    eachNode(n => {
+        if (n.type !== 'stack' || n === state.root) return;
+        const has = committedClipCount(n) > 0;
+        if (has === !!n.anchored) return;
+        if (!has) {
+            n.anchored = false;
+            n.origin = 0;
+            return;
+        }
+        const origin = earliestCommittedOrigin(n);
+        const shift = origin - cycleTopOf(n);
+        const inner = intrinsicOfNode(n);
+        const segs = storedMap(n).segs;
+        if (shift !== 0 && inner > 0 && segs.length) {
+            const d = posMod(shift, inner);
+            const moved = segs.map(([s, e]) => (s - d < 0 ? [s - d + inner, e - d + inner]
+                                                          : [s - d, e - d]));
+            setStoredMap(n, moved.every(([, e]) => e <= inner)
+                ? moved.sort((a, b) => a[0] - b[0]) : []);
+        }
+        n.anchored = true;
+        n.origin = origin;
     });
 }
 
-function settleStack(n) {
-    const has = hasCommittedContent(n);
-    if (has === !!n.anchored) return;
-    if (!has) {
-        n.anchored = false;
-        n.origin = 0;
-        return;
-    }
-    const oldTop = cycleTopOf(n);
-    const origin = earliestCommittedOrigin(n);
-    const shift = origin - oldTop;  // inner positions move by −shift
-    const inner = intrinsicOfNode(n);
-    if (shift !== 0 && inner > 0) {
-        const d = posMod(shift, inner);
-        const shifted = ([s, e]) => {
-            let ns = s - d, ne = e - d;
-            if (ns < 0) { ns += inner; ne += inner; }
-            return ne <= inner ? [ns, ne] : null;  // representable?
-        };
-        if (Array.isArray(n.segments) && n.segments.length >= 2) {
-            const fresh = n.segments.map(shifted);
-            if (fresh.every(Boolean)) {
-                n.segments = fresh.sort((a, b) => a[0] - b[0]);
-            } else {
-                delete n.segments;
-                n.loopStart = 0;
-                n.loopEnd = 0;
-                console.log('[MockBackend] cleared a pre-anchor map on', n.id);
-            }
-        } else if ((n.loopEnd || 0) > (n.loopStart || 0)) {
-            const w = shifted([n.loopStart || 0, n.loopEnd || 0]);
-            if (w) { [n.loopStart, n.loopEnd] = w; }
-            else {
-                n.loopStart = 0;
-                n.loopEnd = 0;
-                console.log('[MockBackend] cleared a pre-anchor window on', n.id);
-            }
-        }
-    }
-    n.anchored = true;
-    n.origin = origin;
+/** A seek's phase jump on a graph — the live state, or a parsed
+ * snapshot: the zero and every origin move together (an unanchored root
+ * has no origin to move). */
+export function shiftIsland(graph, delta) {
+    graph.islandZero = (graph.islandZero || 0) + delta;
+    (graph.root.nodes || []).forEach(n => shiftOrigins(n, delta));
+    if (graph.root.anchored) graph.root.origin = (graph.root.origin || 0) + delta;
 }
 
-/**
- * The island quantum, mirroring the C++ model (P0-3): a STORED fact
- * (`state.islandQ` — established at first commit, re-established by a
- * provisional re-trim, reverted when the last committed clip goes;
- * 0 = unestablished). Scenario fixtures set it directly, so there is
- * no derivation from node durations here.
- */
-export function effectiveQuantumForState() {
-    return state.islandQ;
-}
+// ---- snapshots ----------------------------------------------------------
 
-/**
- * Serialize the mutable graph + island facts to a JSON string — the
- * shared form behind undo snapshots AND the in-memory saved session.
- */
+/** The graph and the island facts as a string: an undo snapshot, a
+ * saved session. */
 export function serializeGraph() {
-    return JSON.stringify({ nodes: state.nodes, islandZero: state.islandZero,
+    return JSON.stringify({ root: state.root, islandZero: state.islandZero,
                             islandQ: state.islandQ,
-                            // The root's sequence (docs/sequencer.md) —
-                            // node-level sequences ride state.nodes.
-                            rootSequence: state.rootSequence || null,
-                            rootSequenceBypassed: !!state.rootSequenceBypassed,
-                            // The root's anchor rides its song (frame.md §4).
-                            rootAnchored: !!state.rootAnchored,
-                            rootOrigin: state.rootOrigin || 0,
-                            // The root's rack (chain STRUCTURE is undoable).
-                            rootEffects: state.root.effects || null,
-                            // The handed-Q definer (Q22) is an island fact.
-                            definerDesignation: state.definerDesignation || '' });
+                            definerDesignation: state.definerDesignation });
 }
 
-/** Restore a serializeGraph() string into the live state singleton. */
+/** A restored graph holds no take in flight: a first take's clip comes
+ * back empty, a new take's slot as it stood. */
+function settleRestoredTake(n) {
+    if (!isLive(n) && !n.isAwaitingStop) return;
+    if (!n._retake) {
+        n.duration = 0;
+        n.contextCycle = 0;
+    }
+    n.isRecording = false;
+    n.isPendingStart = false;
+    n.isAwaitingStop = false;
+    for (const k of ['pendingStartAt', 'recordingStartPos', 'awaitingStopAt',
+                     '_mapArm', '_retake', '_retakeDone']) delete n[k];
+}
+
 export function restoreGraph(snap) {
     const o = JSON.parse(snap);
-    // A restored graph never holds a LIVE take (engine parity: undo
-    // entries own committed subtrees, and a take is only ever logged
-    // once settled — nothing can undo INTO an armed or capturing clip).
-    // A snapshot taken while a take was live carries its flags; the
-    // clip comes back EMPTY, as the engine's would.
-    const settle = ns => (ns || []).forEach(n => {
-        if (n.isRecording || n.isPendingStart || n.isAwaitingStop) {
-            n.isRecording = false;
-            n.isPendingStart = false;
-            n.isAwaitingStop = false;
-            n.duration = 0;
-            n.isPlaying = false;
-        }
-        settle(n.nodes);
-    });
-    settle(o.nodes);
-    state.nodes = o.nodes;
-    state.islandZero = o.islandZero;
+    eachNode(settleRestoredTake, o.root);
+    state.root = o.root;
+    state.islandZero = o.islandZero || 0;
     state.islandQ = o.islandQ || 0;
-    state.rootSequence = o.rootSequence || null;
-    state.rootSequenceBypassed = !!o.rootSequenceBypassed;
-    state.rootAnchored = !!o.rootAnchored;
-    state.rootOrigin = o.rootOrigin || 0;
-    state.root.effects = o.rootEffects || null;
     state.definerDesignation = o.definerDesignation || '';
 }

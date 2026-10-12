@@ -2,29 +2,28 @@
  * THE SEQUENCER (docs/sequencer.md — the fractal per-stack Sequence).
  * Pins the ruled canon, each test named for its ruling:
  *
- *   PERIOD LAW (S9/§2): an active sequence sets the stack's effective
- *     period to the sequence length; intrinsic stays LCM-of-children;
- *     the snapshot twin agrees; bypass restores the jam.
- *   CONCATENATION (S10 correction): steps SUM, they never LCM — an
- *     11Q step beside a 12Q step is a 23Q song.
- *   GATES (S1, mute-shaped + I5 fractal): a gated-off child is silent,
- *     a gated-on child sounds AT ITS OWN PHASE (entrances land in
- *     phase — the I1 guarantee); a gate on a group covers its subtree;
- *     absent uuid inherits ON.
+ *   GATES (S1, mute-shaped + I5 fractal): a gated-off child is silent;
+ *     a gate on a group covers its subtree; absent uuid inherits ON.
  *   SMOOTHNESS LAW (S7): gate edges are ~10 ms linear ramps, exact
  *     across arbitrary block splits (the envelope is schedule-derived,
  *     not integrator state); fx tails RING OUT through a closed gate —
- *     including MUTE, which now rides the same pre-fx gate.
- *   HEARD FRAME (§4): a take armed under an active sequence snapshots
- *     the song as its heard cycle (record-over-the-song).
- *   VERBS: setSequence/toggleSequence are undoable, refuse mid-take,
- *     publish in metadata, and round-trip through session save/load.
- *   THE STEP AUDITION (§11.2, build step 2): auditionStep derives a
- *     one-segment map from the sequence (follows a resize, overrides
- *     the authored window, gone with the sequence), publishes it, is
- *     not undoable; S18: a take recorded INTO the looping step is a
- *     step-sized part (C = the step), and the song rides the zero (no
- *     part-sized re-base shifts the sections).
+ *     MUTE included (it rides the same pre-fx gate).
+ *   AN ARM AT A STEP BOUNDARY is pending until the boundary's block and
+ *     captures from the boundary's own sample, wherever a gate's ramp
+ *     cuts the blocks before it.
+ *   VERBS: setSequence/toggleSequence are undoable, publish in
+ *     metadata, and round-trip through session save/load.
+ *   THE STEP AUDITION (§11.2): auditionStep derives a one-segment map
+ *     from the sequence (follows a resize, overrides the authored
+ *     window, gone with the sequence), publishes it, is not undoable;
+ *     S18: a take recorded INTO the looping step is a step-sized part
+ *     (C = the step), and the song rides the zero.
+ *
+ * The period law of a song (steps concatenate, a gated child keeps its
+ * phase, a cued step replays the song top, a take armed over the song
+ * hears it as its frame) is pinned sample-exactly by scenarios S17-S19
+ * and the golden period_law_cases; the refusal of a song edit under a
+ * live take by S26 and undo_tests.cc.
  *
  * Twin: ui/js/tests/sequence.test.mjs (mock + view-model parity).
  */
@@ -32,20 +31,26 @@
 #include <juce_core/juce_core.h>
 
 #include <cmath>
+#include <functional>
+#include <initializer_list>
+#include <map>
 #include <memory>
 #include <vector>
 
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
-#include "../src/graph_snapshot.h"
 #include "../src/sequence.h"
 #include "../src/session_io.h"
 #include "../src/track_template.h"
 #include "../src/stack_node.h"
+#include "scenario_utils.h"
 #include "test_utils.h"
 
 namespace celestrian {
 
+using scenario::Island;
+using scenario::posmod;
+using scenario::seqPayload;
 using test_utils::contextFor;
 using test_utils::NodeContext;
 
@@ -54,47 +59,85 @@ namespace {
 constexpr double kSr = 44100.0;
 constexpr int kLen = 4410;   // one committed take = 4410 samples (Q)
 constexpr int kFade = 441;   // Sequence::fadeSamples(44100) = 10 ms
+constexpr int64_t kQ = 20000;  // the engine cases' first take
 
-/** A committed clip carrying a constant-amplitude take, already
- * sounding (the solo/output-stage tests' idiom). */
+/** A committed constant-amplitude take, already sounding. */
 std::unique_ptr<ClipNode> makeDcClip(const char* name, float amp,
                                      int len = kLen) {
-  auto clip = std::make_unique<ClipNode>(name, kSr);
-  std::vector<float> in((size_t)len, amp);
-  const float* const ins[] = {in.data()};
-  NodeContext rec = contextFor(*clip, len);
-  clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec.ctx);
-  clip->stopRecording();
-  clip->startPlayback();
-  return clip;
+  return test_utils::committedClip(name, kSr, len, amp);
 }
 
-/** A committed clip whose content is an identifiable per-sample ramp
- * (content[i] = i / len) — the I1 phase probe. */
+/** A committed take whose content names its own index (content[i] =
+ * i / len) — the phase probe. */
 std::unique_ptr<ClipNode> makeRampClip(const char* name, int len = kLen) {
-  auto clip = std::make_unique<ClipNode>(name, kSr);
-  std::vector<float> in((size_t)len);
-  for (int i = 0; i < len; ++i) in[(size_t)i] = (float)i / (float)len;
-  const float* const ins[] = {in.data()};
-  NodeContext rec = contextFor(*clip, len);
-  clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec.ctx);
-  clip->stopRecording();
-  clip->startPlayback();
-  return clip;
+  return test_utils::committedClip(
+      name, kSr, len, [len](int64_t i) { return (float)i / (float)len; });
 }
 
-/** Build a two-step sequence: step "one" of `l1`, step "two" of `l2`,
- * with explicit gate rows. */
-const Sequence* makeSeq(int64_t l1, int64_t l2,
-                        std::vector<Sequence::GateRow> gates) {
+/** A two-step sequence: step "one" of `l1`, step "two" of `l2`, with
+ * explicit gate rows. */
+Sequence* makeSeq(int64_t l1, int64_t l2,
+                  std::vector<Sequence::GateRow> gates) {
   auto* s = new Sequence();
   s->steps.push_back({l1, "one"});
   s->steps.push_back({l2, "two"});
   s->gates = std::move(gates);
   s->finalize();
   return s;
+}
+
+/** makeSeq(kLen, 2 * kLen) with step "two" CUED. */
+Sequence* makeCuedSeq(std::vector<Sequence::GateRow> gates = {}) {
+  Sequence* s = makeSeq(kLen, 2 * kLen, std::move(gates));
+  s->steps[1].cue = true;
+  s->finalize();
+  return s;
+}
+
+/** A step with one explicit successor. */
+Sequence::Step stepTo(int64_t len, const char* name, int to) {
+  Sequence::Step st;
+  st.len = len;
+  st.name = name;
+  st.next.push_back({to, 1});
+  return st;
+}
+
+/** The published sequence record of a root or node var. */
+juce::var seqOf(const juce::var& node) {
+  return node.getProperty("sequence", juce::var());
+}
+
+/** The step `id` auditions (-1 none; -2 when it publishes no sequence). */
+int auditionOf(Island& is, const juce::String& id) {
+  return (int)seqOf(is.node(id)).getProperty("auditionStep", -2);
+}
+
+/** 1000-sample steps with the given successor lists, under `seed`. */
+juce::var routedPayload(const std::vector<std::vector<int>>& nexts, int seed) {
+  std::vector<scenario::StepSpec> steps;
+  for (const auto& next : nexts) steps.push_back({1000, false, next});
+  return seqPayload(steps, {}, seed);
+}
+
+/** `outer` saved to a fresh bundle named `name` and loaded back (not ok
+ * when either half failed); the bundle stays in `dir` for the caller to
+ * edit or reload. */
+session_io::LoadedSession roundTrip(const StackNode& outer,
+                                    const juce::String& name,
+                                    juce::File* dir = nullptr) {
+  bool saved = false;
+  auto trip = test_utils::roundTrip(outer, kSr, name, {}, &saved);
+  if (dir != nullptr) *dir = trip.dir;
+  trip.loaded.ok = trip.loaded.ok && saved;
+  return std::move(trip.loaded);
+}
+
+/** The sequence of the first child of a loaded bundle (a group). */
+const Sequence* firstGroupSequence(const session_io::LoadedSession& loaded) {
+  if (!loaded.ok || loaded.children.empty()) return nullptr;
+  auto* group = dynamic_cast<StackNode*>(loaded.children[0].get());
+  return group != nullptr ? group->sequencePtr() : nullptr;
 }
 
 }  // namespace
@@ -105,12 +148,10 @@ class SequencerTests : public juce::UnitTest {
 
   void runTest() override {
     testEnvelopeMath();
-    testPeriodLaw();
     testGates();
-    testEntrancePhase();
     testSmoothness();
     testTailsRing();
-    testHeardFrame();
+    testArmAtAStepBoundary();
     testEngineVerbs();
     testSaveLoad();
     testAudition();
@@ -140,6 +181,22 @@ class SequencerTests : public juce::UnitTest {
     return once(t, n);
   }
 
+  struct GainRow {
+    uint64_t mask;
+    int64_t at;
+    float want;
+    float tolerance;
+    const char* what;
+  };
+  /** Each row: the gate envelope of `mask` at song position `at`. */
+  void expectGains(const Sequence& s, int64_t fade,
+                   std::initializer_list<GainRow> rows) {
+    for (const auto& row : rows) {
+      expectWithinAbsoluteError(s.gainAt(row.mask, row.at, fade), row.want,
+                                row.tolerance, row.what);
+    }
+  }
+
   void testEnvelopeMath() {
     beginTest("envelope: pure, piecewise-linear, wraps with the loop");
     {
@@ -154,63 +211,19 @@ class SequencerTests : public juce::UnitTest {
       expectEquals(s.stepAt(1000), 1);
       expectEquals(s.stepAt(3999), 2);
 
-      // Mask 0b011 (a+b on, c off): one run [0, 3000).
-      const uint64_t m = 0b011;
-      const int64_t F = 100;
-      expectWithinAbsoluteError(s.gainAt(m, 50, F), 0.5f, 1e-6f,
-                                "fade-in at run start");
-      expectWithinAbsoluteError(s.gainAt(m, 1500, F), 1.0f, 1e-6f,
-                                "interior = 1 (a+b merge into one run)");
-      expectWithinAbsoluteError(s.gainAt(m, 2950, F), 0.5f, 1e-6f,
-                                "fade-out into the off step");
-      expectWithinAbsoluteError(s.gainAt(m, 3500, F), 0.0f, 1e-6f,
-                                "off step = 0");
-      // Wrap: mask 0b101 (c and a on) is ONE run across the loop seam.
-      const uint64_t w = 0b101;
-      expectWithinAbsoluteError(s.gainAt(w, 3999, F), 1.0f, 1e-6f,
-                                "run wraps: end of c is mid-run");
-      expectWithinAbsoluteError(s.gainAt(w, 0, F), 1.0f, 1e-6f,
-                                "run wraps: start of a is mid-run");
-      expectWithinAbsoluteError(s.gainAt(w, 950, F), 0.5f, 1e-6f,
-                                "fade-out approaching b");
-      // All-on mask: constant 1 (no run edges anywhere).
-      expectWithinAbsoluteError(s.gainAt(~0ull, 0, F), 1.0f, 1e-6f,
-                                "all-on = constant 1");
-    }
-  }
-
-  void testPeriodLaw() {
-    beginTest("PERIOD LAW: active sequence = the stack's effective period");
-    {
-      StackNode root("island");
-      root.addChild(makeDcClip("a", 0.1f));
-      root.addChild(makeDcClip("b", 0.4f));
-      expectEquals(root.getIntrinsicDuration(), (int64_t)kLen,
-                   "intrinsic = LCM of children");
-      expectEquals(root.getEffectivePeriod(), (int64_t)kLen,
-                   "no sequence: effective = intrinsic");
-
-      delete root.exchangeSequence(makeSeq(kLen, 2 * kLen, {}));
-      expectEquals(root.getEffectivePeriod(), (int64_t)(3 * kLen),
-                   "active sequence: effective = seq total");
-      expectEquals(root.getIntrinsicDuration(), (int64_t)kLen,
-                   "intrinsic untouched by the sequence");
-      std::unique_ptr<GraphSnapshot> snap(buildGraphSnapshot(root));
-      expectEquals(snapEffectivePeriod(*snap, 0), (int64_t)(3 * kLen),
-                   "snapshot twin agrees (period law)");
-
-      root.setSequenceBypassed(true);
-      expectEquals(root.getEffectivePeriod(), (int64_t)kLen,
-                   "bypassed: the jam comes back");
-      root.setSequenceBypassed(false);
-    }
-
-    beginTest("CONCATENATION: 11Q + 12Q steps = a 23Q song, never LCM");
-    {
-      StackNode root("island");
-      delete root.exchangeSequence(makeSeq(11 * 1000, 12 * 1000, {}));
-      expectEquals(root.activeSequenceLen(), (int64_t)(23 * 1000),
-                   "steps sum (the S10 correction)");
+      // Mask 0b011 (a+b on, c off) is one run [0, 3000); mask 0b101 (c
+      // and a on) is ONE run across the loop seam; all-on has no edges.
+      const uint64_t m = 0b011, w = 0b101;
+      expectGains(s, 100, {
+          {m, 50, 0.5f, 1e-6f, "fade-in at run start"},
+          {m, 1500, 1.0f, 1e-6f, "interior = 1 (a+b merge into one run)"},
+          {m, 2950, 0.5f, 1e-6f, "fade-out into the off step"},
+          {m, 3500, 0.0f, 1e-6f, "off step = 0"},
+          {w, 3999, 1.0f, 1e-6f, "run wraps: end of c is mid-run"},
+          {w, 0, 1.0f, 1e-6f, "run wraps: start of a is mid-run"},
+          {w, 950, 0.5f, 1e-6f, "fade-out approaching b"},
+          {~0ull, 0, 1.0f, 1e-6f, "all-on = constant 1"},
+      });
     }
   }
 
@@ -247,30 +260,6 @@ class SequencerTests : public juce::UnitTest {
     }
   }
 
-  void testEntrancePhase() {
-    beginTest("I1: an entrance lands at the phase it always had");
-    {
-      // The gated render at t must equal the ungated render at t —
-      // mute-shaped gates keep the clock; nothing relaunches.
-      const int64_t t = (int64_t)kLen + 4590;  // step-2 interior
-      StackNode gated("island");
-      gated.addChild(makeRampClip("r"));
-      const juce::String rId = gated.ownedChildren()[0]->getUuid();
-      delete gated.exchangeSequence(makeSeq(kLen, 2 * kLen, {{rId, 0b10ull}}));
-
-      StackNode plain("island2");
-      plain.addChild(makeRampClip("r2"));
-
-      auto got = renderAt(gated, t, 64);
-      auto want = renderAt(plain, t, 64);
-      for (int i = 0; i < 64; i += 16) {
-        expectWithinAbsoluteError(got[(size_t)i], want[(size_t)i], 1e-5f,
-                                  "gated-on phase == always-on phase");
-      }
-      expect(std::abs(want[0]) > 1e-3f, "probe content is non-trivial");
-    }
-  }
-
   void testSmoothness() {
     beginTest("S7: gate edges ramp over 10 ms, block-split independent");
     {
@@ -299,23 +288,91 @@ class SequencerTests : public juce::UnitTest {
       expect(max_jump < 0.4f / (float)kFade + 1e-4f,
              "no sample-to-sample jump exceeds the ramp slope (no pops)");
 
-      // Purity across splits: the same span rendered in odd chunks is
-      // byte-identical (the envelope is schedule-derived, I6).
-      std::vector<float> chunks;
-      int64_t t = t0;
-      int left = n;
-      while (left > 0) {
-        const int c = std::min(left, 97);
-        auto part = renderAt(root, t, c);
-        chunks.insert(chunks.end(), part.begin(), part.begin() + c);
-        t += c;
-        left -= c;
-      }
-      for (int i = 0; i < n; i += 37) {
-        expectWithinAbsoluteError(chunks[(size_t)i], big[(size_t)i], 1e-6f,
-                                  "block splits do not change the output");
-      }
+      // The envelope is schedule-derived (I6): odd chunks render the
+      // same span.
+      expectSplitIndependent(root, t0, n, big, 1e-6f);
     }
+
+    beginTest("S7: a gated child that is itself a windowed group ramps ONCE "
+              "- its own seam inside the ramp does not restart the envelope");
+    {
+      // The gated child is a group whose free-cut window wraps 200
+      // samples into the parent's 10 ms entrance ramp: the group renders
+      // that ramp in two runs of its own, and each must carry its slice.
+      const int seam_into_ramp = 200;
+      StackNode root("island");
+      root.addChild(makeWindowedGroup("g", 0.4f, kLen + seam_into_ramp));
+      const juce::String gId = root.ownedChildren()[0]->getUuid();
+      delete root.exchangeSequence(makeSeq(kLen, 2 * kLen, {{gId, 0b10ull}}));
+
+      const int n = 2 * kFade;
+      const int64_t t0 = (int64_t)kLen - kFade;
+      auto big = renderAt(root, t0, n);
+      expectWithinAbsoluteError(big[0], 0.0f, 1e-5f, "closed before entry");
+      for (int k = 0; k < kFade; k += 21) {
+        expectWithinAbsoluteError(big[(size_t)(kFade + k)],
+                                  0.4f * (float)k / (float)kFade, 2e-3f,
+                                  "one straight rise across the group's seam");
+      }
+      expectWithinAbsoluteError(big[(size_t)(n - 1)], 0.4f, 2e-3f,
+                                "fade completes at 10 ms");
+      float max_jump = 0.0f;
+      for (int i = 1; i < n; ++i) {
+        max_jump = std::max(max_jump,
+                            std::abs(big[(size_t)i] - big[(size_t)(i - 1)]));
+      }
+      expect(max_jump < 0.4f / (float)kFade + 1e-4f,
+             "no step where the group wraps (the ramp is not replayed)");
+
+      expectSplitIndependent(root, t0, n, big, 1e-5f);
+    }
+  }
+
+  /** A group holding one 2Q DC clip, with a single window
+   * [0, window_len) of its own (window_len <= 2Q) - the gated child
+   * that splits the runs it is handed. */
+  static std::unique_ptr<StackNode> makeWindowedGroup(const char* name,
+                                                      float amp,
+                                                      int64_t window_len) {
+    auto group = std::make_unique<StackNode>(name);
+    group->addChild(makeDcClip("member", amp, 2 * kLen));
+    group->setLoopPoints(0, window_len);
+    return group;
+  }
+
+  /** The span [t0, t0 + n) rendered in `chunk`-sample pieces equals
+   * `whole`, the same span rendered as one block (probed every `stride`
+   * samples). */
+  void expectSplitIndependent(StackNode& root, int64_t t0, int n,
+                              const std::vector<float>& whole,
+                              float tolerance, int chunk = 97,
+                              int stride = 37) {
+    std::vector<float> chunks;
+    int64_t t = t0;
+    int left = n;
+    while (left > 0) {
+      const int c = std::min(left, chunk);
+      auto part = renderAt(root, t, c);
+      chunks.insert(chunks.end(), part.begin(), part.begin() + c);
+      t += c;
+      left -= c;
+    }
+    for (int i = 0; i < n; i += stride) {
+      expectWithinAbsoluteError(chunks[(size_t)i], whole[(size_t)i], tolerance,
+                                "block splits do not change the output");
+    }
+  }
+
+  /** Turns on the echo of `clip`'s own chain: 50 ms delay, wet 0.8, no
+   * feedback. prepare() first — a node-level test has no device start,
+   * and an unprepared echo has no delay line. */
+  void enableEcho(ClipNode& clip) {
+    auto* echo = clip.fxChain()->slots()[2].get();
+    echo->prepare(kSr);
+    echo->enabled.store(true);
+    expect(echo->setParam("time", 0.05), "echo time set");
+    expect(echo->setParam("mix", 0.8), "echo mix set");
+    expect(echo->setParam("feedback", 0.0), "echo feedback set");
   }
 
   void testTailsRing() {
@@ -323,15 +380,7 @@ class SequencerTests : public juce::UnitTest {
     {
       StackNode root("island");
       auto clip = makeDcClip("b", 0.5f);
-      // Echo on the CLIP's own chain: 50 ms delay, wet 0.8, no feedback.
-      // prepare() first — node-level tests bypass the engine's
-      // device-start prepare, and an unprepared echo has no delay line.
-      auto* echo = clip->fxChain()->slots()[2].get();
-      echo->prepare(kSr);
-      echo->enabled.store(true);
-      expect(echo->setParam("time", 0.05), "echo time set");
-      expect(echo->setParam("mix", 0.8), "echo mix set");
-      expect(echo->setParam("feedback", 0.0), "echo feedback set");
+      enableEcho(*clip);
       const juce::String bId = clip->getUuid();
       root.addChild(std::move(clip));
       delete root.exchangeSequence(makeSeq(kLen, 2 * kLen, {{bId, 0b01ull}}));
@@ -347,10 +396,7 @@ class SequencerTests : public juce::UnitTest {
       // Fade block at the boundary, then fully closed:
       renderAt(root, t, block, /*warm=*/false);
       t += block;
-      auto closed = renderAt(root, t, block, /*warm=*/false);
-      float peak = 0.0f;
-      for (float v : closed) peak = std::max(peak, std::abs(v));
-      expect(peak > 0.05f,
+      expect(test_utils::peakOf(renderAt(root, t, block, false)) > 0.05f,
              "the echo of the audible material still sounds after the gate "
              "closed (tails ring, never freeze)");
     }
@@ -359,12 +405,7 @@ class SequencerTests : public juce::UnitTest {
     {
       StackNode root("island");
       auto clip = makeDcClip("m", 0.5f);
-      auto* echo = clip->fxChain()->slots()[2].get();
-      echo->prepare(kSr);
-      echo->enabled.store(true);
-      expect(echo->setParam("time", 0.05));
-      expect(echo->setParam("mix", 0.8));
-      expect(echo->setParam("feedback", 0.0));
+      enableEcho(*clip);
       ClipNode* m = clip.get();
       root.addChild(std::move(clip));
 
@@ -378,129 +419,129 @@ class SequencerTests : public juce::UnitTest {
       // The mute edge is a ramp, not a cliff: the first muted block
       // still carries signal, decreasing.
       expect(std::abs(fadeBlock[0]) > 0.1f, "mute edge starts audible");
-      auto after = renderAt(root, t, kFade, /*warm=*/false);
-      float peak = 0.0f;
-      for (float v : after) peak = std::max(peak, std::abs(v));
-      expect(peak > 0.05f, "muted clip's echo tail rings out");
+      expect(test_utils::peakOf(renderAt(root, t, kFade, false)) > 0.05f,
+             "muted clip's echo tail rings out");
     }
   }
 
-  void testHeardFrame() {
-    beginTest("record over the song: the heard frame IS the sequence");
+  /** What an arm aimed at a step boundary published and captured. */
+  struct BoundaryArm {
+    bool pending_before = false;  // after the block that ends short of it
+    bool recording_at = false;    // after the block that holds it
+    int64_t captured_at = 0;      // the live length after that block
+    int64_t origin = 0;           // the committed take's origin
+    int64_t duration = 0;
+    int off_ramp = 0;  // committed samples that are not the input's
+  };
+
+  /** A song of two 2Q steps on the root of a one-clip island. A fresh
+   * clip is armed `lead` samples (one to two blocks) before the step
+   * boundary — its arm target — and the two blocks up to and across the
+   * boundary are driven one by one; the take then runs 2Q.
+   * `gated`: the first clip is off in the second step, so its gate
+   * ramps out over the fade before the boundary and the root cuts the
+   * block at the ramp's corner (StackNode::forEachSeamRun). */
+  BoundaryArm armBeforeStepBoundary(int64_t lead, bool gated) {
+    Island is;
+    const juce::String a = is.record(kQ);
+    std::map<juce::String, std::vector<bool>> gates;
+    if (gated) gates[a] = {true, false};
+    is.engine.setSequence(is.rootId(), seqPayload({{2 * kQ}, {2 * kQ}}, gates));
+    // The song is anchored at the island zero.
+    const int64_t boundary = is.zero() + 2 * kQ;
+    const juce::String c = is.createClip();
+    is.drive(boundary - lead - is.clock);
+    is.engine.startRecordingInNode(c);
+
+    BoundaryArm arm;
+    is.drive(scenario::BLOCK);
+    arm.pending_before =
+        is.bprop(c, "isPendingStart") && !is.bprop(c, "isRecording");
+    is.drive(scenario::BLOCK);
+    arm.recording_at = is.bprop(c, "isRecording");
+    arm.captured_at = is.dur(c);
+
+    // Stopped a block short of 2Q: the take runs on to that boundary.
+    is.drive(2 * kQ - arm.captured_at - scenario::BLOCK);
+    is.engine.stopRecordingInNode(c);
+    is.settle();
+    arm.origin = is.origin(c);
+    arm.duration = is.dur(c);
+    auto* clip = dynamic_cast<ClipNode*>(is.nodePtr(c));
+    const juce::AudioBuffer<float>& content = clip->getAudioBuffer();
+    const int64_t base = clip->getContentBase();
+    for (int64_t k = 0; k < arm.duration; ++k) {
+      if (content.getSample(0, (int)(base + k)) !=
+          scenario::rampAt(boundary + k)) {
+        ++arm.off_ramp;
+      }
+    }
+    return arm;
+  }
+
+  void testArmAtAStepBoundary() {
+    beginTest("an arm aimed at a step boundary is pending until the block "
+              "that holds it and captures from the boundary's own sample, "
+              "wherever a gate's ramp cuts the blocks before it");
     {
-      StackNode root("island");
-      root.addChild(makeDcClip("a", 0.1f));
-      root.setQuantum(kLen, 0);
-      delete root.exchangeSequence(makeSeq(kLen, 2 * kLen, {}));
-      root.takeArmed();
-      expectEquals(root.activeTakeHeardCycle(), (int64_t)(3 * kLen),
-                   "heard cycle at arm = lcm(Q, seq total)");
-      expectEquals(root.activeTakeIntrinsicCycle(), (int64_t)kLen,
-                   "intrinsic snapshot ignores the sequence");
-      root.takeCancelled();
+      // The ramp's corner sits kFade before the boundary: each lead puts
+      // it at another offset of the block that ends short of the
+      // boundary (159, 200, 459 of 512).
+      for (const int64_t lead : {kFade + 159, kFade + 200, kFade + 459}) {
+        const int64_t past_boundary = 2 * scenario::BLOCK - lead;
+        for (const bool gated : {false, true}) {
+          const juce::String cut = gated ? " (block cut)" : " (block whole)";
+          const BoundaryArm arm = armBeforeStepBoundary(lead, gated);
+          expect(arm.pending_before,
+                 "pending while the clock is short of the boundary" + cut);
+          expect(arm.recording_at,
+                 "recording in the block the boundary is in" + cut);
+          expectEquals(arm.captured_at, past_boundary,
+                       "captured exactly what arrived since the boundary" + cut);
+          expectEquals(arm.origin, (int64_t)(2 * kQ),
+                       "the take's origin is the boundary" + cut);
+          expectEquals(arm.duration, (int64_t)(2 * kQ), "the take is 2Q" + cut);
+          expectEquals(arm.off_ramp, 0,
+                       "content[k] is the input at boundary + k, from k = 0" +
+                           cut);
+        }
+      }
     }
   }
 
   void testEngineVerbs() {
     beginTest("setSequence: undoable, publishes, toggle round-trips");
     {
-      AudioEngine engine;
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-      expect(rootId.isNotEmpty(), "root uuid published");
-
-      auto* payload = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "intro");
-        s1->setProperty("len", 1000.0);
-        steps.add(juce::var(s1));
-        auto* s2 = new juce::DynamicObject();
-        s2->setProperty("name", "full");
-        s2->setProperty("len", 2000.0);
-        steps.add(juce::var(s2));
-        payload->setProperty("steps", steps);
-        auto* gates = new juce::DynamicObject();
-        juce::Array<juce::var> bits;
-        bits.add(false);
-        bits.add(true);
-        gates->setProperty("some-child", bits);
-        payload->setProperty("gates", juce::var(gates));
-      }
-      engine.setSequence(rootId, juce::var(payload));
-
-      auto seqOf = [&](const juce::var& state) {
-        return state.getProperty("sequence", juce::var());
+      Island is;
+      const juce::String root = is.rootId();
+      expect(root.isNotEmpty(), "root uuid published");
+      auto seq = [&] { return seqOf(is.state()); };
+      auto stepCount = [&] {
+        return seq().getProperty("steps", juce::var()).getArray()->size();
       };
-      juce::var s = engine.getGraphState();
-      expect(seqOf(s).isObject(), "sequence published in metadata");
-      expectEquals(
-          (int)seqOf(s).getProperty("steps", juce::var()).getArray()->size(),
-          2, "two steps published");
-      expect(!(bool)seqOf(s).getProperty("bypassed", true),
+      is.engine.setSequence(
+          root, seqPayload({{1000}, {2000}}, {{"some-child", {false, true}}}));
+      expect(seq().isObject(), "sequence published in metadata");
+      expectEquals(stepCount(), 2, "two steps published");
+      expect(!(bool)seq().getProperty("bypassed", true),
              "born active (not bypassed)");
 
-      engine.undo();
-      expect(!seqOf(engine.getGraphState()).isObject(),
-             "undo removes the sequence");
-      engine.redo();
-      expect(seqOf(engine.getGraphState()).isObject(),
-             "redo restores the sequence");
+      is.engine.undo();
+      expect(!seq().isObject(), "undo removes the sequence");
+      is.engine.redo();
+      expect(seq().isObject(), "redo restores the sequence");
 
-      engine.toggleSequence(rootId);
-      expect((bool)seqOf(engine.getGraphState()).getProperty("bypassed", false),
+      is.engine.toggleSequence(root);
+      expect((bool)seq().getProperty("bypassed", false),
              "toggle bypasses (the jam comes back)");
-      engine.undo();
-      expect(!(bool)seqOf(engine.getGraphState()).getProperty("bypassed", true),
+      is.engine.undo();
+      expect(!(bool)seq().getProperty("bypassed", true),
              "bypass toggle is undoable");
 
-      // Malformed payloads refuse (no edit recorded).
-      auto* bad = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s0 = new juce::DynamicObject();
-        s0->setProperty("len", 0.0);
-        steps.add(juce::var(s0));
-        bad->setProperty("steps", steps);
-      }
-      const juce::var before = engine.getGraphState();
-      engine.setSequence(rootId, juce::var(bad));
-      expectEquals(
-          (int)seqOf(engine.getGraphState())
-              .getProperty("steps", juce::var())
-              .getArray()
-              ->size(),
-          2, "zero-length step refused; sequence unchanged");
-    }
-
-    beginTest("mid-take gate: setSequence refuses while recording");
-    {
-      AudioEngine engine;
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-      engine.createNode("clip");
-      const juce::var st = engine.getGraphState();
-      const juce::String clipId = test_utils::nodesOf(st)
-                                      ->getReference(0)
-                                      .getProperty("id", "")
-                                      .toString();
-      engine.startRecordingInNode(clipId);
-      auto* payload = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "x");
-        s1->setProperty("len", 1000.0);
-        steps.add(juce::var(s1));
-        payload->setProperty("steps", steps);
-      }
-      engine.setSequence(rootId, juce::var(payload));
-      expect(!engine.getGraphState()
-                  .getProperty("sequence", juce::var())
-                  .isObject(),
-             "refused while a take is armed/recording");
-      engine.stopRecordingInNode(clipId);
+      // A malformed payload is refused: no edit is recorded.
+      is.engine.setSequence(root, seqPayload({{0}}));
+      expectEquals(stepCount(), 2,
+                   "zero-length step refused; sequence unchanged");
     }
   }
 
@@ -557,324 +598,166 @@ class SequencerTests : public juce::UnitTest {
 
     beginTest("AUDITION: the engine verb (not undoable; mid-take refusal)");
     {
-      AudioEngine engine;
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-      // Q must exist for a real sequence to matter to the frame, but the
-      // verb itself only needs an active sequence.
-      auto* payload = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "a");
-        s1->setProperty("len", 1000.0);
-        steps.add(juce::var(s1));
-        auto* s2 = new juce::DynamicObject();
-        s2->setProperty("name", "b");
-        s2->setProperty("len", 2000.0);
-        steps.add(juce::var(s2));
-        payload->setProperty("steps", steps);
-      }
-      engine.setSequence(rootId, juce::var(payload));
-      const bool canUndoBefore =
-          (bool)engine.getGraphState().getProperty("canUndo", false);
-      engine.auditionStep(rootId, 1);
-      juce::var st = engine.getGraphState();
-      expectEquals((int)st.getProperty("sequence", juce::var())
-                       .getProperty("auditionStep", -1),
-                   1, "audition set through the engine");
+      Island is;
+      const juce::String root = is.rootId();
+      auto auditioned = [&] { return auditionOf(is, root); };
+      // The verb needs only an active sequence (no Q).
+      is.engine.setSequence(root, seqPayload({{1000}, {2000}}));
+      const bool can_undo_before = is.engine.canUndo();
+      is.engine.auditionStep(root, 1);
+      const juce::var st = is.state();
+      expectEquals(auditioned(), 1, "audition set through the engine");
       expect((bool)st.getProperty("windowActive", false),
              "root publishes the derived window");
       expectEquals((int64_t)(double)st.getProperty("loopStart", -1.0),
                    (int64_t)1000, "loopStart");
-      expect((bool)st.getProperty("canUndo", !canUndoBefore) == canUndoBefore,
+      expect(is.engine.canUndo() == can_undo_before,
              "not an edit: undo log untouched");
-      engine.auditionStep(rootId, 5);
-      expectEquals((int)engine.getGraphState()
-                       .getProperty("sequence", juce::var())
-                       .getProperty("auditionStep", -1),
-                   1, "out-of-range refused, previous kept");
+      is.engine.auditionStep(root, 5);
+      expectEquals(auditioned(), 1, "out-of-range refused, previous kept");
       // A shape change clears it (delete a step).
-      auto* one = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "a");
-        s1->setProperty("len", 1000.0);
-        steps.add(juce::var(s1));
-        one->setProperty("steps", steps);
-      }
-      engine.setSequence(rootId, juce::var(one));
-      expectEquals((int)engine.getGraphState()
-                       .getProperty("sequence", juce::var())
-                       .getProperty("auditionStep", 0),
-                   -1, "shape change clears the audition");
-      engine.auditionStep(rootId, 0);
-      engine.auditionStep(rootId, -1);
-      expect(!(bool)engine.getGraphState().getProperty("windowActive", true),
-             "-1 stops");
+      is.engine.setSequence(root, seqPayload({{1000}}));
+      expectEquals(auditioned(), -1, "shape change clears the audition");
+      is.engine.auditionStep(root, 0);
+      expectEquals(auditioned(), 0, "the remaining step auditions");
+      is.engine.auditionStep(root, -1);
+      expect(!(bool)is.state().getProperty("windowActive", true), "-1 stops");
+
+      // Mid-take: an audition changes what the performer hears, so the
+      // verb refuses while a take is live anywhere in the island.
+      const juce::String clip = is.createClip();
+      is.engine.startRecordingInNode(clip);
+      is.engine.auditionStep(root, 0);
+      expectEquals(auditioned(), -1, "refused while a take is armed/recording");
+      is.engine.stopRecordingInNode(clip);
     }
 
     beginTest("S18: record INTO a looping step = a step-sized part; "
               "the song rides the zero");
     {
-      AudioEngine engine;
-      const int BLOCK = 512;
-      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
-      auto process = [&](int total) {
-        float* ins[] = {inBuf.data()};
-        float outL[512], outR[512];
-        float* outs[] = {outL, outR};
-        int remaining = total;
-        while (remaining > 0) {
-          const int n = std::min(remaining, BLOCK);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
-      };
-      auto topId = [&](int k) {
-        const juce::var st = engine.getGraphState();
-        const juce::var nodes = st.getProperty("nodes", {});
-        return (*nodes.getArray())[k]
-            .getDynamicObject()
-            ->getProperty("id")
-            .toString();
-      };
-      auto prop = [&](const juce::String& id, const char* key) {
-        const juce::var st = engine.getGraphState();
-        const juce::var nodes = st.getProperty("nodes", {});
-        for (auto& n : *nodes.getArray()) {
-          if (n.getProperty("id", "").toString() == id) {
-            return (int64_t)(double)n.getProperty(key, 0.0);
-          }
-        }
-        return (int64_t)-1;
-      };
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-
-      // Take A establishes Q (~1 s); take B = 2Q.
-      engine.createNode("clip");
-      const juce::String aId = topId(0);
-      engine.startRecordingInNode(aId);
-      process(100);
-      process(44100);
-      engine.stopRecordingInNode(aId);
-      for (int i = 0; i < 200 && prop(aId, "isRecording") != 0; ++i) {
-        process(512);
-      }
-      const int64_t Q = prop(aId, "duration");
-      expect(Q > 0, "Q established");
-      engine.createNode("clip");
-      const juce::String bId = topId(1);
-      engine.startRecordingInNode(bId);
-      process((int)(2 * Q) - 200);
-      engine.stopRecordingInNode(bId);
-      for (int i = 0; i < 400 && prop(bId, "isRecording") != 0; ++i) {
-        process(512);
-      }
-      expectEquals(prop(bId, "duration"), (int64_t)(2 * Q), "B = 2Q");
-      const int64_t zeroBefore =
-          (int64_t)(double)engine.getGraphState().getProperty("islandZero", 0.0);
+      Island is;
+      const juce::String root = is.rootId();
+      is.record(kQ);
+      const int64_t Q = is.Q();
+      expectEquals(Q, kQ, "Q established");
+      const juce::String b = is.record(2 * Q);
+      expectEquals(is.dur(b), 2 * Q, "B = 2Q");
+      const int64_t zero_before = is.zero();
 
       // The song: intro 2Q | chorus 4Q | out 2Q = 8Q. Loop the chorus.
-      auto* payload = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        const char* names[] = {"intro", "chorus", "out"};
-        const double lens[] = {2.0 * Q, 4.0 * Q, 2.0 * Q};
-        for (int i = 0; i < 3; ++i) {
-          auto* s = new juce::DynamicObject();
-          s->setProperty("name", names[i]);
-          s->setProperty("len", lens[i]);
-          steps.add(juce::var(s));
-        }
-        payload->setProperty("steps", steps);
-      }
-      engine.setSequence(rootId, juce::var(payload));
-      engine.auditionStep(rootId, 1);
+      is.engine.setSequence(root, seqPayload({{2 * Q}, {4 * Q}, {2 * Q}}));
+      is.engine.auditionStep(root, 1);
 
       // Record C into the chorus: never stop — the one-period cap
       // commits it at exactly the step.
-      engine.createNode("clip");
-      const juce::String cId = topId(2);
-      engine.startRecordingInNode(cId);
-      process((int)(8 * Q));
-      for (int i = 0; i < 400 && (prop(cId, "isRecording") != 0 ||
-                                  prop(cId, "isPendingStart") != 0);
-           ++i) {
-        process(512);
-      }
-      expectEquals(prop(cId, "isRecording"), (int64_t)0, "C committed");
-      expectEquals(prop(cId, "duration"), (int64_t)(4 * Q),
+      const juce::String c = is.createClip();
+      is.engine.startRecordingInNode(c);
+      is.drive(8 * Q);
+      is.settle();
+      expect(!is.bprop(c, "isRecording"), "C committed");
+      expectEquals(is.dur(c), 4 * Q,
                    "S18: C = the STEP length, not the 8Q song");
-      const int64_t zeroAfter =
-          (int64_t)(double)engine.getGraphState().getProperty("islandZero", 0.0);
-      expectEquals(zeroAfter, zeroBefore,
-                   "no re-base: a 4Q part in an 8Q song is not a whole song");
-      const int64_t rel = ((prop(cId, "origin") - zeroAfter) % (8 * Q) +
-                           8 * Q) % (8 * Q);
+      expectEquals(is.zero(), zero_before,
+                   "the zero stays: a 4Q part in an 8Q song is not a whole song");
+      const int64_t rel = posmod(is.origin(c) - is.zero(), 8 * Q);
       expect(rel >= 2 * Q && rel < 6 * Q,
              "origin inside the chorus in song coordinates (got " +
                  juce::String(rel / (double)Q) + "Q)");
       expectEquals(rel % Q, (int64_t)0, "on the Q grid");
-      expectEquals((int)engine.getGraphState()
-                       .getProperty("sequence", juce::var())
-                       .getProperty("auditionStep", -1),
-                   1, "the loop stays on after the commit");
+      expectEquals(auditionOf(is, root), 1,
+                   "the loop stays on after the commit");
       // The frame: still the song (no silence-padded 8Q clip).
-      expectEquals(
-          (int64_t)(double)engine.getGraphState().getProperty("loopEnd", 0.0),
-          (int64_t)(6 * Q), "derived window still published");
+      expectEquals(is.rootProp("loopEnd"), 6 * Q,
+                   "derived window still published");
     }
   }
 
   void testWindowDomain() {
     beginTest("S16: a window authored over the song suspends with the sequence");
     {
-      AudioEngine engine;
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-      engine.createNode("stack");
-      juce::String sId;
-      {
-        const juce::var st = engine.getGraphState();
-        sId = (*st.getProperty("nodes", {}).getArray())[0]
-                  .getProperty("id", "")
-                  .toString();
-      }
-      auto* stack = dynamic_cast<StackNode*>(engine.findNodeByUuidForTest(sId));
+      Island is;
+      const juce::String sId = is.createStack();
+      auto* stack = dynamic_cast<StackNode*>(is.nodePtr(sId));
       expect(stack != nullptr, "stack found");
       // A window with NO sequence: intrinsic domain, stays active.
-      engine.setLoopPoints(sId, 0, 1000);
+      is.window(sId, 0, 1000);
       expect(stack->windowDomain() == StackNode::WindowDomain::Intrinsic,
              "no sequence: intrinsic domain");
       // Now a sequence, then a window authored over it: sequence domain.
-      auto* payload = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "a");
-        s1->setProperty("len", 4000.0);
-        steps.add(juce::var(s1));
-        payload->setProperty("steps", steps);
-      }
-      engine.setSequence(sId, juce::var(payload));
-      engine.setLoopPoints(sId, 1000, 3000);
+      is.engine.setSequence(sId, seqPayload({{4000}}));
+      is.window(sId, 1000, 3000);
       expect(stack->windowDomain() == StackNode::WindowDomain::Sequence,
              "authored over the song: sequence domain");
       expect(stack->activeTimeMap().active(), "active while the sequence is on");
       expect(!stack->windowSuspended(), "not suspended");
       // Bypass the sequence: SUSPENDED (no map, geometry kept).
-      engine.toggleSequence(sId);
+      is.engine.toggleSequence(sId);
       expect(!stack->activeTimeMap().active(), "suspended: reads as no map");
       expect(stack->windowSuspended(), "windowSuspended");
       expectEquals(stack->getLoopStart(), (int64_t)1000, "geometry kept (I9)");
-      {
-        const juce::var st = engine.getGraphState();
-        const juce::var n = (*st.getProperty("nodes", {}).getArray())[0];
-        expect((bool)n.getProperty("windowSuspended", false),
-               "metadata: windowSuspended");
-        expect(!(bool)n.getProperty("windowActive", true),
-               "metadata: windowActive false while suspended");
-        expectEquals(n.getProperty("windowDomain", "").toString(),
-                     juce::String("sequence"), "metadata: windowDomain");
-      }
+      expect(is.bprop(sId, "windowSuspended"), "metadata: windowSuspended");
+      expect(!is.bprop(sId, "windowActive"),
+             "metadata: windowActive false while suspended");
+      expectEquals(is.sprop(sId, "windowDomain"), juce::String("sequence"),
+                   "metadata: windowDomain");
       // Reactivate: it returns.
-      engine.toggleSequence(sId);
+      is.engine.toggleSequence(sId);
       expect(stack->activeTimeMap().active(), "returns with the sequence");
       // Undo the window edit: the stamp reverts to intrinsic.
-      engine.undo();  // the second toggle
-      engine.undo();  // the first toggle
-      engine.undo();  // the sequence-domain window edit
+      is.engine.undo();  // the second toggle
+      is.engine.undo();  // the first toggle
+      is.engine.undo();  // the sequence-domain window edit
       expect(stack->windowDomain() == StackNode::WindowDomain::Intrinsic,
              "undo restores the old stamp");
-      engine.redo();
+      is.engine.redo();
       expect(stack->windowDomain() == StackNode::WindowDomain::Sequence,
              "redo re-stamps");
     }
     beginTest("S16: the domain survives save/load");
     {
-      AudioEngine engine;
-      engine.createNode("stack");
-      juce::String sId;
-      {
-        const juce::var st = engine.getGraphState();
-        sId = (*st.getProperty("nodes", {}).getArray())[0]
-                  .getProperty("id", "")
-                  .toString();
-      }
-      auto* payload = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "a");
-        s1->setProperty("len", 4000.0);
-        steps.add(juce::var(s1));
-        payload->setProperty("steps", steps);
-      }
-      engine.setSequence(sId, juce::var(payload));
-      engine.setLoopPoints(sId, 1000, 3000);
-      const juce::File dir = juce::File::getSpecialLocation(
-                                 juce::File::tempDirectory)
-                                 .getChildFile("cel_s16_" + juce::String(
-                                     juce::Random::getSystemRandom().nextInt()));
-      expect(engine.saveSession(dir.getFullPathName()), "saved");
-      AudioEngine fresh;
-      expect(fresh.loadSession(dir.getFullPathName()), "loaded");
-      const juce::var st = fresh.getGraphState();
-      const juce::var n = (*st.getProperty("nodes", {}).getArray())[0];
-      expectEquals(n.getProperty("windowDomain", "").toString(),
+      Island is;
+      const juce::String sId = is.createStack();
+      is.engine.setSequence(sId, seqPayload({{4000}}));
+      is.window(sId, 1000, 3000);
+      const juce::File dir = test_utils::freshTempDir("seq_window_domain");
+      expect(is.engine.saveSession(dir.getFullPathName()), "saved");
+      Island fresh;
+      expect(fresh.engine.loadSession(dir.getFullPathName()), "loaded");
+      expectEquals(fresh.sprop(fresh.lastChild(), "windowDomain"),
                    juce::String("sequence"), "domain round-trips");
       dir.deleteRecursively();
     }
   }
 
   void testSaveLoad() {
-    beginTest("session round trip: sequence survives save and load");
+    beginTest("session round trip: a group's sequence and its bypass flag "
+              "survive save and load");
     {
-      StackNode root("island");
-      auto clip = makeDcClip("a", 0.1f);
-      const juce::String aId = clip->getUuid();
-      root.addChild(std::move(clip));
-      root.setQuantum(kLen, 0);
-      delete root.exchangeSequence(
-          makeSeq(kLen, 2 * kLen, {{aId, 0b10ull}}));
-      root.setSequenceBypassed(true);  // bypassed geometry must survive
-
-      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                     .getChildFile("celestrian_seq_io_test");
-      dir.deleteRecursively();
-      expect(session_io::save(root, kSr, dir, {}), "save ok");
-      auto loaded = session_io::load(dir, kSr);
-      expect(loaded.ok, "load ok");
-      expectEquals((int)loaded.children.size(), 1, "one child back");
-
-      // The saved graph nests children directly under the root; the
-      // sequence block lives on the root's serialized node — but save()
-      // writes the ROOT's children, not the root itself. The sequence
-      // belongs to a GROUP in the general case: rebuild with a group.
-      dir.deleteRecursively();
-
       StackNode outer("island2");
       auto group = std::make_unique<StackNode>("song");
       auto c2 = makeDcClip("b", 0.2f);
       const juce::String bId = c2->getUuid();
       group->addChild(std::move(c2));
       delete group->exchangeSequence(makeSeq(kLen, 2 * kLen, {{bId, 0b01ull}}));
-      group->setSequenceBypassed(false);
       StackNode* g = group.get();
       outer.addChild(std::move(group));
       outer.setQuantum(kLen, 0);
       expect(g->activeSequenceLen() == 3 * kLen, "group sequence active");
+      g->setSequenceBypassed(true);  // bypassed geometry must survive (I9)
 
-      expect(session_io::save(outer, kSr, dir, {}), "group save ok");
-      auto back = session_io::load(dir, kSr);
-      expect(back.ok, "group load ok");
-      auto* gBack = dynamic_cast<StackNode*>(back.children[0].get());
+      const auto back = roundTrip(outer, "seq_io");
+      expect(back.ok, "group saved and loaded");
+      expectEquals((int)back.children.size(), 1, "one child back");
+      auto* gBack = back.children.empty()
+                        ? nullptr
+                        : dynamic_cast<StackNode*>(back.children[0].get());
       expect(gBack != nullptr, "group came back as a stack");
-      const Sequence* s = gBack->sequencePtr();
-      expect(s != nullptr, "sequence came back");
+      expect(gBack != nullptr && gBack->isSequenceBypassed(),
+             "the bypass flag came back set");
+      expect(gBack != nullptr && gBack->activeSequenceLen() == 0,
+             "a bypassed sequence is not active");
+      const Sequence* s = gBack != nullptr ? gBack->sequencePtr() : nullptr;
+      expect(s != nullptr, "the bypassed sequence came back");
       if (s != nullptr) {
         expectEquals((int)s->steps.size(), 2, "two steps back");
         expectEquals(s->steps[0].len, (int64_t)kLen, "step 1 length back");
@@ -885,7 +768,6 @@ class SequencerTests : public juce::UnitTest {
                      "gates re-keyed to the child uuid");
         expect(s->maskFor("unknown") == ~0ull, "absent uuid inherits ON");
       }
-      dir.deleteRecursively();
     }
 
     beginTest("S14: a track template carries its sequence, gates re-keyed");
@@ -932,6 +814,15 @@ class SequencerTests : public juce::UnitTest {
   // over its first step's fade_in and out over its last step's
   // fade_out; the anti-pop micro-fade is the floor. ===
   void testStepFades() {
+    /** makeSeq(kLen, 2 * kLen) whose step "two" fades in over half a Q,
+     * with `child` gated ON in step two only. */
+    auto fadeInSeq = [](const juce::String& child) {
+      Sequence* s = makeSeq(kLen, 2 * kLen, {{child, 0b10ull}});
+      s->steps[1].fade_in = kLen / 2;
+      s->finalize();
+      return s;
+    };
+
     beginTest("S13: a step's fade_in / fade_out set the run's ramps; the "
               "anti-pop micro-fade is the floor");
     {
@@ -944,20 +835,19 @@ class SequencerTests : public juce::UnitTest {
       b.fade_out = 2 * kLen;
       s.steps.push_back(b);
       s.finalize();
-      const uint64_t m = 0b10ull;  // b alone: the run is [kLen, 5kLen)
-      expectWithinAbsoluteError(s.gainAt(m, kLen + kLen / 2, kFade), 0.5f,
-                                1e-6f, "mid fade-in (1Q ramp)");
-      expectWithinAbsoluteError(s.gainAt(m, 2 * kLen, kFade), 1.0f, 1e-6f,
-                                "fade-in complete after 1Q");
-      expectWithinAbsoluteError(s.gainAt(m, 3 * kLen, kFade), 1.0f, 1e-6f,
-                                "interior");
-      expectWithinAbsoluteError(s.gainAt(m, 4 * kLen, kFade), 0.5f, 1e-6f,
-                                "mid fade-out (2Q ramp, 1Q before the end)");
-      expectWithinAbsoluteError(s.gainAt(m, 5 * kLen - 1, kFade), 0.0f,
-                                1e-3f, "closed at the run's end");
-      // Step a has no musical fade: the 10 ms anti-pop still applies.
-      expectWithinAbsoluteError(s.gainAt(0b01ull, kFade / 2, kFade), 0.5f,
-                                2e-3f, "anti-pop floor on an unfaded step");
+      // b alone: the run is [kLen, 5kLen). Step a has no musical fade:
+      // the 10 ms anti-pop still applies.
+      const uint64_t m = 0b10ull;
+      expectGains(s, kFade, {
+          {m, kLen + kLen / 2, 0.5f, 1e-6f, "mid fade-in (1Q ramp)"},
+          {m, 2 * kLen, 1.0f, 1e-6f, "fade-in complete after 1Q"},
+          {m, 3 * kLen, 1.0f, 1e-6f, "interior"},
+          {m, 4 * kLen, 0.5f, 1e-6f,
+           "mid fade-out (2Q ramp, 1Q before the end)"},
+          {m, 5 * kLen - 1, 0.0f, 1e-3f, "closed at the run's end"},
+          {0b01ull, kFade / 2, 0.5f, 2e-3f,
+           "anti-pop floor on an unfaded step"},
+      });
       // Corners for THIS mask: the ramp ends are corners; a foreign
       // mask sees only the visit boundary.
       expectEquals(s.cornerDistance(kLen, kFade, m), (int64_t)kLen,
@@ -980,12 +870,14 @@ class SequencerTests : public juce::UnitTest {
       s.finalize();
       const uint64_t m = 0b10ull;  // run = [kLen, 2kLen): 3:1 → 3/4Q, 1/4Q
       const int64_t start = kLen;
-      expectWithinAbsoluteError(s.gainAt(m, start + 3 * kLen / 4, kFade), 1.0f,
-                                2e-3f, "the ramps meet at 3/4 of the run");
-      expectWithinAbsoluteError(s.gainAt(m, start + 3 * kLen / 8, kFade), 0.5f,
-                                2e-3f, "mid fade-in of the shrunk ramp");
-      expectWithinAbsoluteError(s.gainAt(m, 2 * kLen - kLen / 8, kFade), 0.5f,
-                                2e-3f, "mid fade-out of the shrunk ramp");
+      expectGains(s, kFade, {
+          {m, start + 3 * kLen / 4, 1.0f, 2e-3f,
+           "the ramps meet at 3/4 of the run"},
+          {m, start + 3 * kLen / 8, 0.5f, 2e-3f,
+           "mid fade-in of the shrunk ramp"},
+          {m, 2 * kLen - kLen / 8, 0.5f, 2e-3f,
+           "mid fade-out of the shrunk ramp"},
+      });
       expectEquals(s.cornerDistance(start, kFade, m), (int64_t)(3 * kLen / 4),
                    "the meeting point is the one corner");
     }
@@ -995,17 +887,8 @@ class SequencerTests : public juce::UnitTest {
     {
       StackNode root("island");
       root.addChild(makeDcClip("b", 0.4f));
-      const juce::String bId = root.ownedChildren()[0]->getUuid();
-      auto* seq = new Sequence();
-      seq->steps.push_back({kLen, "one"});
-      Sequence::Step two;
-      two.len = 2 * kLen;
-      two.name = "two";
-      two.fade_in = kLen / 2;  // a musical half-Q fade-in
-      seq->steps.push_back(two);
-      seq->gates.push_back({bId, 0b10ull});
-      seq->finalize();
-      delete root.exchangeSequence(seq);
+      delete root.exchangeSequence(
+          fadeInSeq(root.ownedChildren()[0]->getUuid()));
 
       const int n = kLen;  // from 100 before the seam through the ramp
       const int64_t t0 = (int64_t)kLen - 100;
@@ -1016,51 +899,57 @@ class SequencerTests : public juce::UnitTest {
                                 "ramp, not 441)");
       expectWithinAbsoluteError(big[(size_t)(100 + kLen / 2 + 50)], 0.4f,
                                 3e-3f, "full after half a Q");
-      std::vector<float> chunks;
-      int64_t t = t0;
-      int left = n;
-      while (left > 0) {
-        const int c = std::min(left, 97);
-        auto part = renderAt(root, t, c);
-        chunks.insert(chunks.end(), part.begin(), part.begin() + c);
-        t += c;
-        left -= c;
-      }
       // The envelope is exact at every corner; within a ramp the child
       // applies a float32 per-sample increment, so a 2205-sample ramp
       // rendered as one block differs from 97-sample pieces by float
       // noise only (observed ≤ 4e-6, well under one LSB of 16-bit).
-      for (int i = 0; i < n; i += 37) {
-        expectWithinAbsoluteError(chunks[(size_t)i], big[(size_t)i], 2e-5f,
-                                  "block splits do not change the output");
+      expectSplitIndependent(root, t0, n, big, 2e-5f);
+    }
+
+    beginTest("S13: a musical fade over a windowed group is one continuous "
+              "ramp (block-split independent)");
+    {
+      // The gated child's own window wraps every 1000 samples, so the
+      // half-Q fade-in crosses two of its seams.
+      StackNode root("island");
+      root.addChild(makeWindowedGroup("g", 0.4f, 1000));
+      delete root.exchangeSequence(
+          fadeInSeq(root.ownedChildren()[0]->getUuid()));
+
+      const int n = kLen;
+      const int64_t t0 = (int64_t)kLen - 100;
+      const int ramp = kLen / 2;
+      auto big = renderAt(root, t0, n);
+      expectWithinAbsoluteError(big[0], 0.0f, 1e-5f, "closed before entry");
+      for (int k = 0; k < ramp; k += 105) {
+        expectWithinAbsoluteError(big[(size_t)(100 + k)],
+                                  0.4f * (float)k / (float)ramp, 3e-3f,
+                                  "the ramp runs straight through the seams");
       }
+      float max_jump = 0.0f;
+      for (int i = 1; i < n; ++i) {
+        max_jump = std::max(max_jump,
+                            std::abs(big[(size_t)i] - big[(size_t)(i - 1)]));
+      }
+      expect(max_jump < 0.4f / (float)ramp + 1e-4f,
+             "no step at the group's seams");
+      expectSplitIndependent(root, t0, n, big, 2e-5f);
     }
 
     beginTest("S13: fades persist - metadata, session (QTime), template "
               "(scaled), and they retime with Q");
     {
       // The verb + metadata.
-      AudioEngine engine;
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-      auto* payload = new juce::DynamicObject();
-      {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "a");
-        s1->setProperty("len", 2000.0);
-        s1->setProperty("fadeIn", 500.0);
-        s1->setProperty("fadeOut", -7.0);  // clamps to 0 (absent)
-        steps.add(juce::var(s1));
-        auto* s2 = new juce::DynamicObject();
-        s2->setProperty("name", "b");
-        s2->setProperty("len", 2000.0);
-        s2->setProperty("fadeOut", 1000.0);
-        steps.add(juce::var(s2));
-        payload->setProperty("steps", steps);
-      }
-      engine.setSequence(rootId, juce::var(payload));
-      const juce::var st = engine.getGraphState().getProperty("sequence", {});
+      Island is;
+      const juce::var payload = seqPayload({{2000}, {2000}});
+      const juce::Array<juce::var>& authored =
+          *payload.getDynamicObject()->getProperty("steps").getArray();
+      auto* first = authored[0].getDynamicObject();
+      first->setProperty("fadeIn", 500.0);
+      first->setProperty("fadeOut", -7.0);  // clamps to 0 (absent)
+      authored[1].getDynamicObject()->setProperty("fadeOut", 1000.0);
+      is.engine.setSequence(is.rootId(), payload);
+      const juce::var st = seqOf(is.state());
       const juce::var s0 = st.getProperty("steps", {})[0];
       const juce::var s1v = st.getProperty("steps", {})[1];
       expectEquals((int)(double)s0.getProperty("fadeIn", 0.0), 500, "fadeIn published");
@@ -1086,20 +975,14 @@ class SequencerTests : public juce::UnitTest {
       StackNode* g = group.get();
       outer.addChild(std::move(group));
       outer.setQuantum(kLen, 0);
-      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                     .getChildFile("celestrian_seq_fade_io_test");
-      dir.deleteRecursively();
-      expect(session_io::save(outer, kSr, dir, {}), "save ok");
-      auto back = session_io::load(dir, kSr);
-      auto* gBack = dynamic_cast<StackNode*>(back.children[0].get());
-      const Sequence* s = gBack ? gBack->sequencePtr() : nullptr;
+      const auto back = roundTrip(outer, "seq_fade_io");
+      const Sequence* s = firstGroupSequence(back);
       expect(s != nullptr, "sequence back");
       if (s != nullptr) {
         expectEquals(s->steps[1].fade_in, (int64_t)(kLen / 2), "fade_in back");
         expectEquals(s->steps[1].fade_out, (int64_t)kLen, "fade_out back");
         expectEquals(s->steps[0].fade_in, (int64_t)0, "absent = 0");
       }
-      dir.deleteRecursively();
       const juce::var tpl = track_templates::capture(*g, kLen);
       auto rebuilt = track_templates::build(tpl, kSr, /*q_samples=*/2 * kLen);
       auto* rg = dynamic_cast<StackNode*>(rebuilt.get());
@@ -1117,67 +1000,28 @@ class SequencerTests : public juce::UnitTest {
   // === SUCCESSOR GRAPHS + THE SEED (docs/sequencer.md §6, §14; S12
   // root-only radio) — the PROGRAM is the timeline. ===
   void testSuccessors() {
-    /** A step with one explicit successor. */
-    auto step = [](int64_t len, const char* name, int to,
-                   bool cue = false) {
-      Sequence::Step st;
-      st.len = len;
-      st.name = name;
-      st.cue = cue;
-      st.next.push_back({to, 1});
-      return st;
-    };
-    auto payloadWith = [](std::vector<std::vector<int>> nexts,
-                          double seed) {
-      auto* payload = new juce::DynamicObject();
-      juce::Array<juce::var> steps;
-      for (size_t i = 0; i < nexts.size(); ++i) {
-        auto* s = new juce::DynamicObject();
-        s->setProperty("name", juce::String("s") + juce::String((int)i));
-        s->setProperty("len", 1000.0);
-        juce::Array<juce::var> next;
-        for (int to : nexts[i]) {
-          auto* n = new juce::DynamicObject();
-          n->setProperty("to", to);
-          n->setProperty("w", 1);
-          next.add(juce::var(n));
-        }
-        if (!next.isEmpty()) s->setProperty("next", next);
-        steps.add(juce::var(s));
-      }
-      payload->setProperty("steps", steps);
-      payload->setProperty("seed", seed);
-      return juce::var(payload);
-    };
-    auto seqOf = [](const juce::var& state) {
-      return state.getProperty("sequence", juce::var());
-    };
-
-    beginTest("S12: a deterministic jump graph is periodic; an unreachable "
-              "step never sounds");
+    // The programs themselves (visits, total, radio) are the golden
+    // sequence_program_cases; these pin what hangs off a program.
+    beginTest("S12: in a deterministic jump graph an unreachable step "
+              "never sounds");
     {
       // 0 -> 2 -> 0: step 1 is orphaned.
       Sequence s;
-      s.steps.push_back(step(kLen, "a", 2));
+      s.steps.push_back(stepTo(kLen, "a", 2));
       s.steps.push_back({kLen, "b"});
-      s.steps.push_back(step(kLen, "c", 0));
+      s.steps.push_back(stepTo(kLen, "c", 0));
       s.finalize();
-      expect(!s.radio, "a loop that returns to step 0 is periodic");
-      expectEquals(s.visit_count, 2, "two visits");
-      expectEquals(s.visit_step[0], 0);
-      expectEquals(s.visit_step[1], 2);
-      expectEquals(s.total, (int64_t)(2 * kLen), "the program is the period");
       expect(!s.reachableStep(1), "step 1 is unreachable");
       expectEquals(s.first_visit[1], -1);
       expectEquals(s.first_visit[2], 1);
       expectEquals(s.stepAt(kLen + 1), 2, "position lookup runs on visits");
       // A mask off only on the orphan is effectively all-on; a mask on
       // only the orphan is silence.
-      expectWithinAbsoluteError(s.gainAt(0b101ull, 10, kFade), 1.0f, 1e-6f,
-                                "orphan gate is irrelevant: constant 1");
-      expectWithinAbsoluteError(s.gainAt(0b010ull, 10, kFade), 0.0f, 1e-6f,
-                                "only the orphan on: silence");
-      // The plain loop reads as before.
+      expectGains(s, kFade, {
+          {0b101ull, 10, 1.0f, 1e-6f, "orphan gate is irrelevant: constant 1"},
+          {0b010ull, 10, 0.0f, 1e-6f, "only the orphan on: silence"},
+      });
+      // Default successors are the plain loop.
       Sequence plain;
       plain.steps.push_back({kLen, "a"});
       plain.steps.push_back({kLen, "b"});
@@ -1185,22 +1029,15 @@ class SequencerTests : public juce::UnitTest {
       expect(plain.isPlainLoop() && !plain.radio, "default successors = the loop");
     }
 
-    beginTest("S12: an intro that never returns is a RADIO, unrolled to the "
-              "horizon");
+    beginTest("S12: linearize demotes a radio to the plain loop");
     {
+      // intro | a | b -> a: no deterministic return to step 0.
       Sequence s;
       s.steps.push_back({kLen, "intro"});
       s.steps.push_back({kLen, "a"});
-      s.steps.push_back(step(kLen, "b", 1));
+      s.steps.push_back(stepTo(kLen, "b", 1));
       s.finalize();
       expect(s.radio, "no deterministic return to step 0 = period-less");
-      expectEquals(s.visit_count, Sequence::kMaxVisits, "the horizon");
-      expectEquals(s.visit_step[0], 0);
-      expectEquals(s.visit_step[1], 1);
-      expectEquals(s.visit_step[2], 2);
-      expectEquals(s.visit_step[3], 1, "the vamp repeats a, b");
-      expectEquals(s.visit_step[4], 2);
-      expectEquals(s.total, (int64_t)(Sequence::kMaxVisits * kLen));
       s.linearize();
       expect(!s.radio && s.isPlainLoop(), "linearize demotes it to the loop");
     }
@@ -1212,8 +1049,8 @@ class SequencerTests : public juce::UnitTest {
       a.len = kLen;
       a.next = {{1, 1}, {2, 3}};
       s.steps.push_back(a);
-      s.steps.push_back(step(kLen, "one", 0));
-      s.steps.push_back(step(kLen, "two", 0));
+      s.steps.push_back(stepTo(kLen, "one", 0));
+      s.steps.push_back(stepTo(kLen, "two", 0));
       s.seed = 0x1234;
       s.finalize();
       expect(s.radio, "a branch with chance is a radio");
@@ -1247,7 +1084,7 @@ class SequencerTests : public juce::UnitTest {
       auto* cs = new Sequence();
       cs->steps.push_back({kLen, "intro"});
       cs->steps.push_back({kLen, "A", true});
-      cs->steps.push_back(step(kLen, "B", 1));
+      cs->steps.push_back(stepTo(kLen, "B", 1));
       cs->finalize();
       expectEquals(cs->visit_step[3], 1, "A again at visit 3");
       expectEquals(cs->songToContent(cs->bounds[1] + 100), (int64_t)100,
@@ -1267,9 +1104,9 @@ class SequencerTests : public juce::UnitTest {
       expectEquals(m.segs[0].end, cs->bounds[2]);
       // Orphan: no span.
       auto* os = new Sequence();
-      os->steps.push_back(step(kLen, "a", 2));
+      os->steps.push_back(stepTo(kLen, "a", 2));
       os->steps.push_back({kLen, "orphan"});
-      os->steps.push_back(step(kLen, "c", 0));
+      os->steps.push_back(stepTo(kLen, "c", 0));
       os->finalize();
       delete stack.exchangeSequence(os);
       stack.setAuditionStep(1);
@@ -1280,43 +1117,32 @@ class SequencerTests : public juce::UnitTest {
     beginTest("engine: a radio is ROOT-ONLY; the root publishes program, "
               "seed and radio; re-roll is one undoable edit");
     {
-      AudioEngine engine;
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-      engine.createNode("stack");
-      const juce::String groupId =
-          (*engine.getGraphState().getProperty("nodes", {}).getArray())[0]
-              .getProperty("id", "")
-              .toString();
-      expect(groupId.isNotEmpty(), "nested stack created");
+      Island is;
+      const juce::String root = is.rootId();
+      const juce::String group = is.createStack();
+      expect(group.isNotEmpty(), "nested stack created");
+      auto seedOf = [&] {
+        return (int)(double)seqOf(is.state()).getProperty("seed", -1.0);
+      };
 
       // Nested: the branch is refused, nothing recorded.
-      engine.setSequence(groupId, payloadWith({{1, 2}, {0}, {0}}, 5.0));
-      auto findNode = [&](const juce::var& state, const juce::String& id) {
-        juce::var found;
-        if (auto* nodes = state.getProperty("nodes", juce::var()).getArray()) {
-          for (auto& n : *nodes) {
-            if (n.getProperty("id", "").toString() == id) found = n;
-          }
-        }
-        return found;
-      };
-      expect(!seqOf(findNode(engine.getGraphState(), groupId)).isObject(),
+      is.engine.setSequence(group, routedPayload({{1, 2}, {0}, {0}}, 5));
+      expect(!seqOf(is.node(group)).isObject(),
              "a nested radio is refused (S12)");
       // Nested: a deterministic graph that returns to 0 is fine.
-      engine.setSequence(groupId, payloadWith({{2}, {}, {0}}, 0.0));
-      const juce::var g = seqOf(findNode(engine.getGraphState(), groupId));
+      is.engine.setSequence(group, routedPayload({{2}, {}, {0}}, 0));
+      const juce::var g = seqOf(is.node(group));
       expect(g.isObject(), "a periodic jump graph is legal nested");
       expect(!(bool)g.getProperty("radio", true), "...and is not a radio");
       expectEquals(g.getProperty("program", juce::var()).getArray()->size(),
                    2, "program published: [0, 2]");
 
       // Root: the branch is accepted and published.
-      engine.setSequence(rootId, payloadWith({{1, 2}, {0}, {0}}, 5.0));
-      juce::var r = seqOf(engine.getGraphState());
+      is.engine.setSequence(root, routedPayload({{1, 2}, {0}, {0}}, 5));
+      const juce::var r = seqOf(is.state());
       expect(r.isObject(), "the root takes a radio");
       expect((bool)r.getProperty("radio", false), "radio flag published");
-      expectEquals((int)(double)r.getProperty("seed", -1.0), 5, "seed echoes");
+      expectEquals(seedOf(), 5, "seed echoes");
       expectEquals(r.getProperty("program", juce::var()).getArray()->size(),
                    Sequence::kMaxVisits, "the program fills the horizon");
       expect(r.getProperty("steps", juce::var())[0]
@@ -1324,85 +1150,45 @@ class SequencerTests : public juce::UnitTest {
                  .isArray(),
              "successors published per step");
       // Re-roll = the same payload with another seed: one edit.
-      engine.setSequence(rootId, payloadWith({{1, 2}, {0}, {0}}, 6.0));
-      expectEquals((int)(double)seqOf(engine.getGraphState())
-                       .getProperty("seed", -1.0),
-                   6, "re-rolled");
-      engine.undo();
-      expectEquals((int)(double)seqOf(engine.getGraphState())
-                       .getProperty("seed", -1.0),
-                   5, "undo restores the previous seed");
+      is.engine.setSequence(root, routedPayload({{1, 2}, {0}, {0}}, 6));
+      expectEquals(seedOf(), 6, "re-rolled");
+      is.engine.undo();
+      expectEquals(seedOf(), 5, "undo restores the previous seed");
       // A successor out of range is malformed: refused.
-      engine.setSequence(rootId, payloadWith({{7}, {0}, {0}}, 5.0));
-      expectEquals((int)(double)seqOf(engine.getGraphState())
-                       .getProperty("seed", -1.0),
-                   5, "out-of-range successor refused; unchanged");
+      is.engine.setSequence(root, routedPayload({{7}, {0}, {0}}, 5));
+      expectEquals(seedOf(), 5, "out-of-range successor refused; unchanged");
       // Auditioning an orphan is refused.
-      engine.setSequence(rootId, payloadWith({{2}, {}, {0}}, 0.0));
-      engine.auditionStep(rootId, 1);
-      expectEquals((int)seqOf(engine.getGraphState())
-                       .getProperty("auditionStep", 0),
-                   -1, "orphan audition refused");
-      engine.auditionStep(rootId, 2);
-      expectEquals((int)seqOf(engine.getGraphState())
-                       .getProperty("auditionStep", -1),
-                   2, "a reachable step auditions");
-      engine.auditionStep(rootId, -1);
+      is.engine.setSequence(root, routedPayload({{2}, {}, {0}}, 0));
+      is.engine.auditionStep(root, 1);
+      expectEquals(auditionOf(is, root), -1, "orphan audition refused");
+      is.engine.auditionStep(root, 2);
+      expectEquals(auditionOf(is, root), 2, "a reachable step auditions");
+      is.engine.auditionStep(root, -1);
     }
 
     beginTest("session: successors + seed round-trip on a group AND on the "
               "root; a nested radio in a bundle is demoted");
     {
-      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                     .getChildFile("celestrian_seq_succ_io_test");
-      dir.deleteRecursively();
+      juce::File dir = test_utils::freshTempDir("seq_successors_root");
       {
-        // The root's own song, with a branch: bundle-level.
-        AudioEngine engine;
-        const juce::String rootId =
-            engine.getGraphState().getProperty("id", "").toString();
-        // A committed take establishes Q (the grid's exchange rate) —
-        // driven through the production callback.
-        std::vector<float> inBuf((size_t)512, 0.1f);
-        auto process = [&](int total) {
-          float* ins[] = {inBuf.data()};
-          float outL[512], outR[512];
-          float* outs[] = {outL, outR};
-          int remaining = total;
-          while (remaining > 0) {
-            const int n = std::min(remaining, 512);
-            engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-            remaining -= n;
-          }
-        };
-        auto prop = [&](const char* key) {
-          const juce::var nodes = engine.getGraphState().getProperty("nodes", {});
-          return (int64_t)(double)(*nodes.getArray())[0].getProperty(key, 0.0);
-        };
-        engine.createNode("clip");
-        const juce::String clipId =
-            (*engine.getGraphState().getProperty("nodes", {}).getArray())[0]
-                .getProperty("id", "")
-                .toString();
-        engine.startRecordingInNode(clipId);
-        process(100);
-        process(44100);
-        engine.stopRecordingInNode(clipId);
-        for (int i = 0; i < 200 && prop("isRecording") != 0; ++i) process(512);
-        expect(prop("duration") > 0, "Q established");
-        engine.setSequence(rootId, payloadWith({{1, 2}, {0}, {0}}, 99.0));
-        expect(engine.saveSession(dir.getFullPathName()), "save ok");
+        // The root's own song, with a branch: bundle-level. A committed
+        // take establishes Q (the grid's exchange rate).
+        Island is;
+        is.record(kQ);
+        expect(is.Q() > 0, "Q established");
+        is.engine.setSequence(is.rootId(),
+                              routedPayload({{1, 2}, {0}, {0}}, 99));
+        expect(is.engine.saveSession(dir.getFullPathName()), "save ok");
       }
       {
-        AudioEngine engine;
-        expect(engine.loadSession(dir.getFullPathName()), "load ok");
-        const juce::var r = seqOf(engine.getGraphState());
+        Island is;
+        expect(is.engine.loadSession(dir.getFullPathName()), "load ok");
+        const juce::var r = seqOf(is.state());
         expect(r.isObject(), "the root's song came back");
         expect((bool)r.getProperty("radio", false), "...still a radio");
         expectEquals((int)(double)r.getProperty("seed", -1.0), 99,
                      "...with its seed (the run is reproducible)");
       }
-      dir.deleteRecursively();
 
       // A nested stack: successors and the seed persist; a hand-written
       // radio in the block is demoted to the loop on load.
@@ -1411,18 +1197,16 @@ class SequencerTests : public juce::UnitTest {
       auto c = makeDcClip("b", 0.2f);
       group->addChild(std::move(c));
       auto* gs = new Sequence();
-      gs->steps.push_back(step(kLen, "a", 2));
+      gs->steps.push_back(stepTo(kLen, "a", 2));
       gs->steps.push_back({kLen, "orphan"});
-      gs->steps.push_back(step(kLen, "c", 0));
+      gs->steps.push_back(stepTo(kLen, "c", 0));
       gs->seed = 7;
       gs->finalize();
       delete group->exchangeSequence(gs);
       outer.addChild(std::move(group));
       outer.setQuantum(kLen, 0);
-      expect(session_io::save(outer, kSr, dir, {}), "group save ok");
-      auto back = session_io::load(dir, kSr);
-      auto* gBack = dynamic_cast<StackNode*>(back.children[0].get());
-      const Sequence* s = gBack ? gBack->sequencePtr() : nullptr;
+      const auto back = roundTrip(outer, "seq_successors_group", &dir);
+      const Sequence* s = firstGroupSequence(back);
       expect(s != nullptr, "sequence came back");
       if (s != nullptr) {
         expectEquals((int)s->steps[0].next.size(), 1, "successor back");
@@ -1447,12 +1231,10 @@ class SequencerTests : public juce::UnitTest {
         (*steps)[2].getDynamicObject()->setProperty("next", next);
       }
       jf.replaceWithText(juce::JSON::toString(json));
-      auto demoted = session_io::load(dir, kSr);
-      auto* gd = dynamic_cast<StackNode*>(demoted.children[0].get());
-      const Sequence* ds = gd ? gd->sequencePtr() : nullptr;
+      const auto demoted = session_io::load(dir, kSr);
+      const Sequence* ds = firstGroupSequence(demoted);
       expect(ds != nullptr && !ds->radio && ds->isPlainLoop(),
              "a nested radio is demoted to the loop on load (S12)");
-      dir.deleteRecursively();
     }
 
     beginTest("S14: a template carries successors + seed; a radio builds "
@@ -1466,8 +1248,8 @@ class SequencerTests : public juce::UnitTest {
       a.len = kLen;
       a.next = {{1, 1}, {2, 2}};
       gs->steps.push_back(a);
-      gs->steps.push_back(step(kLen, "one", 0));
-      gs->steps.push_back(step(kLen, "two", 0));
+      gs->steps.push_back(stepTo(kLen, "one", 0));
+      gs->steps.push_back(stepTo(kLen, "two", 0));
       gs->seed = 11;
       gs->finalize();
       delete group.exchangeSequence(gs);
@@ -1491,108 +1273,58 @@ class SequencerTests : public juce::UnitTest {
   }
 
   // === CUE STEPS (docs/sequencer.md ss3 - the Q6 serial primitive;
-  // S11 ruled, S20-S22 ruled 2026-08-27) ===
+  // S11, S20-S22) ===
   void testCueSteps() {
     beginTest("S20: a cue seam is a hard cut - the gate dips through zero");
     {
       // Two steps, BOTH gated on; step 2 cued. The envelope must dip
       // at every cued edge (the clock jumps there), including the
       // song-wrap edge out of the cued last step.
-      auto* s = new Sequence();
-      s->steps.push_back({kLen, "one", false});
-      s->steps.push_back({2 * kLen, "two", true});
-      s->finalize();
+      const std::unique_ptr<Sequence> s(makeCuedSeq());
       const uint64_t m = 0b11ull;
-      expectWithinAbsoluteError(s->gainAt(m, kLen, kFade), 0.0f, 1e-6f,
-                                "entering the cued step: gain 0 at the seam");
-      expectWithinAbsoluteError(s->gainAt(m, kLen - kFade, kFade), 1.0f, 1e-6f,
-                                "one fade before the seam: full");
-      expectWithinAbsoluteError(s->gainAt(m, kLen + kFade, kFade), 1.0f, 1e-6f,
-                                "one fade after the seam: full again");
-      expectWithinAbsoluteError(s->gainAt(m, kLen - kFade / 2, kFade), 0.5f,
-                                2e-3f, "mid-ramp out");
-      expectWithinAbsoluteError(s->gainAt(m, kLen + kFade / 2, kFade), 0.5f,
-                                2e-3f, "mid-ramp back in");
-      expectWithinAbsoluteError(s->gainAt(m, 0, kFade), 0.0f, 1e-6f,
-                                "the wrap OUT of the cued step cuts too");
-      expectWithinAbsoluteError(s->gainAt(m, kFade, kFade), 1.0f, 1e-6f,
-                                "recovered one fade into step 1");
-      delete s;
+      expectGains(*s, kFade, {
+          {m, kLen, 0.0f, 1e-6f, "entering the cued step: gain 0 at the seam"},
+          {m, kLen - kFade, 1.0f, 1e-6f, "one fade before the seam: full"},
+          {m, kLen + kFade, 1.0f, 1e-6f,
+           "one fade after the seam: full again"},
+          {m, kLen - kFade / 2, 0.5f, 2e-3f, "mid-ramp out"},
+          {m, kLen + kFade / 2, 0.5f, 2e-3f, "mid-ramp back in"},
+          {m, 0, 0.0f, 1e-6f, "the wrap OUT of the cued step cuts too"},
+          {m, kFade, 1.0f, 1e-6f, "recovered one fade into step 1"},
+      });
       // Control: the same schedule with NO cue never dips (all-on).
-      auto* p = new Sequence();
-      p->steps.push_back({kLen, "one", false});
-      p->steps.push_back({2 * kLen, "two", false});
-      p->finalize();
-      expectWithinAbsoluteError(p->gainAt(m, kLen, kFade), 1.0f, 1e-6f,
-                                "no cue: an all-on mask is constant 1");
-      expectWithinAbsoluteError(p->gainAt(m, 0, kFade), 1.0f, 1e-6f,
-                                "no cue: no dip at the wrap either");
-      delete p;
+      const std::unique_ptr<Sequence> p(makeSeq(kLen, 2 * kLen, {}));
+      expectGains(*p, kFade, {
+          {m, kLen, 1.0f, 1e-6f, "no cue: an all-on mask is constant 1"},
+          {m, 0, 1.0f, 1e-6f, "no cue: no dip at the wrap either"},
+      });
     }
 
-    beginTest("CUE: playback re-bases the step to the song top");
+    beginTest("CUE: a cued span renders the same whatever the block split");
     {
-      // A ramp clip under a sequence whose 2nd step is CUED: inside
-      // that step the child must play the content it plays at the
-      // SONG TOP - t' = zero + (songRel - stepStart) (ss3).
+      // Inside the cued step the child plays the content it plays at
+      // the song top (scenario S18 pins which); the re-base is
+      // schedule-derived, so odd chunks render the same span (I6).
       StackNode cued("island");
       cued.addChild(makeRampClip("r"));
-      auto* cs = new Sequence();
-      cs->steps.push_back({kLen, "one", false});
-      cs->steps.push_back({2 * kLen, "two", true});
-      cs->finalize();
-      delete cued.exchangeSequence(cs);
-
-      StackNode plain("island2");
-      plain.addChild(makeRampClip("r2"));
-
-      const int64_t delta = 3 * kFade;  // clear of the seam dip
-      auto got = renderAt(cued, (int64_t)kLen + delta, 64);
-      auto want = renderAt(plain, delta, 64);
-      for (int i = 0; i < 64; i += 16) {
-        expectWithinAbsoluteError(got[(size_t)i], want[(size_t)i], 1e-5f,
-                                  "cued step plays the song-top content");
-      }
-      expect(std::abs(want[0]) > 1e-3f, "probe content is non-trivial");
-      // A non-cued step is untouched (normal phase).
-      auto got1 = renderAt(cued, delta, 64);
-      auto want1 = renderAt(plain, delta, 64);
-      for (int i = 0; i < 64; i += 16) {
-        expectWithinAbsoluteError(got1[(size_t)i], want1[(size_t)i], 1e-5f,
-                                  "plain step keeps its own phase");
-      }
-      // Purity: the same cued span in odd chunks is identical (I6).
-      std::vector<float> chunks;
-      int64_t t = (int64_t)kLen + delta;
-      int left = 64;
-      while (left > 0) {
-        const int c = std::min(left, 23);
-        auto part = renderAt(cued, t, c);
-        chunks.insert(chunks.end(), part.begin(), part.begin() + c);
-        t += c;
-        left -= c;
-      }
-      for (int i = 0; i < 64; i += 16) {
-        expectWithinAbsoluteError(chunks[(size_t)i], got[(size_t)i], 1e-6f,
-                                  "block splits do not change cued output");
-      }
+      delete cued.exchangeSequence(makeCuedSeq());
+      const int64_t t0 = (int64_t)kLen + 3 * kFade;  // clear of the seam dip
+      const auto whole = renderAt(cued, t0, 64);
+      expect(std::abs(whole[0]) > 1e-3f, "probe content is non-trivial");
+      expectSplitIndependent(cued, t0, 64, whole, 1e-6f, /*chunk=*/23,
+                             /*stride=*/16);
     }
 
     beginTest("CUE: gates stay on the SONG timeline under a re-base");
     {
       // A child gated ON only in step 1 (not cued) must be SILENT
       // during the cued step 2 - even though the re-based child clock
-      // lands in step 1's span. (The bug this pins: looking the gate
-      // up at the re-based position instead of the song position.)
+      // lands in step 1's span: the gate is looked up at the song
+      // position, never at the re-based one.
       StackNode root("island");
       root.addChild(makeDcClip("b", 0.4f));
       const juce::String bId = root.ownedChildren()[0]->getUuid();
-      auto* s = new Sequence();
-      s->steps.push_back({kLen, "one", false});
-      s->steps.push_back({2 * kLen, "two", true});
-      s->gates.push_back({bId, 0b01ull});
-      s->finalize();
-      delete root.exchangeSequence(s);
+      delete root.exchangeSequence(makeCuedSeq({{bId, 0b01ull}}));
       auto out = renderAt(root, (int64_t)kLen + 3 * kFade, 64);
       for (int i = 0; i < 64; i += 16) {
         expectWithinAbsoluteError(out[(size_t)i], 0.0f, 1e-5f,
@@ -1604,11 +1336,7 @@ class SequencerTests : public juce::UnitTest {
     {
       StackNode root("island");
       root.addChild(makeRampClip("r"));
-      auto* s = new Sequence();
-      s->steps.push_back({kLen, "one", false});
-      s->steps.push_back({2 * kLen, "two", true});
-      s->finalize();
-      delete root.exchangeSequence(s);
+      delete root.exchangeSequence(makeCuedSeq());
       root.setAuditionStep(1);
 
       StackNode plain("island2");
@@ -1629,114 +1357,39 @@ class SequencerTests : public juce::UnitTest {
     beginTest("S21: arm inside a cued step auto-targets it; the take "
               "lands at the song top, auto-gated");
     {
-      AudioEngine engine;
-      const int BLOCK = 512;
-      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
-      auto process = [&](int total) {
-        float* ins[] = {inBuf.data()};
-        float outL[512], outR[512];
-        float* outs[] = {outL, outR};
-        int remaining = total;
-        while (remaining > 0) {
-          const int n = std::min(remaining, BLOCK);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+      Island is;
+      const juce::String root = is.rootId();
+      is.record(kQ);
+      const int64_t Q = is.Q();
+      expectEquals(Q, kQ, "Q established");
+      // The root's song position: its song is anchored at the island zero.
+      auto songRel = [&] { return posmod(is.islandPos(), 4 * Q); };
+      auto driveSongInto = [&](int64_t lo, int64_t hi) {
+        is.waitFor([&] { return songRel() > lo && songRel() < hi; });
       };
-      auto topId = [&](int k) {
-        const juce::var st = engine.getGraphState();
-        const juce::var nodes = st.getProperty("nodes", {});
-        return (*nodes.getArray())[k]
-            .getDynamicObject()
-            ->getProperty("id")
-            .toString();
-      };
-      auto prop = [&](const juce::String& id, const char* key) {
-        const juce::var st = engine.getGraphState();
-        const juce::var nodes = st.getProperty("nodes", {});
-        for (auto& n : *nodes.getArray()) {
-          if (n.getProperty("id", "").toString() == id) {
-            return (int64_t)(double)n.getProperty(key, 0.0);
-          }
-        }
-        return (int64_t)-1;
-      };
-      auto songRel = [&](int64_t period) {
-        const juce::var st = engine.getGraphState();
-        const int64_t pos = (int64_t)(double)st.getProperty("islandPos", 0.0);
-        const int64_t ep = (int64_t)(double)st.getProperty("islandZero", 0.0);
-        return ((pos - ep) % period + period) % period;
-      };
-      const juce::String rootId =
-          engine.getGraphState().getProperty("id", "").toString();
-
-      // Take A establishes Q (~1 s).
-      engine.createNode("clip");
-      const juce::String aId = topId(0);
-      engine.startRecordingInNode(aId);
-      process(100);
-      process(44100);
-      engine.stopRecordingInNode(aId);
-      for (int i = 0; i < 200 && prop(aId, "isRecording") != 0; ++i) {
-        process(512);
-      }
-      const int64_t Q = prop(aId, "duration");
-      expect(Q > 0, "Q established");
 
       // The song: verse 2Q | chorus 2Q (CUED) = 4Q.
-      auto* payload = new juce::DynamicObject();
+      is.engine.setSequence(root, seqPayload({{2 * Q}, {2 * Q, true}}));
       {
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "verse");
-        s1->setProperty("len", 2.0 * Q);
-        steps.add(juce::var(s1));
-        auto* s2 = new juce::DynamicObject();
-        s2->setProperty("name", "chorus");
-        s2->setProperty("len", 2.0 * Q);
-        s2->setProperty("cue", true);
-        steps.add(juce::var(s2));
-        payload->setProperty("steps", steps);
-      }
-      engine.setSequence(rootId, juce::var(payload));
-      // Metadata publishes the flag.
-      {
-        const juce::var seq =
-            engine.getGraphState().getProperty("sequence", juce::var());
-        const juce::var steps = seq.getProperty("steps", juce::var());
-        expect(!(bool)(*steps.getArray())[0].getProperty("cue", true),
+        const juce::var steps = seqOf(is.state()).getProperty("steps", {});
+        expect(!(bool)steps[0].getProperty("cue", true),
                "step 1 publishes cue=false");
-        expect((bool)(*steps.getArray())[1].getProperty("cue", false),
+        expect((bool)steps[1].getProperty("cue", false),
                "step 2 publishes cue=true");
       }
 
       // Drive the playhead INTO the chorus, then arm with no audition.
-      for (int i = 0; i < 2000; ++i) {
-        const int64_t rel = songRel(4 * Q);
-        if (rel > 2 * Q + Q / 4 && rel < 3 * Q + Q / 2) break;
-        process(512);
-      }
-      expect(songRel(4 * Q) > 2 * Q, "playhead inside the cued chorus");
-      engine.createNode("clip");
-      const juce::String cId = topId(1);
-      engine.startRecordingInNode(cId);
-      expectEquals((int)engine.getGraphState()
-                       .getProperty("sequence", juce::var())
-                       .getProperty("auditionStep", -1),
-                   1, "S21: the arm auto-targeted the cued step");
-      process((int)(8 * Q));
-      for (int i = 0; i < 400 && (prop(cId, "isRecording") != 0 ||
-                                  prop(cId, "isPendingStart") != 0);
-           ++i) {
-        process(512);
-      }
-      expectEquals(prop(cId, "isRecording"), (int64_t)0, "C committed");
-      expectEquals(prop(cId, "duration"), (int64_t)(2 * Q),
-                   "S18 through S21: a step-sized part");
-      const int64_t ep = (int64_t)(double)engine.getGraphState().getProperty(
-          "islandZero", 0.0);
-      const int64_t rel =
-          ((prop(cId, "origin") - ep) % (4 * Q) + 4 * Q) % (4 * Q);
+      driveSongInto(2 * Q + Q / 4, 3 * Q + Q / 2);
+      expect(songRel() > 2 * Q, "playhead inside the cued chorus");
+      const juce::String c = is.createClip();
+      is.engine.startRecordingInNode(c);
+      expectEquals(auditionOf(is, root), 1,
+                   "S21: the arm auto-targeted the cued step");
+      is.drive(8 * Q);
+      is.settle();
+      expect(!is.bprop(c, "isRecording"), "C committed");
+      expectEquals(is.dur(c), 2 * Q, "S18 through S21: a step-sized part");
+      const int64_t rel = posmod(is.origin(c) - is.zero(), 4 * Q);
       expect(rel < 2 * Q,
              "the take lands at the SONG TOP - where cue playback "
              "reads it (got " +
@@ -1744,233 +1397,115 @@ class SequencerTests : public juce::UnitTest {
       expectEquals(rel % Q, (int64_t)0, "on the Q grid");
       // S19 auto-gate composed: C sounds only in the chorus.
       {
-        const juce::var seq =
-            engine.getGraphState().getProperty("sequence", juce::var());
-        const juce::var g = seq.getProperty("gates", juce::var());
-        const juce::var bits = g.getProperty(cId, juce::var());
+        const juce::var bits =
+            seqOf(is.state()).getProperty("gates", {}).getProperty(c, {});
         expect(bits.isArray(), "auto-gate row exists for the take");
         if (bits.isArray()) {
-          expect(!(bool)(*bits.getArray())[0], "gated OFF in the verse");
-          expect((bool)(*bits.getArray())[1], "gated ON in the chorus");
+          expect(!(bool)bits[0], "gated OFF in the verse");
+          expect((bool)bits[1], "gated ON in the chorus");
         }
       }
 
       // Esc, then arm in the PLAIN verse: no auto-target (Mode 1).
-      engine.auditionStep(rootId, -1);
-      for (int i = 0; i < 2000; ++i) {
-        const int64_t r2 = songRel(4 * Q);
-        if (r2 > Q / 4 && r2 < Q) break;
-        process(512);
-      }
-      expect(songRel(4 * Q) < 2 * Q, "playhead inside the plain verse");
-      engine.createNode("clip");
-      const juce::String dId = topId(2);
-      engine.startRecordingInNode(dId);
-      expectEquals((int)engine.getGraphState()
-                       .getProperty("sequence", juce::var())
-                       .getProperty("auditionStep", -1),
-                   -1, "a plain step arms as Mode 1 - no auto-target");
-      engine.stopRecordingInNode(dId);
-      for (int i = 0; i < 400 && prop(dId, "isRecording") != 0; ++i) {
-        process(512);
-      }
+      is.engine.auditionStep(root, -1);
+      driveSongInto(Q / 4, Q);
+      expect(songRel() < 2 * Q, "playhead inside the plain verse");
+      const juce::String d = is.createClip();
+      is.engine.startRecordingInNode(d);
+      expectEquals(auditionOf(is, root), -1,
+                   "a plain step arms as Mode 1 - no auto-target");
+      is.engine.stopRecordingInNode(d);
+      is.settle();
 
       // An AUTHORED window over a sequence with cued steps refuses the
-      // arm (multi-step composition is out of the ratified scope).
-      engine.setLoopPoints(rootId, 0, (int64_t)(2 * Q));
-      engine.createNode("clip");
-      const juce::String eId = topId(3);
-      engine.startRecordingInNode(eId);
-      expectEquals(prop(eId, "isRecording"), (int64_t)0,
-                   "refused: authored window over cued steps");
-      expectEquals(prop(eId, "isPendingStart"), (int64_t)0,
-                   "not pending either - the whole arm was refused");
+      // arm (multi-step composition is out of scope).
+      is.window(root, 0, 2 * Q);
+      const juce::String e = is.createClip();
+      is.engine.startRecordingInNode(e);
+      expect(!is.bprop(e, "isRecording"),
+             "refused: authored window over cued steps");
+      expect(!is.bprop(e, "isPendingStart"),
+             "not pending either - the whole arm was refused");
     }
 
-    // Audit D15-1: the S21 lookup reads the SONG POSITION the sequenced
-    // stack itself reads — from its own frame origin (Q18: a group's
-    // origin), not the raw clock from the island zero. A group whose
-    // origin sits 2Q past the zero has its verse where the island frame
-    // has its chorus.
+    // The S21 lookup reads the SONG POSITION the sequenced stack itself
+    // reads — from its own frame origin (Q18: a group's origin), not the
+    // raw clock from the island zero. A group whose origin sits 2Q past
+    // the zero has its verse where the island frame has its chorus.
     beginTest("S21 at depth: a GROUP song's cued step is looked up from the "
               "group's origin, not the island zero");
     {
-      AudioEngine engine;
-      const int BLOCK = 512;
-      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
-      auto process = [&](int total) {
-        float* ins[] = {inBuf.data()};
-        float outL[512], outR[512];
-        float* outs[] = {outL, outR};
-        int remaining = total;
-        while (remaining > 0) {
-          const int n = std::min(remaining, BLOCK);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+      Island is;
+      is.record(kQ);
+      const int64_t Q = is.Q();
+      expectEquals(Q, kQ, "Q established");
+      // Drive until the island phase (t − zero), folded on the 4Q song
+      // grid, is inside (lo, hi).
+      auto drivePhaseInto = [&](int64_t lo, int64_t hi) {
+        is.waitFor([&] {
+          const int64_t phase = posmod(is.islandPos(), 4 * Q);
+          return phase > lo && phase < hi;
+        });
       };
-      std::function<juce::var(const juce::var&, const juce::String&)> findVar =
-          [&](const juce::var& node, const juce::String& id) -> juce::var {
-        if (node.getProperty("id", "").toString() == id) return node;
-        if (auto* kids = node.getProperty("nodes", juce::var()).getArray())
-          for (auto& k : *kids) {
-            const juce::var hit = findVar(k, id);
-            if (!hit.isVoid()) return hit;
-          }
-        return {};
-      };
-      auto prop = [&](const juce::String& id, const char* key) {
-        return (int64_t)(double)findVar(engine.getGraphState(), id)
-            .getProperty(key, 0.0);
-      };
-      auto lastIdUnder = [&](const juce::var& parent) {
-        auto* kids = parent.getProperty("nodes", juce::var()).getArray();
-        return kids->getLast().getProperty("id", "").toString();
-      };
-      // The island phase (t − zero) folded on the 4Q song grid.
-      auto phase4 = [&](int64_t Q) {
-        const int64_t pos = (int64_t)(double)engine.getGraphState().getProperty(
-            "islandPos", 0.0);
-        return ((pos % (4 * Q)) + 4 * Q) % (4 * Q);
-      };
-      auto auditionOf = [&](const juce::String& id) {
-        return (int)findVar(engine.getGraphState(), id)
-            .getProperty("sequence", juce::var())
-            .getProperty("auditionStep", -1);
-      };
-
-      // Take A establishes Q (~1 s) at the top level.
-      engine.createNode("clip");
-      const juce::String aId = lastIdUnder(engine.getGraphState());
-      engine.startRecordingInNode(aId);
-      process(100);
-      process(44100);
-      engine.stopRecordingInNode(aId);
-      for (int i = 0; i < 200 && prop(aId, "isRecording") != 0; ++i) process(512);
-      const int64_t Q = prop(aId, "duration");
-      expect(Q > 0, "Q established");
 
       // A group whose first take lands at island phase 2Q: arm inside
       // [1Q, 2Q) so the take starts at the 2Q boundary. One Q long, so
-      // the cycle does not grow and the zero stays put.
-      engine.createNode("stack");
-      const juce::String gId = lastIdUnder(engine.getGraphState());
-      engine.createNode("clip", gId);
-      const juce::String mId = lastIdUnder(findVar(engine.getGraphState(), gId));
-      for (int i = 0; i < 4000; ++i) {
-        const int64_t ph = phase4(Q);
-        if (ph > Q + Q / 4 && ph < Q + (3 * Q) / 4) break;
-        process(512);
-      }
-      engine.startRecordingInNode(mId);
-      // The arm pends to the 2Q boundary; capture just under 1Q from
-      // there so the stop pads up to exactly 1Q (a shorter capture would
-      // pad to a Q/k subdivision, a longer one to 2Q and grow the cycle).
-      for (int i = 0; i < 400 && prop(mId, "isRecording") == 0; ++i) process(512);
-      process((int)(Q - 2048));
-      engine.stopRecordingInNode(mId);
-      for (int i = 0; i < 400 && (prop(mId, "isRecording") != 0 ||
-                                  prop(mId, "isPendingStart") != 0);
-           ++i) {
-        process(512);
-      }
-      expectEquals(prop(mId, "duration"), Q, "the group's take is 1Q");
-      const int64_t zero = (int64_t)(double)engine.getGraphState().getProperty(
-          "islandZero", 0.0);
-      expectEquals(((prop(gId, "origin") - zero) % (4 * Q) + 4 * Q) % (4 * Q),
-                   (int64_t)(2 * Q),
+      // the cycle does not grow.
+      const juce::String g = is.createStack();
+      const juce::String m = is.createClip(g);
+      drivePhaseInto(Q + Q / 4, Q + (3 * Q) / 4);
+      is.recordInto(m, Q);
+      expectEquals(is.dur(m), Q, "the group's take is 1Q");
+      expectEquals(posmod(is.origin(g) - is.zero(), 4 * Q), 2 * Q,
                    "the group's origin sits 2Q past the zero (Q18 anchoring)");
 
       // The GROUP's song: verse 2Q | chorus 2Q (CUED) = 4Q, measured
       // from the group's origin.
-      {
-        auto* payload = new juce::DynamicObject();
-        juce::Array<juce::var> steps;
-        auto* s1 = new juce::DynamicObject();
-        s1->setProperty("name", "verse");
-        s1->setProperty("len", 2.0 * Q);
-        steps.add(juce::var(s1));
-        auto* s2 = new juce::DynamicObject();
-        s2->setProperty("name", "chorus");
-        s2->setProperty("len", 2.0 * Q);
-        s2->setProperty("cue", true);
-        steps.add(juce::var(s2));
-        payload->setProperty("steps", steps);
-        engine.setSequence(gId, juce::var(payload));
-      }
-      expectEquals((int)findVar(engine.getGraphState(), gId)
-                       .getProperty("sequence", juce::var())
-                       .getProperty("steps", juce::var())
-                       .getArray()
-                       ->size(),
-                   2, "the group carries the song");
+      is.engine.setSequence(g, seqPayload({{2 * Q}, {2 * Q, true}}));
+      expectEquals(
+          seqOf(is.node(g)).getProperty("steps", {}).getArray()->size(), 2,
+          "the group carries the song");
 
       // Island phase [2Q + Q/4, 2Q + 3Q/4): the ISLAND frame's chorus,
       // the GROUP frame's verse (phase − 2Q). An arm in the group is
       // Mode 1 — no auto-target.
-      for (int i = 0; i < 4000; ++i) {
-        const int64_t ph = phase4(Q);
-        if (ph > 2 * Q + Q / 4 && ph < 2 * Q + (3 * Q) / 4) break;
-        process(512);
-      }
-      engine.createNode("clip", gId);
-      const juce::String nId = lastIdUnder(findVar(engine.getGraphState(), gId));
-      engine.startRecordingInNode(nId);
-      expectEquals(auditionOf(gId), -1,
+      drivePhaseInto(2 * Q + Q / 4, 2 * Q + (3 * Q) / 4);
+      const juce::String n = is.createClip(g);
+      is.engine.startRecordingInNode(n);
+      expectEquals(auditionOf(is, g), -1,
                    "island-phase chorus is the group's VERSE: no auto-target");
-      engine.stopRecordingInNode(nId);  // cancel before capture
-      for (int i = 0; i < 400 && (prop(nId, "isRecording") != 0 ||
-                                  prop(nId, "isPendingStart") != 0);
-           ++i) {
-        process(512);
-      }
-      expectEquals(prop(nId, "duration"), (int64_t)0, "nothing recorded");
+      is.engine.stopRecordingInNode(n);  // cancel before capture
+      is.settle();
+      expectEquals(is.dur(n), (int64_t)0, "nothing recorded");
 
       // Island phase [Q/4, 3Q/4): the island frame's verse, the group's
       // CHORUS (phase + 2Q) — the arm auto-targets the cued step.
-      for (int i = 0; i < 4000; ++i) {
-        const int64_t ph = phase4(Q);
-        if (ph > Q / 4 && ph < (3 * Q) / 4) break;
-        process(512);
-      }
-      engine.startRecordingInNode(nId);
-      expectEquals(auditionOf(gId), 1,
+      drivePhaseInto(Q / 4, (3 * Q) / 4);
+      is.engine.startRecordingInNode(n);
+      expectEquals(auditionOf(is, g), 1,
                    "island-phase verse is the group's CHORUS: auto-targeted");
-      engine.stopRecordingInNode(nId);
+      is.engine.stopRecordingInNode(n);
     }
 
     beginTest("CUE: the flag survives session save/load and templates");
     {
       StackNode outer("island");
       auto group = std::make_unique<StackNode>("song");
-      auto c = makeDcClip("b", 0.2f);
-      const juce::String cid = c->getUuid();
-      group->addChild(std::move(c));
-      auto* s = new Sequence();
-      s->steps.push_back({kLen, "one", false});
-      s->steps.push_back({2 * kLen, "two", true});
-      s->finalize();
-      delete group->exchangeSequence(s);
+      group->addChild(makeDcClip("b", 0.2f));
+      delete group->exchangeSequence(makeCuedSeq());
       StackNode* g = group.get();
       outer.addChild(std::move(group));
       outer.setQuantum(kLen, 0);
 
-      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                     .getChildFile("celestrian_cue_io_test");
-      dir.deleteRecursively();
-      expect(session_io::save(outer, kSr, dir, {}), "save ok");
-      auto back = session_io::load(dir, kSr);
-      expect(back.ok, "load ok");
-      auto* gBack = dynamic_cast<StackNode*>(back.children[0].get());
-      expect(gBack != nullptr && gBack->sequencePtr() != nullptr,
-             "sequence came back");
-      if (gBack != nullptr && gBack->sequencePtr() != nullptr) {
-        const Sequence* sb = gBack->sequencePtr();
+      const auto back = roundTrip(outer, "seq_cue_io");
+      expect(back.ok, "saved and loaded");
+      const Sequence* sb = firstGroupSequence(back);
+      expect(sb != nullptr, "sequence came back");
+      if (sb != nullptr) {
         expect(!sb->steps[0].cue, "step 1 cue=false back");
         expect(sb->steps[1].cue, "step 2 cue=true back");
         expect(sb->any_cue, "finalize recomputed any_cue");
       }
-      dir.deleteRecursively();
 
       const juce::var tpl = track_templates::capture(*g, kLen);
       auto rebuilt = track_templates::build(tpl, kSr, /*q_samples=*/2205);
@@ -1987,11 +1522,11 @@ class SequencerTests : public juce::UnitTest {
               "never hangs the envelope walk");
     {
       // Cue step 2, then route step 1 back to step 0: the program is
-      // 0 -> 1 -> 0 and step 2 is never visited. Before the fix
-      // `any_cue` came from the step LIST, so every fast path was off
-      // while no VISIT was cued — and with the all-on mask (every
-      // row-less child) `runAround` had nothing to stop at: an infinite
-      // walk in cornerDistance/gainAt on the audio thread.
+      // 0 -> 1 -> 0 and step 2 is never visited. `any_cue` is a fact of
+      // the VISITS, not of the step list: were it set here, every fast
+      // path would be off with no cued visit to stop at, and under the
+      // all-on mask (every row-less child) cornerDistance/gainAt would
+      // walk forever on the audio thread.
       Sequence s;
       s.steps.push_back({1000, "a"});
       s.steps.push_back({1000, "b"});

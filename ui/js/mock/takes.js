@@ -1,105 +1,85 @@
 /**
  * mock/takes.js — the take list and the comp (docs/takes.md; engine
- * parity AudioEngine::selectTake / deleteTake / setComp /
- * getTakeWaveform). A committed clip holds `takes` (one waveform seed
- * per take), `activeTake`, and `comp` (one take index per Q cell, −1 =
- * the active take; [] = none). All three verbs are UNDOABLE (the
- * dispatch snapshot) and refused mid-take; refusals drop the snapshot.
- * The new-take arm lives with the recording lifecycle (recording.js).
+ * AudioEngine::selectTake / deleteTake / setComp / getTakeWaveform). A
+ * committed clip holds `takes` (a waveform seed each), `activeTake` and
+ * the comp. The new-take arm lives with the take lifecycle
+ * (recording.js).
  */
 
-import { findNode, anyNodeRecording, effectiveQuantumForState } from './state.js';
-import { popUndoForRefusal } from './undo.js';
-import { takesOf } from './recording.js';
+import { state, findNode, takesOf, takeLength, isLive } from './state.js';
 import { takePeaks } from './waveform.js';
 
+/** Engine ClipNode::kMaxTakes / kMaxCompCells. */
+export const MAX_TAKES = 32;
+const MAX_COMP_CELLS = 256;
+
+const clipOf = id => {
+    const node = findNode(id);
+    return node && node.type === 'clip' ? node : null;
+};
+
 export function selectTake(id, index) {
-    const node = findNode(id);
-    if (!node || node.type !== 'clip' || anyNodeRecording()) {
-        popUndoForRefusal();
-        return;
-    }
-    const takes = takesOf(node);
+    const clip = clipOf(id);
+    if (!clip) return;
+    const takes = takesOf(clip);
     const k = Number(index);
-    if (!(k >= 0 && k < takes.length) || k === (node.activeTake || 0)) {
-        popUndoForRefusal();
-        return;
-    }
-    node.takes = takes.slice();
-    node.activeTake = k;
-    console.log('[MockBackend] selectTake', id, '→', k);
+    if (!(k >= 0 && k < takes.length) || k === (clip.activeTake || 0)) return;
+    clip.takes = takes.slice();
+    clip.activeTake = k;
 }
 
+/** The last take of a slot stays. An active take hands activity to its
+ * lower neighbour; comp cells naming the removed take fall back to the
+ * active one, and a comp naming nothing any more clears. */
 export function deleteTake(id, index) {
-    const node = findNode(id);
-    if (!node || node.type !== 'clip' || anyNodeRecording()) {
-        popUndoForRefusal();
-        return;
-    }
-    const takes = takesOf(node).slice();
+    const clip = clipOf(id);
+    if (!clip) return;
+    const takes = takesOf(clip).slice();
     const k = Number(index);
-    if (takes.length < 2 || !(k >= 0 && k < takes.length)) {
-        popUndoForRefusal();  // the last take never deletes
-        return;
-    }
-    const active = node.activeTake || 0;
+    if (takes.length < 2 || !(k >= 0 && k < takes.length)) return;
+    const active = clip.activeTake || 0;
     takes.splice(k, 1);
-    node.takes = takes;
-    // An active take hands activity to its lower neighbour (engine
-    // parity ClipNode::removeTake); higher indices renumber.
-    if (active === k) node.activeTake = k > 0 ? k - 1 : 0;
-    else if (active > k) node.activeTake = active - 1;
-    // Cells naming the removed take fall back to the active one; a comp
-    // naming nothing anymore clears (engine parity dropTakeFromComp).
-    if (Array.isArray(node.comp) && node.comp.length) {
-        const cells = node.comp.map(c => (c === k ? -1 : (c > k ? c - 1 : c)));
-        node.comp = cells.some(c => c >= 0) ? cells : [];
+    clip.takes = takes;
+    if (active === k) clip.activeTake = k > 0 ? k - 1 : 0;
+    else if (active > k) clip.activeTake = active - 1;
+    if (Array.isArray(clip.comp) && clip.comp.length) {
+        const cells = clip.comp.map(c => (c === k ? -1 : (c > k ? c - 1 : c)));
+        if (cells.some(c => c >= 0)) clip.comp = cells;
+        else clearComp(clip);
     }
-    console.log('[MockBackend] deleteTake', id, k, '→ active', node.activeTake);
 }
 
+function clearComp(clip) {
+    clip.comp = [];
+    clip.compCellLen = 0;
+    clip.compOffset = 0;
+}
+
+/** One take index per Q cell of the period (−1 = the active take); []
+ * clears, always. Authored on the grid as it lies: Q cells from the
+ * content's zero. */
 export function setComp(id, cells) {
-    const node = findNode(id);
-    if (!node || node.type !== 'clip' || anyNodeRecording() ||
-        node.contentKind === 'midi') {
-        popUndoForRefusal();
-        return;
-    }
-    const Q = effectiveQuantumForState();
-    const period = node.duration || 0;
-    if (!(Q > 0) || !(period > 0)) { popUndoForRefusal(); return; }
-    const expected = Math.ceil(period / Q);
+    const clip = clipOf(id);
+    if (!clip || clip.contentKind === 'midi') return;
+    const Q = state.islandQ;
+    const period = takeLength(clip);
+    if (!(Q > 0) || !(period > 0)) return;
     const next = Array.isArray(cells) ? cells.map(Number) : [];
-    const count = takesOf(node).length;
-    if ((next.length && next.length !== expected) ||
-        next.some(c => !(c >= -1 && c < count))) {
-        console.log('[MockBackend] setComp refused — bad cells for', id);
-        popUndoForRefusal();
-        return;
+    const expected = Math.ceil(period / Q);
+    const count = takesOf(clip).length;
+    if (next.length && (next.length !== expected || expected > MAX_COMP_CELLS)) return;
+    if (next.some(c => !(c >= -1 && c < count))) return;
+    if (!next.length) {
+        if ((clip.comp || []).length) clearComp(clip);
+    } else {
+        clip.comp = next;
+        clip.compCellLen = Q;
+        clip.compOffset = 0;
     }
-    const cur = node.comp || [];
-    if (cur.length === next.length && cur.every((c, i) => c === next[i])) {
-        popUndoForRefusal();  // identity: nothing recorded
-        return;
-    }
-    node.comp = next;
-    console.log('[MockBackend] setComp', id, next);
 }
 
-// Take k's peaks: waveform.js takePeaks (the one peak synthesis, with
-// the engine's proportional buckets).
 export function getTakeWaveform(id, index, numPeaks = 100) {
-    const node = findNode(id);
-    if (!node || node.type === 'stack') return [];
-    if (node.isRecording || node.isPendingStart) return [];
-    if (!node.duration || node.duration <= 0) return [];
-    return takePeaks(node, Number(index), numPeaks);
-}
-
-/** Publication (engine parity ClipNode::getMetadata): count, active,
- * comp on every clip. */
-export function publishTakes(node, out) {
-    out.takes = takesOf(node).length;
-    out.activeTake = node.activeTake || 0;
-    out.comp = Array.isArray(node.comp) ? [...node.comp] : [];
+    const clip = clipOf(id);
+    if (!clip || isLive(clip) || !(takeLength(clip) > 0)) return [];
+    return takePeaks(clip, Number(index), numPeaks);
 }

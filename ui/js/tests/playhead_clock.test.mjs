@@ -1,9 +1,9 @@
 /**
  * Playhead dead-reckoning clock (docs/session_view.md law 10 coda).
  *
- * The property that motivated the module (field 2026-07-11): the drawn
- * sweep must TOUCH the loop end and restart near zero — the CSS-glide
- * renderer lagged its target and visually wrapped early.
+ * The property the module exists for: the drawn sweep must TOUCH the
+ * loop end and restart near zero (a renderer that lags its target
+ * visually wraps early).
  */
 
 import test from 'node:test';

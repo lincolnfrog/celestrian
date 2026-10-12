@@ -9,18 +9,15 @@ class CelestrianApplication : public juce::JUCEApplication {
 
   const juce::String getApplicationName() override { return "Celestrian"; }
   const juce::String getApplicationVersion() override { return "0.1.0"; }
-  // MUST stay true: the plugin scan re-launches this executable as a
-  // worker (--scan-worker, below). With single-instance enforcement JUCE
-  // would hand the worker's command line to the running app via
-  // anotherInstanceStarted() and the child would exit without scanning.
+  // MUST stay true: the plugin scan re-launches this executable as its
+  // worker. Under single-instance enforcement JUCE would hand the
+  // worker's command line to the running app and the child would exit
+  // without scanning.
   bool moreThanOneInstanceAllowed() override { return true; }
 
   void initialise(const juce::String& commandLine) override {
-    // SCAN WORKER MODE (docs/vst3.md §4): the running app re-launches
-    // this executable with --scan-worker to probe plugins out of
-    // process. No window, no logger (it would wipe the parent's log),
-    // no dock icon; probe the list, exit with the worker's code. A bad
-    // plugin kills THIS process and the parent shrugs it off.
+    // Scan worker mode (src/plugin_scan_worker.h): no window, no dock
+    // icon, and no logger — it would wipe the running app's log.
     const auto args = getCommandLineParameterArray();
     if (celestrian::scan_worker::isWorkerInvocation(args)) {
 #if JUCE_MAC

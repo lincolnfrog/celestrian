@@ -6,37 +6,19 @@
 
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
-#include "../src/dsp/vst3_slot.h"
 #include "../src/midi_input_queue.h"
 #include "../src/midi_sequence.h"
 #include "../src/session_io.h"
 #include "../src/stack_node.h"
+#include "scenario_utils.h"
 #include "stub_plugin_instance.h"
 #include "test_utils.h"
 
 namespace celestrian {
 
-namespace {
+using test_utils::installStubSynth;
 
-/** Installs an enabled, prepared stub-synth instrument slot on `node`
- * (the phase-4 fixture, duplicated here so the two files stay
- * independent). Returns the raw stub for assertions. */
-test_utils::StubSynthInstance* installStubSynth(AudioNode& node,
-                                                double sample_rate) {
-  auto instance = std::make_unique<test_utils::StubSynthInstance>();
-  auto* raw = instance.get();
-  auto slots = node.fxChain()->slots();
-  auto synth = std::make_shared<dsp::Vst3Slot>(
-      std::move(instance), "Stub-synth-uid", "Stub Synth",
-      "/stub/StubSynth.vst3", /*is_instrument=*/true);
-  auto* slot = synth.get();
-  slots.push_back(std::move(synth));
-  delete node.exchangeFxChain(
-      dsp::FxChain::makeFromSlots(std::move(slots)).release());
-  node.fxChain()->prepare(sample_rate);
-  slot->enabled.store(true);
-  return raw;
-}
+namespace {
 
 juce::MidiMessage noteOn(int note, int velocity = 100) {
   return juce::MidiMessage::noteOn(1, note, (juce::uint8)velocity);
@@ -48,17 +30,61 @@ void pushHistory(MidiHistory& hist, int64_t arrival,
   hist.push(arrival, m.getRawData(), m.getRawDataSize());
 }
 
+/** `m` as a take's event at content position `pos`. */
+MidiEvent eventAt(int64_t pos, const juce::MidiMessage& m) {
+  MidiEvent e;
+  e.pos = pos;
+  e.size = (juce::uint8)m.getRawDataSize();
+  memcpy(e.bytes, m.getRawData(), (size_t)m.getRawDataSize());
+  return e;
+}
+
+/** A lone instrument clip armed for a take that captures from the
+ * ARRIVAL HISTORY (the engine's path): keys arrive 100 samples late, so
+ * a first take armed at clock 1000 opens its window at arrival 1100. */
+struct HistoryTake {
+  explicit HistoryTake(double sample_rate) : clip("Keys", sample_rate) {
+    installStubSynth(clip, sample_rate);
+    clip.startRecording();
+    nc = test_utils::contextFor(clip, 256);
+    nc.ctx.sample_rate = sample_rate;
+    nc.ctx.is_playing = true;
+    nc.ctx.midi_history = &hist;
+    nc.ctx.midi_latency = 100;
+    nc.ctx.input_latency = 0;
+  }
+
+  /** `m` arrives at input clock `arrival`. */
+  void arrive(int64_t arrival, const juce::MidiMessage& m) {
+    pushHistory(hist, arrival, m);
+  }
+
+  /** One 256-sample block at clock `pos`, the input clock alongside. */
+  void block(int64_t pos) {
+    nc.ctx.master_pos = pos;
+    nc.ctx.input_clock = pos;
+    clip.process(nullptr, nullptr, 0, 0, nc.ctx);
+  }
+
+  /** The take is asked to stop, and the next block top commits it. */
+  void stop() { test_utils::stopAtBlockTop(clip, nc.ctx); }
+
+  ClipNode clip;
+  MidiHistory hist;
+  test_utils::NodeContext nc;
+};
+
 }  // namespace
 
 /**
- * MIDI takes (docs/vst3.md §8, phase 5): timestamped drain, arrival
- * history, the ClipNode note take (capture → commit → sample-accurate
- * render with seam releases), latency-compensated history capture,
- * the engine's record path, and persistence.
+ * MIDI takes (docs/vst3.md §8): timestamped drain, arrival history, the
+ * ClipNode note take (capture → commit → sample-accurate render with
+ * seam releases), latency-compensated history capture, the engine's
+ * record path, and persistence.
  */
 class MidiRecordTests : public juce::UnitTest {
  public:
-  MidiRecordTests() : juce::UnitTest("MIDI recording (phase 5)") {}
+  MidiRecordTests() : juce::UnitTest("MIDI recording") {}
 
   void runTest() override {
     const double sr = 44100.0;
@@ -115,6 +141,19 @@ class MidiRecordTests : public juce::UnitTest {
                    2000 + MidiHistory::kCapacity + 9);
     }
 
+    beginTest("MidiSequence: sorted insertion; a full sequence refuses the "
+              "event and keeps what it holds");
+    {
+      MidiSequence seq(2);
+      const juce::MidiMessage on = noteOn(60), off = noteOff(60);
+      expect(seq.append(40, off.getRawData(), 3), "stored");
+      expect(seq.append(10, on.getRawData(), 3), "stored, ahead of it");
+      expect(!seq.append(20, on.getRawData(), 3), "full: refused");
+      expectEquals(seq.count(), 2);
+      expectEquals((int)seq[0].pos, 10, juce::String("sorted by position"));
+      expectEquals((int)seq[1].pos, 40);
+    }
+
     beginTest("ClipNode MIDI take: an instrument slot makes the take notes");
     {
       ClipNode clip("Keys", sr);
@@ -149,7 +188,7 @@ class MidiRecordTests : public juce::UnitTest {
       expectWithinAbsoluteError(left[9], 0.0f, 1e-9f, "silent before onset");
       expectWithinAbsoluteError(left[10], test_utils::StubSynthInstance::kLevel,
                                 1e-6f, "play-through sounds at the offset");
-      expectGreaterThan(clip.getCurrentPeak(), 0.7f);  // velocity meter
+      expectGreaterThan(clip.last_block_peak.load(), 0.7f);  // velocity meter
 
       // Block 1: note-off at offset 20 → content 276.
       juce::MidiBuffer b1;
@@ -171,24 +210,26 @@ class MidiRecordTests : public juce::UnitTest {
       ctx.live_midi = &empty;
       ctx.master_pos = 768;
       clip.process(nullptr, outs, 0, 2, ctx);
-      expectEquals(clip.getWritePosition(), 1024, juce::String("heard length"));
+      expectEquals(clip.recordedLength(), (int64_t)1024,
+                   juce::String("heard length"));
 
-      // Stop: first clip → immediate commit, duration = heard length.
-      clip.stopRecording();
+      // Stop: a first take commits at the next block top, duration =
+      // heard length.
+      test_utils::stopAtBlockTop(clip, ctx);
       expect(clip.recState() == ClipNode::RecState::Idle);
       expectEquals((int)clip.duration_samples.load(), 1024);
       expect(clip.isPlaying(), "committed take sounds");
       expect(clip.contentKind() == ClipNode::ContentKind::Midi);
       // THE END SEAM: note 64 was still down when the take ended, so the
-      // commit closed it at the last sample (docs/vst3.md 11).
+      // commit closed it at the last sample (docs/vst3.md §8.4).
       expectEquals(clip.midiSequence().count(), 4);
       expectEquals((int)clip.midiSequence()[2].pos, 612);
       expectEquals((int)clip.midiSequence()[3].pos, 1023,
                    juce::String("held note closed at the last sample"));
       expect(clip.midiSequence()[3].isNoteOff() &&
-                 clip.midiSequence()[3].note() == 64,
-             "...with a note-off for that note");
-      expectEquals(clip.midiSequence().dropped(), 0);
+                 clip.midiSequence()[3].note() == 64 &&
+                 clip.midiSequence()[3].channel0() == 0,
+             "...with a note-off for that note on its channel");
       expectEquals(clip.getAudioBuffer().getNumSamples(), (int)sr,
                    juce::String("no audio reservation for a MIDI take"));
 
@@ -252,50 +293,97 @@ class MidiRecordTests : public juce::UnitTest {
       expectWithinAbsoluteError(left[10], test_utils::StubSynthInstance::kLevel,
                                 1e-6f, "second pass sounds from 10");
 
-      // Transport stop mid-note: content goes inactive → release now,
-      // and the SOUND-OFF pair goes to the instrument once (docs/vst3.md
-      // 11) — never again while stopped.
+      // What stops sounding sums nothing (the sound-off pair each of
+      // these edges sends the instrument is midi_release_tests'). A
+      // transport stop mid-note first:
       ctx.master_pos = 2048;  // third pass: note 60 sounds from 10
       ctx.num_samples = 64;
       clip.process(nullptr, outs, 0, 2, ctx);
       expect(synth->note_held, "note 60 sounding");
       ctx.is_playing = false;
+      ctx.master_pos = 2112;  // the next block: played on, the note holds
       std::fill(left.begin(), left.end(), 0.0f);
       clip.process(nullptr, outs, 0, 2, ctx);
-      expect(!synth->note_held, "stop released the held note");
       expectWithinAbsoluteError(left[0], 0.0f, 1e-9f, "silent after stop");
-      expectEquals(synth->all_notes_off, 1, juce::String("CC 123 once"));
-      expectEquals(synth->all_sound_off, 1, juce::String("CC 120 once"));
-      clip.process(nullptr, outs, 0, 2, ctx);
-      clip.process(nullptr, outs, 0, 2, ctx);
-      expectEquals(synth->all_notes_off, 1,
-                   juce::String("stopped blocks send no more"));
 
-      // Muted: the instrument keeps being fed (an unmute resumes
-      // mid-phrase) but nothing sums. The mute edge FADES now (~10 ms,
-      // S7 — sequencer.md §9), so settle one fade-length block first;
-      // the gate landing closed is a sound-off edge (one more pair).
+      // Then a mute: the instrument keeps being fed (an unmute resumes
+      // mid-phrase) but nothing sums. The mute edge fades (~10 ms,
+      // sequencer.md §9), so one fade-length block settles it first.
       ctx.is_playing = true;
       clip.is_muted.store(true);
-      {
-        std::vector<float> settleL(441, 0.0f), settleR(441, 0.0f);
-        float* const settleOuts[] = {settleL.data(), settleR.data()};
-        ProcessContext settle = ctx;
-        settle.master_pos = 3072 - 441;
-        settle.num_samples = 441;
-        clip.process(nullptr, settleOuts, 0, 2, settle);
-      }
-      expectEquals(synth->all_sound_off, 2,
-                   juce::String("the gate closing is one sound-off edge"));
+      ctx.master_pos = 3072 - 441;
+      ctx.num_samples = 441;
+      clip.process(nullptr, outs, 0, 2, ctx);
       ctx.master_pos = 3072;  // fourth pass top: note 60 at 10 again
+      ctx.num_samples = 64;
       std::fill(left.begin(), left.end(), 0.0f);
       clip.process(nullptr, outs, 0, 2, ctx);
       expect(synth->note_held, "muted clip still feeds its instrument");
-      expectWithinAbsoluteError(left[0], 0.0f, 1e-9f, "muted sums nothing");
       expectWithinAbsoluteError(left[20], 0.0f, 1e-9f, "muted sums nothing");
-      expectEquals(synth->all_sound_off, 2,
-                   juce::String("a closed gate sends no more pairs"));
-      clip.is_muted.store(false);
+    }
+
+    beginTest("a cancelled MIDI arm leaves no kind behind: without its "
+              "instrument the empty clip is an audio track again");
+    {
+      ClipNode clip("Keys", sr);
+      installStubSynth(clip, sr);
+      clip.startRecording();
+      expect(clip.contentKind() == ClipNode::ContentKind::Midi,
+             "armed as a MIDI take");
+      clip.stopRecording();  // still armed: a cancel
+      expect(clip.recState() == ClipNode::RecState::Idle, "cancelled");
+      expect(clip.isMidiClip(), "a MIDI track while the instrument is there");
+      delete clip.exchangeFxChain(dsp::FxChain::makeDefault().release());
+      expect(!clip.isMidiClip(), "an audio track once it is gone");
+      expect(clip.contentKind() == ClipNode::ContentKind::Audio,
+             "and it renders as one (input monitoring reaches it)");
+      expectEquals(clip.getMetadata().getProperty("contentKind", "").toString(),
+                   juce::String("audio"), "published as audio");
+    }
+
+    beginTest("a one-shot group's rest releases a MIDI member's hanging note "
+              "at its top - a note-off, no sound-off pair - nothing repeats "
+              "per block, and the next firing plays again");
+    {
+      // The kit fires its 1Q shot once per 4Q cycle. Its MIDI member
+      // strikes a note in the shot and never releases it.
+      const int q = 4410, n = 441;
+      StackNode root("Island");
+      root.addChild(test_utils::committedClip("Bass", sr, 4 * q, 0.0f));
+      auto kit = std::make_unique<StackNode>("Kit");
+      kit->period_from_context_.store(true);
+      auto keys = std::make_unique<ClipNode>("Keys", sr);
+      auto* synth = installStubSynth(*keys, sr);
+      keys->origin_samples.store(0);
+      keys->duration_samples.store(q);
+      keys->loadCommittedMidi({eventAt(10, noteOn(60))}, 0);
+      kit->addChild(std::move(keys));
+      root.addChild(std::move(kit));
+
+      const auto runAt = [&](int64_t pos) {
+        test_utils::NodeContext nc = test_utils::contextFor(root, n, pos);
+        nc.ctx.sample_rate = sr;
+        nc.ctx.is_playing = true;
+        std::vector<float> l((size_t)n, 0.0f), r((size_t)n, 0.0f);
+        float* outs[] = {l.data(), r.data()};
+        root.process(nullptr, outs, 0, 2, nc.ctx);
+      };
+      for (int64_t t = 0; t < q; t += n) runAt(t);
+      expect(synth->note_held, "the shot: the note sounds to its end");
+      expectEquals(synth->note_ons, 1);
+      runAt(q);  // the rest's first block
+      expect(!synth->note_held, "the rest's top releases it");
+      const int offs = synth->note_offs, pairs = synth->all_sound_off;
+      expectGreaterThan(offs, 0, juce::String("with a note-off"));
+      expectEquals(pairs, 0, juce::String("and no sound-off pair: a rest, not a stop"));
+      for (int64_t t = q + n; t < 4 * q; t += n) runAt(t);
+      expectEquals(synth->note_offs, offs, juce::String("once, not per block"));
+      expectEquals(synth->all_sound_off, pairs,
+                   juce::String("no sound-off repeats through the rest"));
+      expectEquals(synth->note_ons, 1, juce::String("the rest plays nothing"));
+      runAt(4 * q);
+      expectEquals(synth->note_ons, 2, juce::String("the next firing strikes"));
+      expect(synth->note_held, "and sounds");
     }
 
     beginTest("MIDI take: a note held across the START lands at content 0 (I1)");
@@ -305,25 +393,14 @@ class MidiRecordTests : public juce::UnitTest {
       // the take's top, so they enter as note-ons at content 0 with
       // their velocity; a note struck AND released before the window
       // leaves nothing.
-      ClipNode clip("Keys", sr);
-      installStubSynth(clip, sr);
-      MidiHistory hist;
-      clip.startRecording();
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 256);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
-      ctx.midi_history = &hist;
-      ctx.midi_latency = 100;  // window opens at arrival 1100
-      ctx.input_latency = 0;
-      pushHistory(hist, 1000, noteOn(57));   // struck and released before
-      pushHistory(hist, 1040, noteOff(57));
-      pushHistory(hist, 1050, noteOn(59, 77));  // held across the start
-      pushHistory(hist, 1100, noteOff(59));     // released AT the top
-      pushHistory(hist, 1120, noteOn(62, 80));  // inside the window
-      ctx.master_pos = 1000;
-      ctx.input_clock = 1000;
-      clip.process(nullptr, nullptr, 0, 0, ctx);
+      HistoryTake take(sr);
+      ClipNode& clip = take.clip;
+      take.arrive(1000, noteOn(57));  // struck and released before
+      take.arrive(1040, noteOff(57));
+      take.arrive(1050, noteOn(59, 77));  // held across the start
+      take.arrive(1100, noteOff(59));     // released AT the top
+      take.arrive(1120, noteOn(62, 80));  // inside the window
+      take.block(1000);
       expectEquals(clip.midiSequence().count(), 3,
                    juce::String("prelude note-on + its release + note 62"));
       if (clip.midiSequence().count() == 3) {
@@ -338,77 +415,34 @@ class MidiRecordTests : public juce::UnitTest {
         expectEquals((int)clip.midiSequence()[2].pos, 20);
       }
       // Later blocks fold nothing more (the prelude is a one-time act).
-      pushHistory(hist, 1300, noteOff(62));
-      ctx.master_pos = 1256;
-      ctx.input_clock = 1256;
-      clip.process(nullptr, nullptr, 0, 0, ctx);
+      take.arrive(1300, noteOff(62));
+      take.block(1256);
       expectEquals(clip.midiSequence().count(), 4);
-      clip.stopRecording();
+      take.stop();
+      expect(clip.recState() == ClipNode::RecState::Idle, "committed");
       expectEquals(clip.midiSequence().count(), 4,
                    juce::String("nothing held at the end: no seam close"));
     }
 
-    beginTest("MIDI take: a note held across the END closes at the last sample");
-    {
-      // The live-block path: one note struck and never released; the
-      // commit appends its note-off at duration - 1 (an end seam the
-      // content then owns).
-      ClipNode clip("Keys", sr);
-      installStubSynth(clip, sr);
-      clip.startRecording();
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 256, 0);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
-      juce::MidiBuffer b0;
-      b0.addEvent(noteOn(72, 64), 100);
-      ctx.live_midi = &b0;
-      clip.process(nullptr, nullptr, 0, 0, ctx);
-      juce::MidiBuffer empty;
-      ctx.live_midi = &empty;
-      ctx.master_pos = 256;
-      clip.process(nullptr, nullptr, 0, 0, ctx);
-      clip.stopRecording();
-      expectEquals((int)clip.duration_samples.load(), 512);
-      expectEquals(clip.midiSequence().count(), 2);
-      if (clip.midiSequence().count() == 2) {
-        const MidiEvent& close = clip.midiSequence()[1];
-        expectEquals((int)close.pos, 511, juce::String("duration - 1"));
-        expect(close.isNoteOff() && close.note() == 72 && close.channel0() == 0,
-               "note-off for the held note on its channel");
-      }
-    }
-
     beginTest("MIDI take: arrival-history capture is latency-compensated");
     {
-      ClipNode clip("Keys", sr);
-      installStubSynth(clip, sr);
-      MidiHistory hist;
-      clip.startRecording();
-
-      test_utils::NodeContext nc = test_utils::contextFor(clip, 256);
-      ProcessContext& ctx = nc.ctx;
-      ctx.sample_rate = sr;
-      ctx.is_playing = true;
-      ctx.midi_history = &hist;
-      ctx.midi_latency = 100;  // output latency: keys arrive 100 late
-      ctx.input_latency = 0;
+      HistoryTake take(sr);
+      ClipNode& clip = take.clip;
 
       // Already in the history before the arm block: one note struck
       // before the take's window and still down when it opens (the
       // prelude: it lands at content 0) and one inside it (the
       // reach-back — content 0 ↔ arrival 1100).
-      pushHistory(hist, 1050, noteOn(59));
-      pushHistory(hist, 1120, noteOn(62, 80));
+      take.arrive(1050, noteOn(59));
+      take.arrive(1120, noteOn(62, 80));
 
       // Block 0 (master 1000, input clock 1000): first-clip arm at
       // compensated 1000 → window starts at arrival 1100; this block
       // covers arrivals [1100, 1256) = 156 heard samples.
-      pushHistory(hist, 1150, noteOn(60));
-      ctx.master_pos = 1000;
-      ctx.input_clock = 1000;
-      clip.process(nullptr, nullptr, 0, 0, ctx);
-      expectEquals(clip.getWritePosition(), 156, juce::String("lead honored"));
+      take.arrive(1150, noteOn(60));
+      take.block(1000);
+      expectEquals(clip.recordedLength(), (int64_t)156,
+                   juce::String("lead honored"));
       expectEquals(clip.midiSequence().count(), 3);
       expectEquals((int)clip.midiSequence()[0].pos, 0,
                    juce::String("prelude note 59 sounds at the top"));
@@ -418,17 +452,15 @@ class MidiRecordTests : public juce::UnitTest {
                    juce::String("1150 -> 50 (100 samples compensated)"));
 
       // Block 1: arrival 1300 → 156 + (1300 − 1256) = 200.
-      pushHistory(hist, 1300, noteOff(60));
-      ctx.master_pos = 1256;
-      ctx.input_clock = 1256;
-      clip.process(nullptr, nullptr, 0, 0, ctx);
-      expectEquals(clip.getWritePosition(), 412);
+      take.arrive(1300, noteOff(60));
+      take.block(1256);
+      expectEquals(clip.recordedLength(), (int64_t)412);
       expectEquals(clip.midiSequence().count(), 4);
       expectEquals((int)clip.midiSequence()[3].pos, 200);
 
       // Stop: notes 59 and 62 are still down — the end seam closes both
       // at the last sample.
-      clip.stopRecording();
+      take.stop();
       expectEquals((int)clip.duration_samples.load(), 412);
       expectEquals(clip.midiSequence().count(), 6);
       expectEquals((int)clip.midiSequence()[5].pos, 411,
@@ -463,7 +495,6 @@ class MidiRecordTests : public juce::UnitTest {
       map.segs[1] = {500, 600};
       ctx.map = map;
       ctx.map_heard_top = 0;
-      ctx.map_count = 1;
       // Heard clock at a boundary: rel 0 → target 0, anchor 0, origin =
       // mapOffset(0) = 100 (inner). Capture begins this block.
       ctx.master_pos = 0;
@@ -498,66 +529,41 @@ class MidiRecordTests : public juce::UnitTest {
 
     beginTest("engine: recording an instrument track takes MIDI, arms it");
     {
-      AudioEngine engine;
-      engine.createNode("clip");
-      juce::String id;
-      {
-        const juce::var state = engine.getGraphState();
-        const auto* nodes = test_utils::nodesOf(state);
-        id = (*nodes)[0].getProperty("id", "").toString();
-      }
-      engine.addVst3SlotToChain(
-          id,
-          std::make_shared<dsp::Vst3Slot>(
-              std::make_unique<test_utils::StubSynthInstance>(),
-              "Stub-synth-uid", "Stub Synth", "/stub/StubSynth.vst3",
-              /*is_instrument=*/true),
-          -1);
-      auto nodeState = [&]() {
-        const juce::var state = engine.getGraphState();
-        const auto* nodes = test_utils::nodesOf(state);
-        return juce::var((*nodes)[0]);
-      };
-      expect(nodeState().getProperty("contentKind", "").toString() == "midi",
+      scenario::Island is;
+      AudioEngine& engine = is.engine;
+      const juce::String id = is.createClip();
+      engine.addPluginSlotToChain(id, test_utils::makeStubSynthSlot(), -1);
+      expect(is.sprop(id, "contentKind") == "midi",
              "empty clip with an instrument publishes as a MIDI track");
 
       // Record: the take is MIDI and the track becomes the MIDI target.
       engine.startRecordingInNode(id);
-      expect((bool)nodeState().getProperty("midiArmed", false),
-             "record MIDI-arms the track");
-      test_utils::driveEngine(engine, 512);
+      expect(is.bprop(id, "midiArmed"), "record MIDI-arms the track");
+      is.drive(512);
       engine.handleIncomingMidiMessage(nullptr, noteOn(60));
-      test_utils::driveEngine(engine, 512);
+      is.drive(512);
       engine.handleIncomingMidiMessage(nullptr, noteOff(60));
-      test_utils::driveEngine(engine, 512 * 4);
+      is.drive(512 * 4);
       engine.stopRecordingInNode(id);
-      for (int i = 0; i < 400 && !test_utils::isClipCommitted(engine, id); ++i)
-        test_utils::driveEngine(engine, 512);
+      is.settle();
       expect(test_utils::isClipCommitted(engine, id), "committed");
-      const juce::var n = nodeState();
-      expect(n.getProperty("contentKind", "").toString() == "midi",
-             "committed as MIDI");
-      expectEquals((int)n.getProperty("midiEvents", 0), 2,
+      expect(is.sprop(id, "contentKind") == "midi", "committed as MIDI");
+      expectEquals((int)is.iprop(id, "midiEvents"), 2,
                    juce::String("both events captured"));
-      const double duration = (double)n.getProperty("duration", 0);
-      expectGreaterThan(duration, 0.0);
+      const int64_t duration = is.dur(id);
+      expectGreaterThan(duration, (int64_t)0);
 
       // Persistence: save → load keeps the notes and the kind.
       auto dir = test_utils::freshTempDir("midi_take");
       expect(engine.saveSession(dir.getFullPathName()), "save");
-      AudioEngine engine2;
-      expect(engine2.loadSession(dir.getFullPathName()), "load");
-      const juce::var s2 = engine2.getGraphState();
-      const auto* nodes2 = test_utils::nodesOf(s2);
-      expect(nodes2 != nullptr && nodes2->size() == 1, "one node");
-      if (nodes2 && nodes2->size() == 1) {
-        expect((*nodes2)[0].getProperty("contentKind", "").toString() ==
-                   "midi",
-               "kind survives the round-trip");
-        expectEquals((int)(*nodes2)[0].getProperty("midiEvents", 0), 2);
-        expectEquals((double)(*nodes2)[0].getProperty("duration", 0),
-                     duration, "duration survives");
-      }
+      scenario::Island loaded;
+      expect(loaded.engine.loadSession(dir.getFullPathName()), "load");
+      const juce::StringArray nodes = loaded.childIds();
+      expectEquals(nodes.size(), 1, juce::String("one node"));
+      expect(loaded.sprop(nodes[0], "contentKind") == "midi",
+             "kind survives the round-trip");
+      expectEquals((int)loaded.iprop(nodes[0], "midiEvents"), 2);
+      expectEquals(loaded.dur(nodes[0]), duration, "duration survives");
     }
 
     beginTest("session_io: MIDI positions round-trip exactly (QTime)");
@@ -570,19 +576,12 @@ class MidiRecordTests : public juce::UnitTest {
       clip->origin_samples.store(zero + Q);
       clip->duration_samples.store(2 * Q);
       clip->setLoopPoints(0, 2 * Q);
-      std::vector<MidiEvent> events;
-      auto ev = [&](int64_t pos, const juce::MidiMessage& m) {
-        MidiEvent e;
-        e.pos = pos;
-        e.size = (juce::uint8)m.getRawDataSize();
-        memcpy(e.bytes, m.getRawData(), (size_t)m.getRawDataSize());
-        events.push_back(e);
-      };
-      ev(7, noteOn(60, 101));
-      ev(12345, juce::MidiMessage::controllerEvent(1, 74, 5));
-      ev(2 * Q - 1, noteOff(60));
-      ev(2 * Q + 5, noteOn(61));  // beyond duration: not saved
-      clip->loadCommittedMidi(events, 0);
+      clip->loadCommittedMidi(
+          {eventAt(7, noteOn(60, 101)),
+           eventAt(12345, juce::MidiMessage::controllerEvent(1, 74, 5)),
+           eventAt(2 * Q - 1, noteOff(60)),
+           eventAt(2 * Q + 5, noteOn(61))},  // beyond duration: not saved
+          0);
       root.addChild(std::move(clip));
 
       auto dir = test_utils::freshTempDir("midi_io");

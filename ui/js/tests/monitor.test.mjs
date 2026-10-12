@@ -1,7 +1,7 @@
 /**
  * Software input monitoring (Q20), mock/VM side:
- *  - setMonitor round-trips on a clip, is born OFF, is refused on a
- *    stack, and is NOT undoable (a monitoring gesture like solo),
+ *  - setMonitor round-trips on a clip, is born OFF and is refused on a
+ *    stack (that it records no undo step is pinned in gain.test.mjs),
  *  - the lane exposes `monitor`, and the VM carries the calibrated
  *    round trip (monitorLatencyMs) or null for the chip's tooltip,
  *  - a track template carries it as input setup (like the channels).
@@ -16,15 +16,12 @@ import { findByName, near } from './helpers.mjs';
 
 const clipA = () => findByName(getState().nodes, 'Clip A');
 
-test('setMonitor round-trips on a clip, born off, not undoable', async () => {
+test('setMonitor round-trips on a clip, born off; a stack refuses it', async () => {
     loadScenario('stack-with-clips');
     assert.equal(clipA().monitor, false, 'born OFF (Q20: opt-in)');
 
-    const undoBefore = getState().canUndo;
     await callNative('setMonitor', clipA().id, true);
     assert.equal(clipA().monitor, true, 'on');
-    assert.equal(getState().canUndo, undoBefore,
-        'a monitoring gesture records nothing on the undo log');
     await callNative('setMonitor', clipA().id, false);
     assert.equal(clipA().monitor, false, 'off again');
 
@@ -52,7 +49,7 @@ test('the lane exposes monitor; the VM carries the calibrated round trip', async
         latencyCompensationSamples: state.perf.sampleRate / 100,
     });
     vm = deriveViewModel(state);
-    near(vm.monitorLatencyMs, 10, 1e-9);
+    near(vm.monitorLatencyMs, 10);
 });
 
 test('a track template carries monitoring as input setup', async () => {

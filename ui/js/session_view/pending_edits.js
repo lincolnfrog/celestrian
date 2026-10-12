@@ -1,38 +1,34 @@
 /**
  * PENDING EDITS: a gesture's preview, drawn AHEAD of the engine
  * (loop_selection.md §10 — the splice and ↺ drags render their tiles
- * locally, with no reveal and no round trip).
+ * locally, with no round trip).
  *
  * A gesture sets its preview on every move and asks for a render
  * (render_request.js): the app re-derives from the last POLLED state
  * with the preview applied to a clone of the lane's node
- * (view_model.applyPendingEdits — the shape the engine publishes once
- * the edit lands) and patches at once.
+ * (view_model.applyPendingEdits) and patches at once.
  *
  *   setPendingEdit(laneId, { segments?, originShift?, top? })
  *     segments     the map the gesture shows — flat samples [s0,e0,…]
  *     originShift  samples the gesture moves the take's origin, from
- *                  where the gesture FOUND it (the ↺ shift, setTiming's
- *                  shiftSamples) — `retime` moves with it
+ *                  where the gesture FOUND it — `retime` moves with it
  *     top          the raw top the gesture sets (samples, `loopTop`)
- *   clearPendingEdit(laneId)
  *
- * Each call REPLACES the lane's preview: a gesture sends its whole
- * preview on every move. The first call captures the lane's origin as
- * the shift's BASE (at the next derive, from the polled node), and the
- * base lives as long as the preview does, so a live setTiming landing
- * mid-drag never counts twice — the preview resolves to the shift still
- * OUTSTANDING against the polled origin (0 once the engine has it all).
- * Clear at a gesture's start (and on cancel) for a fresh base.
+ * Each call REPLACES the lane's preview. The first captures the lane's
+ * origin as the shift's BASE (at the next derive, from the polled node)
+ * and the base lives as long as the preview, so a live setTiming landing
+ * mid-drag never counts twice: the preview resolves to the shift still
+ * OUTSTANDING against the polled origin.
  *
  * A preview outlives the pointer, like the frame pin (gesture.js): it
  * is dropped once no gesture is live and the polled node MATCHES it —
  * the engine has answered — or COMMIT_HOLD_MAX_MS after it was last
- * touched (a refused commit lets go; the verify line says why). While
- * any gesture is live every preview counts as touched.
+ * touched (a refused commit lets go). While any gesture is live every
+ * preview counts as touched.
  */
 
 import { COMMIT_HOLD_MAX_MS, isGestureLive } from './gesture.js';
+import { publishedMap } from '../time_map.js';
 
 /* A published value within this many samples of the preview's is the
  * engine's answer (the bridge rounds to whole samples). */
@@ -92,7 +88,7 @@ export function pendingEditOf(laneId, now = performance.now()) {
     return out;
 }
 
-/** Is any preview pending? */
+/** Is any preview pending? (Tests.) */
 export function hasPendingEdits() {
     return pending.size > 0;
 }
@@ -143,20 +139,15 @@ export function pendingEditsFor(nodeOf, rootFrame, now = performance.now(),
 }
 
 /** Has the polled node landed on the preview? Every part the preview
- * sets must match, in the shape the engine publishes it. */
+ * sets must match: its segments against the node's published map
+ * (time_map.publishedMap — run for run; none for none). */
 function answered(node, edit, targetOrigin) {
     const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= MATCH_SAMPLES;
     if (edit.segments) {
         const flat = edit.segments;
-        const n = Math.floor(flat.length / 2);
-        const multi = Array.isArray(node.segments) && node.segments.length >= 4;
-        if (n >= 2) {
-            if (!multi || node.segments.length !== 2 * n) return false;
-            if (!node.segments.every((v, i) => near(v, flat[i]))) return false;
-        } else if (n === 1) {
-            if (multi || !near(node.loopStart || 0, flat[0]) ||
-                !near(node.loopEnd || 0, flat[1])) return false;
-        } else if (multi || (node.loopEnd || 0) > (node.loopStart || 0)) {
+        const { segs } = publishedMap(node);
+        if (segs.length !== Math.floor(flat.length / 2)) return false;
+        if (!segs.every(([s, e], i) => near(s, flat[2 * i]) && near(e, flat[2 * i + 1]))) {
             return false;
         }
     }

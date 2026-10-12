@@ -1,6 +1,8 @@
 #include <juce_core/juce_core.h>
 
-#include <functional>
+#include <algorithm>
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "../src/audio_engine.h"
@@ -12,196 +14,251 @@
 
 namespace celestrian {
 
+using scenario::Island;
+using scenario::mapOf;
+using scenario::posmod;
 using test_utils::contextFor;
 using test_utils::NodeContext;
 
+namespace {
+
+// The engine cases' quantum, in samples (kQuantum inside Rig, where
+// Island::Q() hides the short name).
+constexpr int64_t kQuantum = 20000;
+constexpr int64_t Q = kQuantum;
+
+/** Adds `node` under `parent` and answers it. */
+template <typename Node>
+Node* adopt(StackNode& parent, std::unique_ptr<Node> node) {
+  Node* added = node.get();
+  parent.addChild(std::move(node));
+  return added;
+}
+
+/** A leaf that keeps the context its parent hands it in control: an
+ * empty clip, so it plays nothing and adds nothing to any fold. */
+struct ProbeNode : public ClipNode {
+  ProbeNode() : ClipNode("Probe") {}
+  ProcessContext seen{};
+  bool called = false;
+  void control(const float* const*, int, const ProcessContext& ctx) override {
+    seen = ctx;
+    called = true;
+  }
+  void render(float* const*, int, const ProcessContext&) const override {}
+};
+
+/** What a node-level take is fed at arrival index `i`: a ramp, so every
+ * captured sample says WHEN it was performed. (The engine cases read
+ * the scenario harness's ramp, scenario::rampAt.) */
+float rampAt(int64_t i) { return (float)(i + 1) * 1e-5f; }
+
+/** The pre-record ring a node-level take captures from:
+ * samples[i] == rampAt(i). */
+struct RampRing {
+  std::vector<float> samples = std::vector<float>(16384);
+  const float* channels[1] = {samples.data()};
+
+  RampRing() {
+    for (size_t i = 0; i < samples.size(); ++i) {
+      samples[i] = rampAt((int64_t)i);
+    }
+  }
+  RampRing(const RampRing&) = delete;
+
+  /** Aims `ctx` at clock `t`: playing, the island and arrival clocks on
+   * `t`, the ring behind it. */
+  void aim(ProcessContext& ctx, int64_t t) const {
+    ctx.is_playing = true;
+    ctx.master_pos = t;
+    ctx.island_pos = t;
+    ctx.input_clock = t;
+    ctx.prerecord_ring = channels;
+    ctx.prerecord_ring_len = (int)samples.size();
+    ctx.prerecord_ring_channels = 1;
+  }
+};
+
+/** The root a through-map take records under: Q = 1000 at zero 0, a
+ * silent committed 4Q clip (so the inner cycle C is 4000), the window
+ * [1Q, 3Q) - period 2000, anchored at O + a0 = 1000 (Q18), so pass tops
+ * fall at t == 1000 (mod 2000) - and an empty clip to record into. */
+struct MappedRoot {
+  StackNode root{"Root"};
+  ClipNode* take = nullptr;
+  RampRing ring;
+  int64_t t = 0;  // the clock driveTo has reached
+
+  MappedRoot() {
+    root.establishIsland(1000, 0);
+    auto committed =
+        test_utils::loadedClip("Committed", 44100.0, 0, 4000, 0.0f);
+    committed->setLoopPoints(0, 4000);
+    committed->is_muted.store(true);
+    root.addChild(std::move(committed));
+    root.setLoopPoints(1000, 3000);
+    take = adopt(root, std::make_unique<ClipNode>("Take", 44100.0));
+  }
+
+  /** Runs control in 250-sample blocks up to clock `until`, with the
+   * island facts the engine hands a root. */
+  void driveTo(int64_t until) {
+    NodeContext nc = contextFor(root, 250);
+    for (; t < until; t += 250) {
+      nc.refresh();
+      ring.aim(nc.ctx, t);
+      root.control(nullptr, 0, nc.ctx);
+    }
+  }
+};
+
+/** The Island the engine cases run on, with the reads and moves they
+ * share. */
+struct Rig : Island {
+  int64_t top(const juce::String& id) { return iprop(id, "loopTop"); }
+  int64_t retime(const juce::String& id) { return iprop(id, "retime"); }
+  /** The top stored on `id`: timing::kNoTop until an edit stores one. */
+  int64_t storedTop(const juce::String& id) {
+    return nodePtr(id)->storedTop();
+  }
+  /** The region of `id` in whole Qs: "1-5". */
+  juce::String region(const juce::String& id) {
+    return juce::String(iprop(id, "loopStart") / kQuantum) + "-" +
+           juce::String(iprop(id, "loopEnd") / kQuantum);
+  }
+  /** The content position of `id` sounding at the transport clock. */
+  int64_t sounding(const juce::String& id) {
+    return heard::nodeInner(*nodePtr(id), islandPos() + zero(),
+                            engine.rootScope());
+  }
+  /** Drives to top + h + m * period: phase `h` of a pass from `top`, m
+   * the first pass count from now of the given parity. */
+  void park(int64_t top, int64_t h, int64_t period, int parity) {
+    const int64_t now = islandPos() + zero();
+    int64_t m = std::max<int64_t>((now - top - h + period - 1) / period, 0);
+    if ((m & 1) != parity) ++m;
+    drive(top + h + m * period - now);
+  }
+  /** One commit of a splice drag: the 4Q region of `id` from `start`. */
+  void slide(const juce::String& id, int64_t start, bool live) {
+    engine.setSegments(
+        id, timing::TimeMap::single(start, start + 4 * kQuantum), live);
+  }
+};
+
+}  // namespace
+
 /**
- * Recording through an active time-map (docs/time_maps.md phase 2).
- *
- * Stage 2 (context plumbing): a mapping stack publishes the time-map
- * facts — the map itself, the heard grid anchor (`map_heard_top`),
- * the nesting count — to its whole subtree, while the invariant island
- * clock (`island_pos`) passes through unfolded. These are the facts the
- * through-map arm/capture math consumes.
+ * Time maps where a take meets them (docs/time_maps.md): what a mapping
+ * stack hands its subtree, recording through an active map at node level
+ * and through the engine, the map edits and their continuity re-anchor,
+ * the re-time and the top (loop_selection.md §9), and multi-segment clip
+ * playback.
  */
 class TimeMapRecordTests : public juce::UnitTest {
  public:
   TimeMapRecordTests()
       : juce::UnitTest("Time-Map Recording", "TimeMapRecord") {}
 
-  /** A leaf that records the context it is handed in control. */
-  struct ProbeNode : public AudioNode {
-    ProbeNode() : AudioNode("Probe") {}
-    ProcessContext seen{};
-    bool called = false;
-    void control(const float* const*, int, const ProcessContext& ctx) override {
-      seen = ctx;
-      called = true;
-    }
-    void render(float* const*, int, const ProcessContext&) const override {}
-    juce::var getWaveform(int) const override { return {}; }
-    float getCurrentPeak() const override { return 0.0f; }
-    NodeType getNodeType() const override { return NodeType::Unknown; }
-    int64_t getIntrinsicDuration() const override { return 0; }
-  };
-
   void runTest() override {
-    beginTest("Active map publishes map facts; island_pos never folds");
-    {
-      StackNode stack("Mapped");
-      auto probe = std::make_unique<ProbeNode>();
-      auto* p = probe.get();
-      stack.addChild(std::move(probe));
-      stack.setLoopPoints(1000, 2000);  // window [1000, 2000), len 1000
+    mapContextTests();
+    nodeRecordTests();
+    mapEditTests();
+    timingAndTopTests();
+    clipPlaybackTests();
+  }
 
-      NodeContext nc = contextFor(stack, 16, 7500);
+ private:
+  /** A mapping stack hands its subtree the facts the through-map arm
+   * and capture math runs against - the innermost active map, its
+   * origin O, the heard grid anchor O + a0 (Q18: the map's inner start
+   * sounds at its own moment) - and re-bases the clock and the frame top
+   * onto the map; the island clock passes down unfolded. O is the
+   * received top for an unanchored stack. */
+  void mapContextTests() {
+    struct Row {
+      const char* name;
+      bool nested;    // a second mapping stack, [0, 300), above the leaf
+      bool bypassed;  // the [1000, 2000) window is stored, not applied
+      int64_t pos, top;  // the block's clock and the root's frame top
+      // What the leaf is handed:
+      int64_t period, map_origin, heard_top, master_pos, frame_top;
+    };
+    const Row rows[] = {
+        // rel = (7500 − 7000) mod 1000 = 500 → folded clock 7000+1000+500.
+        {"Active map publishes map facts; island_pos never folds", false,
+         false, 7500, 7000, 1000, 7000, 8000, 8500, 8000},
+        {"Bypassed map publishes nothing", false, true, 7500, 7000, 0, 0, 0,
+         7500, 7000},
+        // Outer folds 2500 → child time 1500, child zero 1000: the inner
+        // stack's RECEIVED top is the outer window top, and its own
+        // [0, 300) window folds 1500 to 1000 + 200.
+        {"Nested active maps: innermost wins", true, false, 2500, 0, 300, 1000,
+         1000, 1200, 1000},
+    };
+    for (const Row& row : rows) {
+      beginTest(row.name);
+      StackNode stack("Mapped");
+      StackNode* holder = &stack;
+      if (row.nested) {
+        holder = adopt(stack, std::make_unique<StackNode>("Inner"));
+        holder->setLoopPoints(0, 300);
+      }
+      ProbeNode* probe = adopt(*holder, std::make_unique<ProbeNode>());
+      stack.setLoopPoints(1000, 2000);
+      stack.setLoopWindowBypassed(row.bypassed);
+
+      NodeContext nc = contextFor(stack, 16, row.pos);
       nc.ctx.is_playing = true;
-      nc.ctx.frame_top = 7000;
+      nc.ctx.frame_top = row.top;
       stack.control(nullptr, 0, nc.ctx);
 
-      expect(p->called, "probe reached");
-      expect(p->seen.map.active(), "map delivered active");
-      expectEquals((juce::int64)p->seen.map.period(), (juce::int64)1000,
-                   "map period");
-      // Q18: the heard grid anchor is O + a0 (the map's inner start
-      // sounds at its own moment); O = the received top for an
-      // unanchored stack, and map_origin carries O itself.
-      expectEquals((juce::int64)p->seen.map_heard_top, (juce::int64)8000,
+      const ProcessContext& seen = probe->seen;
+      expect(probe->called, "probe reached");
+      expect(seen.map.active() == (row.period > 0),
+             "a map is delivered exactly while one is active");
+      expectEquals(seen.map.period(), row.period,
+                   "the innermost active map's period");
+      expectEquals(seen.map_heard_top, row.heard_top,
                    "heard grid anchor = O + mapOffset(0)");
-      expectEquals((juce::int64)p->seen.map_origin, (juce::int64)7000,
+      expectEquals(seen.map_origin, row.map_origin,
                    "map_origin = the mapping stack's frame origin");
-      expectEquals(p->seen.map_count, 1, "one active map on the chain");
-      // rel = (7500 − 7000) mod 1000 = 500 → folded clock 7000+1000+500.
-      expectEquals((juce::int64)p->seen.master_pos, (juce::int64)8500,
-                   "master_pos folded through the map");
-      expectEquals((juce::int64)p->seen.frame_top, (juce::int64)8000,
+      expectEquals(seen.master_pos, row.master_pos,
+                   "master_pos folded through every active map");
+      expectEquals(seen.frame_top, row.frame_top,
                    "frame_top re-based to the map's heard-0 position");
-      expectEquals((juce::int64)p->seen.island_pos, (juce::int64)7500,
+      expectEquals(seen.island_pos, row.pos,
                    "island_pos passes through UNFOLDED");
     }
+  }
 
-    beginTest("Bypassed map publishes nothing");
-    {
-      StackNode stack("Bypassed");
-      auto probe = std::make_unique<ProbeNode>();
-      auto* p = probe.get();
-      stack.addChild(std::move(probe));
-      stack.setLoopPoints(1000, 2000);
-      stack.setLoopWindowBypassed(true);
-
-      NodeContext nc = contextFor(stack, 16, 7500);
-      nc.ctx.is_playing = true;
-      nc.ctx.frame_top = 7000;
-      stack.control(nullptr, 0, nc.ctx);
-
-      expect(!p->seen.map.active(), "no map delivered");
-      expectEquals(p->seen.map_count, 0, "map_count 0");
-      expectEquals((juce::int64)p->seen.master_pos, (juce::int64)7500,
-                   "clock passes straight through");
-    }
-
-    beginTest("Nested active maps: innermost wins, count reports 2");
-    {
-      StackNode outer("Outer");
-      auto inner = std::make_unique<StackNode>("Inner");
-      auto* innerPtr = inner.get();
-      auto probe = std::make_unique<ProbeNode>();
-      auto* p = probe.get();
-      innerPtr->addChild(std::move(probe));
-      innerPtr->setLoopPoints(0, 300);
-      outer.addChild(std::move(inner));
-      outer.setLoopPoints(1000, 2000);
-
-      NodeContext nc = contextFor(outer, 16, 2500);  // frame_top 0
-      nc.ctx.is_playing = true;
-      outer.control(nullptr, 0, nc.ctx);
-
-      expectEquals(p->seen.map_count, 2,
-                   "composed maps counted (recording refuses > 1)");
-      expectEquals((juce::int64)p->seen.map.period(), (juce::int64)300,
-                   "innermost map delivered");
-      // Outer folds 2500 → child time 1500, child zero 1000; the inner
-      // stack's RECEIVED zero is therefore the outer window top.
-      expectEquals((juce::int64)p->seen.map_heard_top, (juce::int64)1000,
-                   "heard anchor = inner stack's received cycle top");
-      expectEquals((juce::int64)p->seen.island_pos, (juce::int64)2500,
-                   "island_pos still unfolded through two maps");
-    }
-
-    // === Stage 4: the through-map record path itself ===
-
-    // Arrival-indexed ramp so every captured sample identifies WHEN it
-    // was performed: ring[i] = rampAt(i).
-    auto rampAt = [](int64_t i) { return (float)(i + 1) * 1e-5f; };
-    std::vector<float> ring(16384);
-    for (size_t i = 0; i < ring.size(); ++i) ring[i] = rampAt((int64_t)i);
-    const float* ringPtrs[1] = {ring.data()};
-
-    // Drive control in fixed blocks over [t, until) with the island
-    // facts a mapping-root graph receives from the engine (the root
-    // holds Q = 1000, zero at 0).
-    auto driveControl = [&](StackNode& root, int64_t& t, int64_t until,
-                            int block) {
-      NodeContext nc = contextFor(root, block);
-      while (t < until) {
-        nc.refresh();
-        ProcessContext& ctx = nc.ctx;
-        ctx.is_playing = true;
-        ctx.master_pos = t;
-        ctx.island_pos = t;
-        ctx.input_clock = t;
-        ctx.prerecord_ring = ringPtrs;
-        ctx.prerecord_ring_len = (int)ring.size();
-        ctx.prerecord_ring_channels = 1;
-        root.control(nullptr, 0, ctx);
-        t += block;
-      }
-    };
-
-    // A committed (muted) 4Q sibling so the stack has an inner cycle.
-    auto makeCommittedSibling = [&]() {
-      auto clip = std::make_unique<ClipNode>("Committed", 44100.0);
-      juce::AudioBuffer<float> content(1, 4000);
-      content.clear();
-      clip->loadCommitted(content, 0);
-      clip->duration_samples.store(4000);
-      clip->origin_samples.store(0);
-      clip->setLoopPoints(0, 4000);
-      clip->is_muted.store(true);
-      return clip;
-    };
-
+  /** Recording through an active map at node level: the root is driven
+   * directly, with the island facts the engine would hand it. */
+  void nodeRecordTests() {
     beginTest(
-        "FIELD-style: record through an active stack window (fold + "
-        "dense silence + origin + commit)");
+        "Record through an active stack window: fold, dense silence, "
+        "origin, commit");
     {
-      StackNode root("Root");
-      root.establishIsland(1000, 0);  // Q = 1000, zero = 0
-      root.addChild(makeCommittedSibling());
-      root.setLoopPoints(1000, 3000);  // window [1Q, 3Q): period 2000
+      MappedRoot mapped;
+      StackNode& root = mapped.root;
+      ClipNode* take = mapped.take;
 
-      auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
-      auto* take = takeOwned.get();
-      root.addChild(std::move(takeOwned));
-
-      // Q18: the window anchors at O + a0 = 0 + 1000 — pass tops at
-      // t ≡ 1000 (mod 2000), so the heard offset at t is (t − 1000) mod
-      // 2000. Play up to t = 1500 (heard offset 500), then arm THROUGH
-      // the map (C = inner 4Q).
-      int64_t t = 0;
-      driveControl(root, t, 1500, 250);
+      // The heard offset at t is (t − 1000) mod 2000. Play up to
+      // t = 1500 (heard offset 500), then arm THROUGH the map (C = inner
+      // 4Q).
+      mapped.driveTo(1500);
       take->startRecording(4000);
       // rel_h = 500 → heard target 1000 (absolute 2000); anchor offset
       // 1000 (mid-pass) → inner origin = mapOffset(1000) = 2000.
       // Capture runs one full period (never stopped) and the cap
       // auto-finishes at 2000 heard.
-      driveControl(root, t, 4500, 250);
+      mapped.driveTo(4500);
 
       expect(take->recState() == ClipNode::RecState::Idle,
              "one-period cap auto-committed the take");
-      expect(!take->capHit(), "clean finish, not the D4 wall");
+      expect(!take->capHit(), "clean finish, not the capacity wall");
       expectEquals((juce::int64)take->duration_samples.load(),
-                   (juce::int64)4000, "commit duration = C (ruling 2)");
+                   (juce::int64)4000, "commit duration = C");
       expectEquals((juce::int64)take->origin_samples.load(), (juce::int64)2000,
                    "origin = the anchor's INNER position");
       expectEquals((juce::int64)take->recordedLength(), (juce::int64)2000,
@@ -217,9 +274,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       // [2000, 3000)); heard [1000, 2000) wraps the pass seam to
       // content [3000, 4000) (inner [1000, 2000)); the never-visited
       // inner [3000, 4000) + [0, 1000) — content [1000, 3000) — is
-      // LITERAL SILENCE (ruling 2).
-      const auto& buf = take->getAudioBuffer();
-      const float* data = buf.getReadPointer(0);
+      // LITERAL SILENCE.
+      const float* data = take->getAudioBuffer().getReadPointer(0);
       // Capture ran absolute [2000, 4000): heard order k was performed
       // at 2000 + k.
       for (int k : {0, 1, 500, 999}) {
@@ -237,15 +293,9 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // I1 pointwise: through the STILL-ACTIVE map, the committed take
       // sounds exactly what was performed at the same heard phase —
-      // and identically on every pass (single-sample probes are
-      // seam-exact even before the stage-5 block splitting).
+      // and identically on every pass.
       auto probeOut = [&](int64_t at) {
-        NodeContext nc = contextFor(root, 1, at);
-        nc.ctx.is_playing = true;
-        float out[1] = {0.0f};
-        float* const outs[] = {out};
-        root.process(nullptr, outs, 0, 1, nc.ctx);
-        return out[0];
+        return test_utils::renderBlock(root, 1, at).left[0];
       };
       expectWithinAbsoluteError(probeOut(200), rampAt(2200), 1e-7f,
                                 "I1: heard phase 200 replays what was "
@@ -271,57 +321,35 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // I1 ROUND TRIP, block-exact: rendering through the still-active
       // map in real block sizes reproduces the fed input sample for
-      // sample — including blocks that CROSS the map seam (the stage-5
-      // sub-block split; before it, each seam blurred up to a block).
+      // sample — including blocks that CROSS the map seam (the stack
+      // splits a block at every seam).
       // Heard offset φ = (t − 1000) mod 2000 was performed at absolute
       // time 2000 + ((φ − 1000) mod 2000) = 2000 + (t mod 2000).
-      {
-        bool allMatch = true;
-        int64_t firstMismatch = -1;
-        for (int64_t t = 4000; t < 8000 && allMatch; t += 512) {
-          const int n = 512;
-          std::vector<float> out((size_t)n, 0.0f);
-          float* outPtr = out.data();
-          float* const outs[] = {outPtr};
-          NodeContext nc = contextFor(root, n, t);
-          nc.ctx.is_playing = true;
-          root.process(nullptr, outs, 0, 1, nc.ctx);
-          for (int i = 0; i < n; ++i) {
-            const int64_t phase = (t + i) % 2000;
-            const float expected = rampAt(2000 + phase);
-            if (std::abs(out[(size_t)i] - expected) > 1e-7f) {
-              allMatch = false;
-              firstMismatch = t + i;
-              break;
-            }
+      int64_t first_mismatch = -1;
+      for (int64_t at = 4000; at < 8000 && first_mismatch < 0; at += 512) {
+        const auto out = test_utils::renderBlock(root, 512, at).left;
+        for (int i = 0; i < 512 && first_mismatch < 0; ++i) {
+          if (std::abs(out[(size_t)i] - rampAt(2000 + (at + i) % 2000)) > 1e-7f) {
+            first_mismatch = at + i;
           }
         }
-        expect(allMatch,
-               "I1 block round trip through the active map (first "
-               "mismatch at t=" +
-                   juce::String(firstMismatch) + ")");
       }
+      expect(first_mismatch < 0,
+             "I1 block round trip through the active map (first mismatch at "
+             "t=" + juce::String(first_mismatch) + ")");
     }
 
     beginTest(
         "Through-map: user stop before one period clamps to the "
         "heard boundary, still commits dense C");
     {
-      StackNode root("Root");
-      root.establishIsland(1000, 0);
-      root.addChild(makeCommittedSibling());
-      root.setLoopPoints(1000, 3000);
-
-      auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
-      auto* take = takeOwned.get();
-      root.addChild(std::move(takeOwned));
-
-      int64_t t = 0;
-      driveControl(root, t, 500, 250);
+      MappedRoot mapped;
+      ClipNode* take = mapped.take;
+      mapped.driveTo(500);
       take->startRecording(4000);
-      driveControl(root, t, 1600, 250);  // capture from 1000 → heard 600
+      mapped.driveTo(1600);  // capture from 1000 → heard 600
       take->stopRecording();
-      driveControl(root, t, 2500, 250);  // boundary 1000 → commit
+      mapped.driveTo(2500);  // boundary 1000 → commit
 
       expect(take->recState() == ClipNode::RecState::Idle, "committed");
       expectEquals((juce::int64)take->duration_samples.load(),
@@ -339,38 +367,30 @@ class TimeMapRecordTests : public juce::UnitTest {
                                 "pre-anchor window region: silence");
     }
 
-    beginTest("D3: getWaveform gated mid-take (through-map fold)");
+    beginTest("getWaveform gated mid-take (through-map fold)");
     {
       // The motivating case for the gate: the fold scatters capture
       // writes across [0, C) while write_position counts HEARD samples,
       // so a mid-take read bounded by write_position could overlap an
       // in-flight captureWrite. The state gate makes the buffer
       // message-thread-readable only in Idle.
-      StackNode root("Root");
-      root.establishIsland(1000, 0);
-      root.addChild(makeCommittedSibling());
-      root.setLoopPoints(1000, 3000);
-
-      auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
-      auto* take = takeOwned.get();
-      root.addChild(std::move(takeOwned));
-
+      MappedRoot mapped;
+      ClipNode* take = mapped.take;
       auto peakCount = [](const juce::var& wf) {
         return wf.getArray() ? wf.getArray()->size() : -1;
       };
 
-      int64_t t = 0;
-      driveControl(root, t, 500, 250);
+      mapped.driveTo(500);
       take->startRecording(4000);
       expectEquals(peakCount(take->getWaveform(8)), 0, "Armed: no peaks");
-      driveControl(root, t, 1600, 250);  // capturing, mid-fold
+      mapped.driveTo(1600);  // capturing, mid-fold
       expect(take->recState() == ClipNode::RecState::Capturing, "capturing");
       expectEquals(peakCount(take->getWaveform(8)), 0,
                    "Capturing (fold in flight): no peaks");
       take->stopRecording();
       expectEquals(peakCount(take->getWaveform(8)), 0,
                    "stop requested: no peaks");
-      driveControl(root, t, 2500, 250);  // heard boundary 1000 → commit
+      mapped.driveTo(2500);  // heard boundary 1000 → commit
 
       expect(take->recState() == ClipNode::RecState::Idle, "committed");
       auto wf = take->getWaveform(8);
@@ -388,37 +408,22 @@ class TimeMapRecordTests : public juce::UnitTest {
       // the map facts a mapping parent would deliver, plus Q = 1000 —
       // the record path must be segment-general.
       ClipNode take("Take", 44100.0);
-      timing::TimeMap cells;
-      cells.n = 2;
-      cells.segs[0] = {0, 1000};
-      cells.segs[1] = {2000, 5000};  // period 4000, inner cycle 5000
-
+      const RampRing ring;
       take.startRecording(5000);
 
-      int64_t t = 2500;  // arm mid-Q inside the second segment's pass
-      auto drive = [&](int64_t until) {
-        NodeContext nc = contextFor(take, 250);
-        ProcessContext& ctx = nc.ctx;
-        ctx.is_playing = true;
-        ctx.quantum = 1000;
-        ctx.map = cells;
-        ctx.map_heard_top = 0;
-        ctx.map_count = 1;
-        ctx.prerecord_ring = ringPtrs;
-        ctx.prerecord_ring_len = (int)ring.size();
-        ctx.prerecord_ring_channels = 1;
-        while (t < until) {
-          ctx.master_pos = t;  // (a real parent would deliver mapped time;
-                               // the arm/capture math only uses island_pos)
-          ctx.island_pos = t;
-          ctx.input_clock = t;
-          take.control(nullptr, 0, ctx);
-          t += 250;
-        }
-      };
-      // rel_h = 2500 → heard target 3000 (golden), anchor 3000 →
-      // inner origin = mapOffset(3000) = 4000. Full period = 4000.
-      drive(7500);
+      NodeContext nc = contextFor(take, 250);
+      nc.ctx.quantum = 1000;
+      nc.ctx.map = mapOf({{0, 1000}, {2000, 5000}});  // period 4000 of 5000
+      nc.ctx.map_heard_top = 0;
+      // Arm mid-Q inside the second segment's pass: rel_h = 2500 → heard
+      // target 3000 (golden), anchor 3000 → inner origin =
+      // mapOffset(3000) = 4000. Full period = 4000. (A real parent would
+      // deliver mapped time as master_pos; the arm and capture math only
+      // reads island_pos.)
+      for (int64_t t = 2500; t < 7500; t += 250) {
+        ring.aim(nc.ctx, t);
+        take.control(nullptr, 0, nc.ctx);
+      }
 
       expect(take.recState() == ClipNode::RecState::Idle,
              "cap committed after one 4Q-heard pass");
@@ -453,24 +458,17 @@ class TimeMapRecordTests : public juce::UnitTest {
       }
     }
 
-    beginTest("Bypassed map at arm -> plain recording (ruling 4)");
+    beginTest("Bypassed map at arm -> plain recording");
     {
-      StackNode root("Root");
-      root.establishIsland(1000, 0);
-      root.addChild(makeCommittedSibling());
-      root.setLoopPoints(1000, 3000);
-      root.setLoopWindowBypassed(true);  // map inactive
+      MappedRoot mapped;
+      ClipNode* take = mapped.take;
+      mapped.root.setLoopWindowBypassed(true);  // map inactive
 
-      auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
-      auto* take = takeOwned.get();
-      root.addChild(std::move(takeOwned));
-
-      int64_t t = 0;
-      driveControl(root, t, 500, 250);
-      take->startRecording();            // the engine walk finds no active map
-      driveControl(root, t, 2600, 250);  // capture from 1000, heard 1600
+      mapped.driveTo(500);
+      take->startRecording();  // the engine walk finds no active map
+      mapped.driveTo(2600);    // capture from 1000, heard 1600
       take->stopRecording();
-      driveControl(root, t, 3500, 250);  // boundary 2000
+      mapped.driveTo(3500);  // boundary 2000
 
       expect(take->recState() == ClipNode::RecState::Idle, "committed");
       expectEquals((juce::int64)take->duration_samples.load(),
@@ -483,163 +481,45 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectWithinAbsoluteError(data[1999], rampAt(2999), 1e-7f,
                                 "linear to the boundary - no fold");
     }
+  }
 
+  /** Maps through the engine: the arm gate, the map's storage and the
+   * cell-map verb, a take recorded through a cell map, and the
+   * continuity re-anchor of a map edit under a playing take. */
+  void mapEditTests() {
     beginTest(
         "Engine gate: nested ACTIVE maps refuse the arm; one map "
         "arms through");
     {
-      AudioEngine engine;
-      engine.createNode("stack");
-      auto rootState = engine.getGraphState();
-      auto nodesVar = rootState.getDynamicObject()->getProperty("nodes");
-      const juce::String outerId =
-          (*nodesVar.getArray())[0].getDynamicObject()->getProperty("id");
-      engine.createNode("stack", outerId);
-      // Re-read to find the inner stack and create the clip inside it.
-      auto findChildId = [&](const juce::String& parentId) {
-        auto st = engine.getGraphState();
-        auto nv = st.getDynamicObject()->getProperty("nodes");
-        std::function<juce::String(const juce::var&)> scan =
-            [&](const juce::var& arr) -> juce::String {
-          if (auto* a = arr.getArray()) {
-            for (auto& n : *a) {
-              auto* o = n.getDynamicObject();
-              if (o == nullptr) continue;
-              if (o->getProperty("id").toString() == parentId) {
-                auto kids = o->getProperty("nodes");
-                if (auto* ka = kids.getArray(); ka && ka->size() > 0) {
-                  return (*ka)[ka->size() - 1]
-                      .getDynamicObject()
-                      ->getProperty("id")
-                      .toString();
-                }
-                return {};
-              }
-              auto found = scan(o->getProperty("nodes"));
-              if (found.isNotEmpty()) return found;
-            }
-          }
-          return juce::String();
-        };
-        return scan(nv);
-      };
-      const juce::String innerId = findChildId(outerId);
-      expect(innerId.isNotEmpty(), "inner stack created");
-      engine.createNode("clip", innerId);
-      const juce::String clipId = findChildId(innerId);
-      expect(clipId.isNotEmpty(), "clip created");
+      // An island with no Q yet: the gate judges the windows alone.
+      Rig is;
+      const juce::String outer = is.createStack();
+      const juce::String inner = is.createStack(outer);
+      expect(inner.isNotEmpty(), "inner stack created");
+      const juce::String clip = is.createClip(inner);
+      expect(clip.isNotEmpty(), "clip created");
 
-      // Metadata-only observation (the engine-test discipline): a
-      // refused arm leaves the clip neither pending nor recording.
-      auto clipArmedOrRecording = [&](const juce::String& id) {
-        const juce::var s = engine.getGraphState();  // hold the var
-        std::function<bool(const juce::var&)> scan =
-            [&](const juce::var& arr) -> bool {
-          if (auto* a = arr.getArray()) {
-            for (auto& n : *a) {
-              auto* o = n.getDynamicObject();
-              if (o == nullptr) continue;
-              if (o->getProperty("id").toString() == id) {
-                return (bool)o->getProperty("isPendingStart") ||
-                       (bool)o->getProperty("isRecording");
-              }
-              if (scan(o->getProperty("nodes"))) return true;
-            }
-          }
-          return false;
-        };
-        return scan(s.getProperty("nodes", {}));
+      // A refused arm leaves the clip neither pending nor recording.
+      auto armed = [&] {
+        return is.bprop(clip, "isPendingStart") || is.bprop(clip, "isRecording");
       };
 
-      // Activate windows on BOTH ancestors → composed maps → refuse.
-      engine.setLoopPoints(outerId, 0, 1000);
-      engine.setLoopPoints(innerId, 0, 500);
-      engine.startRecordingInNode(clipId);
-      expect(!clipArmedOrRecording(clipId), "nested active maps: arm refused");
+      // Windows on BOTH ancestors: composed maps refuse the arm.
+      is.window(outer, 0, 1000);
+      is.window(inner, 0, 500);
+      is.engine.startRecordingInNode(clip);
+      expect(!armed(), "nested active maps: arm refused");
 
-      // Bypass one → a single active map → the arm proceeds.
-      engine.toggleLoopWindow(innerId);
-      engine.startRecordingInNode(clipId);
-      expect(clipArmedOrRecording(clipId), "single active map: arm proceeds");
-
-      // === Stage 6: MID-TAKE MAP-EDIT GATE (owner-ruled: refuse) ===
-      auto windowOf = [&](const juce::String& id) {
-        const juce::var s = engine.getGraphState();  // hold the var
-        std::function<std::pair<int64_t, int64_t>(const juce::var&)> scan =
-            [&](const juce::var& arr) -> std::pair<int64_t, int64_t> {
-          if (auto* a = arr.getArray()) {
-            for (auto& n : *a) {
-              auto* o = n.getDynamicObject();
-              if (o == nullptr) continue;
-              if (o->getProperty("id").toString() == id) {
-                return {(int64_t)(double)o->getProperty("loopStart"),
-                        (int64_t)(double)o->getProperty("loopEnd")};
-              }
-              auto found = scan(o->getProperty("nodes"));
-              if (found.second != -1) return found;
-            }
-          }
-          return {int64_t{-1}, int64_t{-1}};
-        };
-        return scan(s.getProperty("nodes", {}));
-      };
-
-      // The clip is live in OUTER's subtree — its window edit refuses.
-      engine.setLoopPoints(outerId, 0, 700);
-      expectEquals((juce::int64)windowOf(outerId).second, (juce::int64)1000,
-                   "gate: window edit refused while a take is live");
-      auto bypassedOf = [&](const juce::String& id) {
-        const juce::var s = engine.getGraphState();  // hold the var
-        std::function<int(const juce::var&)> scan =
-            [&](const juce::var& arr) -> int {
-          if (auto* a = arr.getArray()) {
-            for (auto& n : *a) {
-              auto* o = n.getDynamicObject();
-              if (o == nullptr) continue;
-              if (o->getProperty("id").toString() == id) {
-                return (bool)o->getProperty("loopBypassed") ? 1 : 0;
-              }
-              const int found = scan(o->getProperty("nodes"));
-              if (found != -1) return found;
-            }
-          }
-          return -1;
-        };
-        return scan(s.getProperty("nodes", {}));
-      };
-      engine.toggleLoopWindow(outerId);
-      expectEquals(bypassedOf(outerId), 0,
-                   "gate: bypass toggle refused while a take is live");
-
-      // A SIBLING stack (no take in its subtree): since the live-take
-      // gate (owner ruling 2026-09-09) geometry edits are refused
-      // island-wide while a take is live — creating the (empty) node
-      // is still allowed.
-      engine.createNode("stack", outerId);
-      const juce::String sibId = findChildId(outerId);
-      engine.setLoopPoints(sibId, 0, 300);
-      expectEquals((juce::int64)windowOf(sibId).second, (juce::int64)0,
-                   "gate: sibling window refused under the live take");
-
-      // Cancel the take → the gate lifts.
-      engine.stopRecordingInNode(clipId);  // armed, no capture → cancel
-      engine.setLoopPoints(outerId, 0, 700);
-      expectEquals((juce::int64)windowOf(outerId).second, (juce::int64)700,
-                   "gate lifts when the take ends");
+      // Bypass one: a single active map, and the arm proceeds.
+      is.engine.toggleLoopWindow(inner);
+      is.engine.startRecordingInNode(clip);
+      expect(armed(), "single active map: arm proceeds");
     }
-
-    // === Phase 3, Stage 1: multi-segment storage + the Segments edit ===
 
     beginTest("Map override: storage semantics on the node");
     {
       StackNode s("S");
-      timing::TimeMap m;
-      m.n = 2;
-      m.segs[0] = {0, 1000};
-      m.segs[1] = {2000, 3000};
-      // Install (single-threaded test: inline delete of the old pointer
-      // is fine — no audio thread).
-      s.setMap(m);
+      s.setMap(mapOf({{0, 1000}, {2000, 3000}}));
       expect(s.isLoopWindowActive(), "override alone activates the map");
       expectEquals((juce::int64)s.getEffectivePeriod(), (juce::int64)2000,
                    "effective period = sum of segment lengths");
@@ -656,446 +536,175 @@ class TimeMapRecordTests : public juce::UnitTest {
         "setSegments: install/publish, delegation, validation, "
         "undo/redo round trips");
     {
-      AudioEngine engine;
-      engine.createNode("stack");
-      juce::String sId;
-      {
-        const juce::var st = engine.getGraphState();
-        sId = (*st.getProperty("nodes", {}).getArray())[0]
-                  .getDynamicObject()
-                  ->getProperty("id")
-                  .toString();
-      }
-      auto segsOf = [&](const juce::String& id) {
-        const juce::var st = engine.getGraphState();  // hold the var
+      Rig is;
+      const juce::String stack = is.createStack();
+      // The stack's published "segments", flat: "start,end,start,end,".
+      auto segments = [&] {
+        const juce::var list = is.node(stack).getProperty("segments", {});
         juce::String flat;
-        if (auto* a = st.getProperty("nodes", {}).getArray()) {
-          for (auto& n : *a) {
-            auto* o = n.getDynamicObject();
-            if (o && o->getProperty("id").toString() == id) {
-              const juce::var sv = o->getProperty("segments");
-              if (auto* sa = sv.getArray()) {
-                for (auto& v : *sa) {
-                  flat += juce::String((int64_t)(double)v) + ",";
-                }
-              }
-            }
+        if (auto* values = list.getArray()) {
+          for (const auto& v : *values) {
+            flat += juce::String((int64_t)(double)v) + ",";
           }
         }
         return flat;
       };
-      auto makeMap =
-          [](std::initializer_list<std::pair<int64_t, int64_t>> segs) {
-            timing::TimeMap m;
-            for (auto& s : segs) m.segs[m.n++] = {s.first, s.second};
-            return m;
-          };
+      const juce::String two_cells("0,1000,2000,3000,");
 
       // Install a 2-segment map (empty stack: intrinsic 0 → no clamp).
-      engine.setSegments(sId, makeMap({{0, 1000}, {2000, 3000}}));
-      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
-                   "segments published in metadata");
+      is.engine.setSegments(stack, mapOf({{0, 1000}, {2000, 3000}}));
+      expectEquals(segments(), two_cells, "segments published in metadata");
 
       // Malformed lists refuse (metadata unchanged).
-      engine.setSegments(sId, makeMap({{0, 1000}, {500, 1500}}));
-      engine.setSegments(sId, makeMap({{2000, 3000}, {0, 1000}}));
-      engine.setSegments(sId, makeMap({{0, 0}, {2000, 3000}}));
-      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
-                   "overlap/unsorted/empty all refused");
+      is.engine.setSegments(stack, mapOf({{0, 1000}, {500, 1500}}));
+      is.engine.setSegments(stack, mapOf({{2000, 3000}, {0, 1000}}));
+      is.engine.setSegments(stack, mapOf({{0, 0}, {2000, 3000}}));
+      expectEquals(segments(), two_cells, "overlap/unsorted/empty all refused");
 
       // n==1 delegates to the single-window path and clears the map.
-      engine.setSegments(sId, makeMap({{500, 1500}}));
-      expectEquals(segsOf(sId), juce::String(), "override cleared");
-      const juce::var st2 = engine.getGraphState();
-      auto* o2 =
-          (*st2.getProperty("nodes", {}).getArray())[0].getDynamicObject();
-      expectEquals((juce::int64)(double)o2->getProperty("loopStart"),
-                   (juce::int64)500, "delegated to loop points (start)");
-      expectEquals((juce::int64)(double)o2->getProperty("loopEnd"),
-                   (juce::int64)1500, "delegated to loop points (end)");
+      is.engine.setSegments(stack, mapOf({{500, 1500}}));
+      expectEquals(segments(), juce::String(), "override cleared");
+      expectEquals(is.iprop(stack, "loopStart"), (int64_t)500,
+                   "delegated to loop points (start)");
+      expectEquals(is.iprop(stack, "loopEnd"), (int64_t)1500,
+                   "delegated to loop points (end)");
 
-      // Undo: the single-window edit restores the override (setsMap).
-      engine.undo();
-      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
-                   "undo restores the multi-segment map");
+      // Undo: the single-window edit restores the override.
+      is.engine.undo();
+      expectEquals(segments(), two_cells, "undo restores the multi-segment map");
       // Undo again: back to no map at all.
-      engine.undo();
-      expectEquals(segsOf(sId), juce::String(), "undo to pristine");
+      is.engine.undo();
+      expectEquals(segments(), juce::String(), "undo to pristine");
       // Redo both.
-      engine.redo();
-      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
-                   "redo reinstalls");
-      engine.redo();
-      expectEquals(segsOf(sId), juce::String(), "redo re-delegates");
-
-      // Mid-take gate: an armed take in the subtree refuses the edit.
-      engine.setSegments(sId, makeMap({{0, 1000}, {2000, 3000}}));
-      engine.createNode("clip", sId);
-      juce::String cId;
-      {
-        const juce::var st = engine.getGraphState();
-        auto* so =
-            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
-        auto kids = so->getProperty("nodes");
-        cId = (*kids.getArray())[0]
-                  .getDynamicObject()
-                  ->getProperty("id")
-                  .toString();
-      }
-      engine.startRecordingInNode(cId);
-      engine.setSegments(sId, makeMap({{0, 500}, {600, 900}}));
-      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
-                   "gate: refused while a take is live");
-      engine.stopRecordingInNode(cId);  // cancel
-      engine.setSegments(sId, makeMap({{0, 500}, {600, 900}}));
-      expectEquals(segsOf(sId), juce::String("0,500,600,900,"),
-                   "gate lifts after cancel");
+      is.engine.redo();
+      expectEquals(segments(), two_cells, "redo reinstalls");
+      is.engine.redo();
+      expectEquals(segments(), juce::String(), "redo re-delegates");
     }
 
     beginTest(
         "ENGINE: record through a setSegments cell map (the full "
         "callback path)");
     {
-      AudioEngine engine;
-      const int BLOCK = 512;
-      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
-      auto process = [&](int total) {
-        float* ins[] = {inBuf.data()};
-        float outL[512], outR[512];
-        float* outs[] = {outL, outR};
-        int remaining = total;
-        while (remaining > 0) {
-          const int n = std::min(remaining, BLOCK);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
-      };
-      auto nodeProp = [&](const juce::String& id, const char* prop) {
-        const juce::var s = engine.getGraphState();  // hold the var
-        std::function<double(const juce::var&)> scan =
-            [&](const juce::var& arr) -> double {
-          if (auto* a = arr.getArray()) {
-            for (auto& n : *a) {
-              auto* o = n.getDynamicObject();
-              if (o == nullptr) continue;
-              if (o->getProperty("id").toString() == id) {
-                return (double)o->getProperty(prop);
-              }
-              const double f = scan(o->getProperty("nodes"));
-              if (f == f && f != -1e18) return f;
-            }
-          }
-          return -1e18;
-        };
-        return (int64_t)scan(s.getProperty("nodes", {}).getArray()
-                                 ? s.getProperty("nodes", {})
-                                 : juce::var());
-      };
+      Rig is;
+      const juce::String group = is.createStack();
+      const juce::String a = is.record(Q, group);  // take A establishes Q
+      const int64_t C = is.dur(a);
+      expectEquals(C, Q, "take A committed");
 
-      engine.createNode("stack");
-      juce::String sId;
-      {
-        const juce::var st = engine.getGraphState();
-        sId = (*st.getProperty("nodes", {}).getArray())[0]
-                  .getDynamicObject()
-                  ->getProperty("id")
-                  .toString();
-      }
-      engine.createNode("clip", sId);
-      juce::String aId;
-      {
-        const juce::var st = engine.getGraphState();
-        auto* so =
-            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
-        aId = (*so->getProperty("nodes").getArray())[0]
-                  .getDynamicObject()
-                  ->getProperty("id")
-                  .toString();
-      }
-      // Take A establishes Q (~1 s at 44100).
-      engine.startRecordingInNode(aId);
-      process(100);
-      process(44100);
-      engine.stopRecordingInNode(aId);
-      for (int i = 0; i < 200 && nodeProp(aId, "isRecording") != 0; ++i) {
-        process(512);
-      }
-      const int64_t dA = nodeProp(aId, "duration");
-      expect(dA > 0, "take A committed");
+      // Cells {[0, C/4), [C/2, 3C/4)} on the GROUP → period C/2.
+      is.engine.setSegments(group, mapOf({{0, C / 4}, {C / 2, 3 * C / 4}}));
 
-      // Cells {[0, dA/4), [dA/2, 3dA/4)} on the GROUP → period dA/2.
-      timing::TimeMap cells;
-      cells.n = 2;
-      cells.segs[0] = {0, dA / 4};
-      cells.segs[1] = {dA / 2, (3 * dA) / 4};
-      engine.setSegments(sId, cells);
-
-      // Record B through the cell map: capped at one period, committed
-      // dense at C = the group's inner cycle.
-      engine.createNode("clip", sId);
-      juce::String bId;
-      {
-        const juce::var st = engine.getGraphState();
-        auto* so =
-            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
-        auto kids = so->getProperty("nodes");
-        bId = (*kids.getArray())[kids.getArray()->size() - 1]
-                  .getDynamicObject()
-                  ->getProperty("id")
-                  .toString();
-      }
-      engine.startRecordingInNode(bId);
-      // Never stop: the arm waits ≤1 heard pass for its boundary, then
-      // one full pass (period = dA/2) auto-commits. Drive past both,
-      // then pump until the commit lands.
-      process((int)(2 * dA));
-      for (int i = 0; i < 400 && (nodeProp(bId, "isRecording") != 0 ||
-                                  nodeProp(bId, "isPendingStart") != 0);
-           ++i) {
-        process(512);
-      }
-      expectEquals(nodeProp(bId, "isRecording"), (int64_t)0,
-                   "one-period cap auto-committed through the cells");
-      expectEquals(nodeProp(bId, "duration"), dA,
-                   "commit duration = C (the group inner cycle)");
+      // Record B through the cell map and never stop: the arm waits ≤1
+      // heard pass for its boundary, then one full pass (the period)
+      // auto-commits it, dense at C = the group's inner cycle.
+      const juce::String b = is.createClip(group);
+      is.engine.startRecordingInNode(b);
+      is.settle();
+      expect(!is.bprop(b, "isRecording"),
+             "one-period cap auto-committed through the cells");
+      expectEquals(is.dur(b), C, "commit duration = C (the group inner cycle)");
       // The anchor lands inside a VISITED cell (§3 arm semantics).
-      const int64_t orgRel = nodeProp(bId, "origin") - nodeProp(aId, "origin");
-      const int64_t phase = ((orgRel % dA) + dA) % dA;
-      expect((phase >= 0 && phase < dA / 4) ||
-                 (phase >= dA / 2 && phase < (3 * dA) / 4),
+      const int64_t phase = posmod(is.origin(b) - is.origin(a), C);
+      expect(phase < C / 4 || (phase >= C / 2 && phase < 3 * C / 4),
              "origin phase lands inside a visited cell (got " +
-                 juce::String(phase) + " of " + juce::String(dA) + ")");
+                 juce::String(phase) + " of " + juce::String(C) + ")");
     }
 
     beginTest(
         "ENGINE: the continuity re-anchor - sounding sample kept, "
         "the island zero never moves");
     {
-      AudioEngine engine;
-      const int BLOCK = 512;
-      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
-      int64_t pumped = 0;  // exact transport position (advances only here)
-      auto process = [&](int total) {
-        float* ins[] = {inBuf.data()};
-        float outL[512], outR[512];
-        float* outs[] = {outL, outR};
-        int remaining = total;
-        while (remaining > 0) {
-          const int n = std::min(remaining, BLOCK);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          pumped += n;
-          remaining -= n;
-        }
-      };
-      auto nodeProp = [&](const juce::String& id, const char* prop) {
-        const juce::var s = engine.getGraphState();
-        std::function<double(const juce::var&)> scan =
-            [&](const juce::var& arr) -> double {
-          if (auto* a = arr.getArray()) {
-            for (auto& n : *a) {
-              auto* o = n.getDynamicObject();
-              if (o == nullptr) continue;
-              if (o->getProperty("id").toString() == id) {
-                return (double)o->getProperty(prop);
-              }
-              const double f = scan(o->getProperty("nodes"));
-              if (f == f && f != -1e18) return f;
-            }
-          }
-          return -1e18;
-        };
-        return (int64_t)scan(s.getProperty("nodes", {}));
-      };
-      auto childId = [&](const juce::String& sId, int idx) {
-        const juce::var st = engine.getGraphState();
-        auto* so =
-            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
-        auto kids = so->getProperty("nodes");
-        if (idx < 0) idx = kids.getArray()->size() - 1;
-        return (*kids.getArray())[idx]
-            .getDynamicObject()
-            ->getProperty("id")
-            .toString();
-      };
+      // Take A defines Q; take B is a plain 3Q clip beside it. B is NOT
+      // the sole definer, so the general continuity branch (not Q13)
+      // carries the phase.
+      Rig is;
+      const juce::String group = is.createStack();
+      is.record(Q, group);
+      const juce::String b = is.record(3 * Q, group);
+      const int64_t len = is.dur(b);
+      expectEquals(len, 3 * Q, "take B committed at 3Q, on the Q grid");
 
-      engine.createNode("stack");
-      juce::String sId;
-      {
-        const juce::var st = engine.getGraphState();
-        sId = (*st.getProperty("nodes", {}).getArray())[0]
-                  .getDynamicObject()
-                  ->getProperty("id")
-                  .toString();
-      }
-      // Take A defines Q (~1s); take B is a plain 2Q clip.
-      engine.createNode("clip", sId);
-      const juce::String aId = childId(sId, 0);
-      engine.startRecordingInNode(aId);
-      process(100);
-      process(44100);
-      engine.stopRecordingInNode(aId);
-      for (int i = 0; i < 200 && nodeProp(aId, "isRecording") != 0; ++i) {
-        process(512);
-      }
-      const int64_t dA = nodeProp(aId, "duration");
-      expect(dA > 0, "take A committed");
-      engine.createNode("clip", sId);
-      const juce::String bId = childId(sId, -1);
-      engine.startRecordingInNode(bId);
-      process((int)(2 * dA + dA / 2));
-      engine.stopRecordingInNode(bId);
-      for (int i = 0; i < 400 && (nodeProp(bId, "isRecording") != 0 ||
-                                  nodeProp(bId, "isPendingStart") != 0);
-           ++i) {
-        process(512);
-      }
-      const int64_t dB = nodeProp(bId, "duration");
-      expect(dB >= 2 * dA, "take B committed at >= 2Q");
-
-      // Two committed clips: B is NOT the sole definer — the general
-      // continuity branch (not Q13) must carry the phase.
-      // Park the playing position inside [0, dB/4).
-      auto p0Of = [&](int64_t org, const timing::TimeMap& m) {
+      // The content position sounding now from origin `org` under map
+      // `m` (none: the whole take), by the map law itself.
+      auto soundingFrom = [&](int64_t org, const timing::TimeMap& m) {
         const timing::TimeMap eff =
-            m.active() ? m : timing::TimeMap::single(0, dB);
-        return eff.mapOffset(pumped - org - eff.mapOffset(0));
+            m.active() ? m : timing::TimeMap::single(0, len);
+        return eff.mapOffset(is.clock - org - eff.mapOffset(0));
       };
-      int guard = 0;
-      while (guard++ < 400 &&
-             p0Of(nodeProp(bId, "origin"), timing::TimeMap::none()) >= dB / 4) {
-        process(512);
-      }
-      const int64_t orgB = nodeProp(bId, "origin");
-      const int64_t p0 = p0Of(orgB, timing::TimeMap::none());
-      expect(p0 < dB / 4, "parked inside the first quarter");
-      // Whole-Q map geometry (the coherence guard refuses anything
-      // else): B committed at a whole number of Qs.
-      expectEquals((juce::int64)(dB % dA), (juce::int64)0,
-                   "take B committed on the Q grid");
+      // Park a quarter Q into an ODD pass of the take: a 2Q cut over a
+      // 3Q take must then move the origin to keep the sample sounding.
+      const int64_t O = is.origin(b), zero = is.zero();
+      is.park(O, Q / 4, len, 1);
+      const int64_t p0 = soundingFrom(O, timing::TimeMap::none());
+      expectEquals(p0, Q / 4, "parked inside the first quarter");
 
-      // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09): the sounding
-      // sample keeps sounding (origin re-anchor, exactly the
-      // 2026-07-25h algebra) AND the island zero rides the SAME
-      // whole-Q delta, so the edited clip's frame position — the
-      // timeline the user drew — never changes. The fold, not the
-      // clip, absorbs the difference ("the master transport is an
-      // implementation detail").
-      auto islandZero = [&]() {
-        return (int64_t)(double)engine.getGraphState()
-            .getDynamicObject()
-            ->getProperty("islandZero");
-      };
-      const int64_t ep0 = islandZero();
-
-      // A cut that KEEPS p0's region: {[0, 1Q), [2Q, 3Q)}.
-      timing::TimeMap m1;
-      m1.n = 2;
-      m1.segs[0] = {0, dA};
-      m1.segs[1] = {2 * dA, 3 * dA};
-      engine.setSegments(bId, m1);
-      const int64_t orgB1 = nodeProp(bId, "origin");
-      const int64_t ep1 = islandZero();
-      expectEquals((juce::int64)p0Of(orgB1, m1), (juce::int64)p0,
+      // A cut that KEEPS p0's region: the sounding sample keeps sounding
+      // - the origin re-anchors by whole Qs - and the island zero stays
+      // (docs/frame.md: where B's tile sits is the view's seating).
+      const timing::TimeMap keeps = mapOf({{0, Q}, {2 * Q, 3 * Q}});
+      is.engine.setSegments(b, keeps);
+      const int64_t O1 = is.origin(b);
+      expectEquals(soundingFrom(O1, keeps), p0,
                    "covered position keeps sounding across the edit");
-      // The island zero does not ride the re-anchor (docs/frame.md):
-      // where B's tile sits is the view's seating.
-      expectEquals((juce::int64)ep1, (juce::int64)ep0,
-                   "the zero stays through the re-anchor");
-      expectEquals((juce::int64)(((orgB1 - orgB) % dA + dA) % dA),
-                   (juce::int64)0, "the delta is a whole number of Qs");
+      expect(O1 != O, "after an odd pass count the origin had to move");
+      expectEquals(posmod(O1 - O, Q), (int64_t)0,
+                   "the delta is a whole number of Qs");
+      expectEquals(is.zero(), zero, "the zero stays through the re-anchor");
 
-      // A map that REMOVES p0's region: {[1Q, 2Q), [2Q, 3Q)} — the
-      // ORIGIN stays put (you deleted what you were hearing; the jump
-      // is expected), and the island zero stays as always
-      // (docs/frame.md): where the shaped loop's top sits on screen is
-      // the view's seating. Audio never moved (origins are absolute).
-      timing::TimeMap m2;
-      m2.n = 2;
-      m2.segs[0] = {dA, 2 * dA};
-      m2.segs[1] = {2 * dA, 3 * dA};
-      // `live`: the same GESTURE as m1 (a drag streaming commits) — it
-      // coalesces into m1's undo entry (owner ruling 2026-09-10: only
-      // live commits merge; the separate-gesture case is pinned below).
-      engine.setSegments(bId, m2, /*live=*/true);
-      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB1,
+      // A map that REMOVES p0's region: the origin stays put (you deleted
+      // what you were hearing; the jump is expected), and so does the
+      // zero. `live`: the same GESTURE as the cut above (a drag streaming
+      // commits), so it joins that undo step.
+      const timing::TimeMap removes = mapOf({{Q, 2 * Q}, {2 * Q, 3 * Q}});
+      is.engine.setSegments(b, removes, /*live=*/true);
+      expectEquals(is.origin(b), O1,
                    "removed sounding region: origin stays put");
-      expectEquals((juce::int64)islandZero(), (juce::int64)ep1,
-                   "a map edit never moves the zero");
+      expectEquals(is.zero(), zero, "a map edit never moves the zero");
+      // ONE undo restores the gesture's start.
+      is.engine.undo();
+      expectEquals(is.origin(b), O, "undo restores the pre-edit origin");
+      expectEquals(is.zero(), zero, "undo restores the pre-edit zero");
 
-      // ONE undo restores both anchors: consecutive Segments edits
-      // coalesce (one gesture, one undo step) and the setsOrigin /
-      // setsIsland inverses ride it.
-      engine.undo();
-      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
-                   "undo restores the pre-edit origin");
-      expectEquals((juce::int64)islandZero(), (juce::int64)ep0,
-                   "undo restores the pre-edit zero");
-
-      // SEPARATE GESTURES ARE SEPARATE UNDO STEPS (owner ruling
-      // 2026-09-10): the same two maps as two gestures (no `live`) —
-      // one undo takes back m2 alone, leaving m1's anchors standing.
-      engine.setSegments(bId, m1);
-      const int64_t orgG1 = nodeProp(bId, "origin");
-      const int64_t epG1 = islandZero();
-      engine.setSegments(bId, m2);
-      expectEquals((juce::int64)islandZero(), (juce::int64)epG1,
-                   "gesture 2: the zero still never moves");
-      engine.undo();
-      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgG1,
+      // SEPARATE GESTURES ARE SEPARATE UNDO STEPS: the same two maps as
+      // two gestures (no `live`) — one undo takes back the second alone,
+      // leaving the first's anchors standing.
+      is.engine.setSegments(b, keeps);
+      const int64_t O2 = is.origin(b);
+      is.engine.setSegments(b, removes);
+      expectEquals(is.zero(), zero, "gesture 2: the zero still never moves");
+      is.engine.undo();
+      expectEquals(is.origin(b), O2,
                    "one undo: back to gesture 1's origin, not before it");
-      expectEquals((juce::int64)islandZero(), (juce::int64)epG1,
-                   "one undo: back to gesture 1's zero");
-      engine.undo();
-      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
-                   "the second undo takes back gesture 1");
+      expectEquals(is.zero(), zero, "one undo: back to gesture 1's zero");
+      is.engine.undo();
+      expectEquals(is.origin(b), O, "the second undo takes back gesture 1");
     }
 
     beginTest(
-        "ENGINE: the continuity re-anchor picks the NEAREST representative "
-        "- a playing slide never re-anchors, at any pass count (SM-4); a "
-        "trim moves by the least whole-Q amount; a group slide keeps its "
-        "subtree");
+        "ENGINE: the continuity re-anchor picks the NEAREST representative, "
+        "at any pass count (SM-4) - a trim moves by the least whole-Q "
+        "amount; a group slide keeps its subtree");
     {
-      // seam-model SM-4 / release-jump F4 (2026-09-23): the solve
-      // answers the MOST RECENT pass, O + m·P for a pure slide, and the
-      // view seats from absolute tops — so the seat flipped with the
-      // parity of m. Mock twin: ui/js/tests/continuity_origin.test.mjs;
-      // the algebra is golden-pinned (continuity_origin_cases).
-      using scenario::Island;
-      using scenario::posmod;
-      constexpr int64_t Q = 20000;
-      // The raw transport clock (published: islandPos is zero-relative).
-      auto raw = [](Island& is) { return is.islandPos() + is.zero(); };
-      // Drive to O + a0 + h + m·P with m the next count ≥ now of the
-      // requested parity — the node equation's phase h, m passes on.
-      auto park = [&](Island& is, int64_t top, int64_t h, int64_t P,
-                      int parity) {
-        int64_t m = (raw(is) - top - h + P - 1) / P;
-        if (m < 0) m = 0;
-        if ((m & 1) != parity) ++m;
-        is.drive(top + h + m * P - raw(is));
-      };
-      auto sounding = [](Island& is, const juce::String& id) {
-        return heard::nodeInner(*is.nodePtr(id), is.islandPos() + is.zero(),
-                                is.engine.rootScope());
-      };
+      // The solve answers the representative nearest the old origin
+      // (time_maps.md §5), never the most recent pass O + m·P: the view
+      // seats from absolute tops, so the seat must not flip with the
+      // parity of m. A playing slide's own facts are scenario S40's.
+      // Mock twin: ui/js/tests/continuity_origin.test.mjs; the algebra
+      // is golden-pinned (continuity_origin_cases).
       for (int parity : {1, 0}) {
         const juce::String tag = parity ? " (odd passes)" : " (even passes)";
-        Island is;
+        Rig is;
         is.record(Q);
         is.record(2 * Q);
         const juce::String b = is.record(10 * Q);
         is.window(b, 0, 5 * Q);
         const int64_t O = is.origin(b);
-        park(is, O, 5 * Q / 2, 5 * Q, parity);
-        const int64_t p0 = sounding(is, b);
+        is.park(O, 5 * Q / 2, 5 * Q, parity);
+        const int64_t p0 = is.sounding(b);
         expectEquals(p0, 5 * Q / 2, "parked at content 2.5Q" + tag);
         is.window(b, Q, 6 * Q);  // a whole-Q slide
-        expectEquals(is.origin(b), O, "whole-Q slide: the origin stays" + tag);
-        expectEquals(sounding(is, b), p0, "…and the sounding sample sounds" + tag);
         is.window(b, Q + 3 * Q / 10, 6 * Q + 3 * Q / 10);  // ⌥ free
-        expectEquals(is.origin(b), O, "free slide: the origin stays" + tag);
-        expectEquals(sounding(is, b), p0, "…and the sounding sample sounds" + tag);
         // A head trim [1.3Q, 6.3Q) → [2.3Q, 6.3Q): the sounding sample
         // is 1Q earlier in the pass. The least whole-Q move keeps it.
         is.window(b, 2 * Q + 3 * Q / 10, 6 * Q + 3 * Q / 10);
@@ -1103,13 +712,13 @@ class TimeMapRecordTests : public juce::UnitTest {
         expectEquals(posmod(d, Q), (int64_t)0, "trim: a whole number of Qs" + tag);
         expect(std::abs(d) <= 2 * Q,
                "trim: the least move (got " + juce::String(d / Q) + "Q)" + tag);
-        expectEquals(sounding(is, b), p0, "trim: the sounding sample sounds" + tag);
+        expectEquals(is.sounding(b), p0, "trim: the sounding sample sounds" + tag);
       }
       // A GROUP: the rider re-anchors the stack and moves its subtree
       // (applySetsOrigin) — a slide of the stack's window moves nothing.
       for (int parity : {1, 0}) {
         const juce::String tag = parity ? " (odd passes)" : " (even passes)";
-        Island is;
+        Rig is;
         is.record(Q);
         const juce::String g = is.recordGroup(2, 4 * Q);
         juce::StringArray mics;
@@ -1117,56 +726,79 @@ class TimeMapRecordTests : public juce::UnitTest {
         is.window(g, 0, 2 * Q);
         const int64_t Og = is.iprop(g, "origin");
         const int64_t Om = is.origin(mics[0]);
-        park(is, Og, 3 * Q / 2, 2 * Q, parity);
+        is.park(Og, 3 * Q / 2, 2 * Q, parity);
         is.window(g, Q, 3 * Q);
         expectEquals(is.iprop(g, "origin"), Og, "group slide: the stack stays" + tag);
         expectEquals(is.origin(mics[0]), Om, "group slide: the members stay" + tag);
       }
     }
 
-    // === Loop selection Phase 2: the top and the re-time (loop_selection
-    // .md §9; mock twin ui/js/tests/set_timing.test.mjs) ===
+    beginTest(
+        "ENGINE: a map edit under a bypass re-anchors nothing - the take "
+        "plays whole before and after");
+    {
+      Rig is;
+      is.record(Q);
+      const juce::String b = is.record(8 * Q);
+      is.engine.toggleLoopWindow(b);  // bypassed: the take plays whole
+      const int64_t O = is.origin(b);
+      // Park inside [0, 3Q) of the take, whole passes after its origin:
+      // under a 3Q window that position would sound a whole Q elsewhere.
+      is.driveToPhase(posmod(O - is.zero() + Q, is.cycle()));
+      is.drive(Q / 2);
+      const int64_t p0 = is.sounding(b);
+      is.window(b, 0, 3 * Q);
+      expect(is.bprop(b, "loopBypassed"), "a window edit keeps the bypass");
+      expectEquals(is.iprop(b, "loopEnd"), 3 * Q, "the window is stored");
+      expectEquals(is.origin(b), O, "window: the origin stays");
+      expectEquals(is.sounding(b), p0, "...and the sounding sample sounds on");
+      is.engine.setSegments(b, mapOf({{0, Q}, {2 * Q, 3 * Q}}));
+      expect(is.bprop(b, "loopBypassed"), "a cell map keeps the bypass");
+      expectEquals(is.origin(b), O, "cell map: the origin stays");
+      expectEquals(is.sounding(b), p0, "...and the sounding sample sounds on");
+    }
+  }
 
+  /** The re-time and the top (loop_selection.md §9), and the undo steps
+   * a map or re-time gesture forms. Mock twin:
+   * ui/js/tests/set_timing.test.mjs. */
+  void timingAndTopTests() {
     beginTest(
         "ENGINE: setTiming - the shift moves the origin by any amount and "
         "counts it into the re-time, moving no other fact; one undo step "
         "restores origin, re-time and top together; a live drag is one "
         "step; a re-time never coalesces into a map edit");
     {
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      Rig is;
       const juce::String c1 = is.record(Q);
       const juce::String b = is.record(4 * Q);
       const int64_t O = is.origin(b), O1 = is.origin(c1);
       const int64_t zero = is.zero(), q = is.Q();
-      auto retime = [&](const juce::String& id) { return is.iprop(id, "retime"); };
-      auto top = [&](const juce::String& id) { return is.iprop(id, "loopTop"); };
-      expectEquals(retime(b), (int64_t)0, "a fresh take is as played");
-      expectEquals(top(b), (int64_t)0, "no map, no top: the take's start");
+      expectEquals(is.retime(b), (int64_t)0, "a fresh take is as played");
+      expectEquals(is.top(b), (int64_t)0, "no map, no top: the take's start");
 
       is.engine.setTiming(b, Q);  // the lane ↺ drag, whole Q
       expectEquals(is.origin(b), O + Q, "the origin moved by the shift");
-      expectEquals(retime(b), Q, "…and the re-time counts it");
+      expectEquals(is.retime(b), Q, "...and the re-time counts it");
       expectEquals(is.Q(), q, "Q stays");
       expectEquals(is.zero(), zero, "the zero stays");
       expectEquals(is.origin(c1), O1, "the other take stays");
-      expectEquals(retime(c1), (int64_t)0, "…as played");
+      expectEquals(is.retime(c1), (int64_t)0, "...as played");
       expectEquals(is.dur(b), 4 * Q, "the take's length stays");
       expectEquals(is.iprop(b, "loopEnd"), (int64_t)0, "no map appears");
       is.engine.setTiming(b, 3 * Q / 10);  // ⌥: free, sub-Q
       expectEquals(is.origin(b), O + Q + 3 * Q / 10,
                    "a free shift lands exactly - never re-folded onto the grid");
-      expectEquals(retime(b), Q + 3 * Q / 10, "…counted");
+      expectEquals(is.retime(b), Q + 3 * Q / 10, "...counted");
       is.engine.undo();
       expectEquals(is.origin(b), O + Q, "undo takes back the free shift");
-      expectEquals(retime(b), Q, "…with its re-time");
+      expectEquals(is.retime(b), Q, "...with its re-time");
       is.engine.redo();
       expectEquals(is.origin(b), O + Q + 3 * Q / 10, "redo");
-      expectEquals(retime(b), Q + 3 * Q / 10, "…re-time too");
-      is.engine.setTiming(b, -retime(b));  // "timing as played"
+      expectEquals(is.retime(b), Q + 3 * Q / 10, "...re-time too");
+      is.engine.setTiming(b, -is.retime(b));  // "timing as played"
       expectEquals(is.origin(b), O, "as played: the performed origin");
-      expectEquals(retime(b), (int64_t)0, "…re-time 0");
+      expectEquals(is.retime(b), (int64_t)0, "...re-time 0");
 
       // THE PANEL'S START MARKER: a new top and the compensating shift
       // in one call, so the ↺ keeps its moment. [Q, 3Q): the top (the
@@ -1175,65 +807,63 @@ class TimeMapRecordTests : public juce::UnitTest {
       is.window(b, Q, 3 * Q);
       auto topMoment = [&](const juce::String& id) {
         const int64_t a0 = is.iprop(id, "loopStart");
-        return is.origin(id) + a0 + (top(id) - a0);  // one segment
+        return is.origin(id) + a0 + (is.top(id) - a0);  // one segment
       };
       const int64_t moment0 = topMoment(b);
       is.engine.setTiming(b, -Q, 2 * Q);
-      expectEquals(top(b), 2 * Q, "the top is stored");
+      expectEquals(is.top(b), 2 * Q, "the top is stored");
       expectEquals(is.origin(b), O - Q, "the origin compensates");
-      expectEquals(retime(b), -Q, "…and the re-time counts it");
-      expectEquals(topMoment(b), moment0, "the ↺ kept its moment");
+      expectEquals(is.retime(b), -Q, "...and the re-time counts it");
+      expectEquals(topMoment(b), moment0, "the (top) kept its moment");
       is.engine.undo();
       expectEquals(is.origin(b), O, "undo: the origin,");
-      expectEquals(retime(b), (int64_t)0, "the re-time,");
-      expectEquals(top(b), Q, "and the top (the region start the window stored)");
+      expectEquals(is.retime(b), (int64_t)0, "the re-time,");
+      expectEquals(is.top(b), Q, "and the top (the region start the window stored)");
       is.engine.redo();
       expectEquals(is.origin(b), O - Q, "redo: the origin,");
-      expectEquals(retime(b), -Q, "the re-time,");
-      expectEquals(top(b), 2 * Q, "and the top, together");
+      expectEquals(is.retime(b), -Q, "the re-time,");
+      expectEquals(is.top(b), 2 * Q, "and the top, together");
 
       // A LIVE drag: the first commit opens the step, the rest coalesce.
-      const int64_t Og = is.origin(b), Rg = retime(b);
+      const int64_t Og = is.origin(b), Rg = is.retime(b);
       is.engine.setTiming(b, Q / 10);
       is.engine.setTiming(b, Q / 10, std::nullopt, true);
       is.engine.setTiming(b, -Q / 20, std::nullopt, true);
       expectEquals(is.origin(b), Og + 3 * Q / 20, "the streamed commits applied");
-      expectEquals(retime(b), Rg + 3 * Q / 20, "…and counted");
+      expectEquals(is.retime(b), Rg + 3 * Q / 20, "...and counted");
       is.engine.undo();
       expectEquals(is.origin(b), Og, "one undo takes the whole drag back");
-      expectEquals(retime(b), Rg, "…its re-time too");
-      expectEquals(top(b), 2 * Q, "…and leaves the top");
+      expectEquals(is.retime(b), Rg, "...its re-time too");
+      expectEquals(is.top(b), 2 * Q, "...and leaves the top");
       // Two gestures are two steps.
       is.engine.setTiming(b, Q / 10);
       is.engine.setTiming(b, Q / 10);
       is.engine.undo();
       expectEquals(is.origin(b), Og + Q / 10, "separate gestures: one step each");
       is.engine.undo();
-      expectEquals(is.origin(b), Og, "…two undos");
+      expectEquals(is.origin(b), Og, "...two undos");
       // Swap and shift are different gestures: a live re-time never
       // coalesces into a map edit's step.
       is.window(b, 2 * Q, 4 * Q);
       is.engine.setTiming(b, Q / 10, std::nullopt, true);
       is.engine.undo();
       expectEquals(is.origin(b), Og, "the re-time undid on its own");
-      expectEquals(is.iprop(b, "loopStart"), 2 * Q, "…the slide stands");
+      expectEquals(is.iprop(b, "loopStart"), 2 * Q, "...the slide stands");
     }
 
     beginTest(
         "ENGINE: setTiming refusals - the Q-definer, a stack, an empty clip, "
-        "an unknown node, a top outside the kept set (refused whole) and any "
-        "re-time while a take is armed or capturing record nothing");
+        "an unknown node and a top outside the kept set (refused whole) "
+        "record nothing");
     {
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      Rig is;
       const juce::String c1 = is.record(Q);
       // THE Q-DEFINER: the island's only content — its frame top is the
       // island zero.
       const int64_t O1 = is.origin(c1);
       is.engine.setTiming(c1, Q / 2);
       expectEquals(is.origin(c1), O1, "the Q-definer refuses");
-      expectEquals(is.iprop(c1, "retime"), (int64_t)0, "…nothing counted");
+      expectEquals(is.iprop(c1, "retime"), (int64_t)0, "...nothing counted");
       const juce::String b = is.record(4 * Q);
       is.window(b, Q, 3 * Q);
       const juce::String g = is.createStack();
@@ -1247,54 +877,39 @@ class TimeMapRecordTests : public juce::UnitTest {
       is.engine.setTiming(b, Q, 3 * Q);  // top at the window's end
       is.engine.setTiming(b, Q, 9 * Q);  // top past the take
       expectEquals(is.origin(b), Ob, "a top outside the kept set refuses the whole call");
-      expectEquals(is.iprop(b, "retime"), (int64_t)0, "…no partial shift");
-      expectEquals(is.iprop(b, "loopTop"), Q, "…no top");
+      expectEquals(is.iprop(b, "retime"), (int64_t)0, "...no partial shift");
+      expectEquals(is.iprop(b, "loopTop"), Q, "...no top");
       is.engine.setTiming(g, Q);          // an EMPTY group: nothing committed
       is.engine.setTiming(e, Q);          // nothing committed
       is.engine.setTiming("no-such-node", Q);
       is.engine.setTiming(b, 0);          // the identity: records nothing
       expect(is.engine.canRedo(), "none of them recorded (the redo branch survives)");
       expectEquals(is.iprop(g, "origin"), (int64_t)0, "the stack is untouched");
-      // Every loop node publishes its re-time (fractal, 2026-09-29): 0
-      // for a group nothing has moved.
+      // Every loop node publishes its re-time: 0 for a group nothing has
+      // moved.
       expectEquals(is.iprop(g, "retime"), (int64_t)0, "the group is as played");
-      // THE RECORDING GATE: arm the empty clip — nothing re-times while
-      // the take is armed or capturing, the armed clip least of all.
-      is.engine.startRecordingInNode(e);
-      expect(is.engine.hasActiveTake(), "a take is armed");
+      // The control: with nothing to refuse it, the re-time lands.
       is.engine.setTiming(b, Q);
-      expectEquals(is.origin(b), Ob, "refused under a live take");
-      is.waitFor([&] { return is.bprop(e, "isRecording"); });
-      is.engine.setTiming(b, Q);
-      expectEquals(is.origin(b), Ob, "refused while it captures");
-      is.drive(Q);
-      is.engine.stopRecordingInNode(e);
-      is.settle();
-      is.engine.setTiming(b, Q);
-      expectEquals(is.origin(b), Ob + Q, "the take settled: the re-time lands");
+      expectEquals(is.origin(b), Ob + Q, "the re-time lands");
     }
 
     beginTest(
-        "ENGINE: a new take plays as performed and resets the re-time (owner "
-        "2026-09-24) - a 4Q take shifted +1Q, then a new take: armed at the "
+        "ENGINE: a new take plays as performed and resets the re-time - a 4Q "
+        "take shifted +1Q, then a new take: armed at the "
         "shifted slot top, it sounds where it was played with re-time 0, so "
         "'timing as played' leaves it there; undo brings back the old take "
         "with its +1Q, redo the 0");
     {
-      // Mock twin: ui/js/tests/set_timing.test.mjs. The output checks are
-      // the scenario harness's (docs/scenarios.md, S15/S41): content[k] of
-      // a take is the ramp at its capture boundary + k.
-      using scenario::Island;
-      using scenario::posmod;
+      // The output checks are the scenario harness's (docs/scenarios.md,
+      // S15/S41): content[k] of a take is the harness ramp at its capture
+      // boundary + k.
       using scenario::rampAt;
-      constexpr int64_t Q = 20000;
-      Island is;
+      Rig is;
       const juce::String c1 = is.record(Q);
       const juce::String b = is.record(4 * Q);
       const int64_t cap = is.captured.at(b);
-      auto retime = [&] { return is.iprop(b, "retime"); };
       is.engine.setTiming(b, Q);
-      expectEquals(retime(), Q, "the take is shifted +1Q");
+      expectEquals(is.retime(b), Q, "the take is shifted +1Q");
       // A NEW TAKE, armed mid-period: it waits for the slot's own top —
       // the SHIFTED origin — and captures exactly one period.
       is.drive(Q / 2);
@@ -1307,7 +922,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(is.iprop(b, "takes"), (int64_t)2, "two takes");
       expectEquals(is.iprop(b, "activeTake"), (int64_t)1, "the new one is active");
       expectEquals(is.origin(b), cap + Q, "the slot keeps its origin");
-      expectEquals(retime(), (int64_t)0, "the re-time resets: the new take is as played");
+      expectEquals(is.retime(b), (int64_t)0, "the re-time resets: the new take is as played");
       auto asPlayed = [&](int64_t t) {
         return is.loopVal(c1, t) + rampAt(start2 + posmod(t - start2, 4 * Q));
       };
@@ -1315,27 +930,27 @@ class TimeMapRecordTests : public juce::UnitTest {
                    "the new take sounds exactly where it was played");
       // "Timing as played" (−retime) is the identity now: the new take
       // stays on its performance.
-      is.engine.setTiming(b, -retime());
+      is.engine.setTiming(b, -is.retime(b));
       expectEquals(is.origin(b), cap + Q, "'timing as played' leaves it there");
-      expectEquals(is.mismatches(4 * Q, asPlayed), 0, "…still as played");
+      expectEquals(is.mismatches(4 * Q, asPlayed), 0, "...still as played");
       is.engine.undo();
       expectEquals(is.iprop(b, "takes"), (int64_t)1, "undo: the old take alone");
-      expectEquals(is.iprop(b, "activeTake"), (int64_t)0, "…active");
-      expectEquals(retime(), Q, "…with its +1Q");
+      expectEquals(is.iprop(b, "activeTake"), (int64_t)0, "...active");
+      expectEquals(is.retime(b), Q, "...with its +1Q");
       expectEquals(is.mismatches(8 * Q, [&](int64_t t) {
         return is.loopVal(c1, t) + is.val(b, posmod(t - cap - Q, 4 * Q));
       }), 0, "the old take sounds a Q later than played again");
       is.engine.redo();
       expectEquals(is.iprop(b, "takes"), (int64_t)2, "redo: the new take");
-      expectEquals(is.iprop(b, "activeTake"), (int64_t)1, "…active");
-      expectEquals(retime(), (int64_t)0, "…re-time 0 again");
-      expectEquals(is.mismatches(4 * Q, asPlayed), 0, "…as played");
+      expectEquals(is.iprop(b, "activeTake"), (int64_t)1, "...active");
+      expectEquals(is.retime(b), (int64_t)0, "...re-time 0 again");
+      expectEquals(is.mismatches(4 * Q, asPlayed), 0, "...as played");
       // The older take keeps its shift as a baked fact; ⌘Z still
       // reaches it behind the new take.
       is.engine.undo();
       is.engine.undo();
       expectEquals(is.origin(b), cap, "two undos: the shift is gone too");
-      expectEquals(retime(), (int64_t)0, "…as played");
+      expectEquals(is.retime(b), (int64_t)0, "...as played");
     }
 
     beginTest(
@@ -1344,54 +959,46 @@ class TimeMapRecordTests : public juce::UnitTest {
         "exactly; a bypass leaves it; a live drag reconciles from its "
         "gesture's start");
     {
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      Rig is;
       is.record(Q);
       const juce::String b = is.record(8 * Q);
-      auto top = [&] { return is.iprop(b, "loopTop"); };
-      auto segs = [&](std::initializer_list<std::pair<int64_t, int64_t>> s) {
-        timing::TimeMap m;
-        for (const auto& [a, e] : s) m.segs[m.n++] = {a, e};
-        return m;
-      };
       const int64_t O = is.origin(b);
       is.window(b, Q, 3 * Q);
       is.engine.setTiming(b, 0, 2 * Q);  // a top alone: no shift
-      expectEquals(top(), 2 * Q, "the top is stored");
-      expectEquals(is.origin(b), O, "…and nothing moved in time");
+      expectEquals(is.top(b), 2 * Q, "the top is stored");
+      expectEquals(is.origin(b), O, "...and nothing moved in time");
       // setLoopPoints — a SWAP keeps the origin, so the top keeps its
       // moment while the region still plays it.
       is.window(b, 3 * Q / 2, 7 * Q / 2);
-      expectEquals(top(), 2 * Q, "a slide that still plays the top keeps it");
-      expectEquals(is.origin(b), O, "…and the origin (a swap)");
+      expectEquals(is.top(b), 2 * Q, "a slide that still plays the top keeps it");
+      expectEquals(is.origin(b), O, "...and the origin (a swap)");
       is.window(b, 3 * Q, 5 * Q);
-      expectEquals(top(), 3 * Q, "a slide past it resets it to the region start");
+      expectEquals(is.top(b), 3 * Q, "a slide past it resets it to the region start");
       is.engine.undo();
-      expectEquals(top(), 2 * Q, "undo restores the old top exactly");
-      expectEquals(is.iprop(b, "loopStart"), 3 * Q / 2, "…with its region");
+      expectEquals(is.top(b), 2 * Q, "undo restores the old top exactly");
+      expectEquals(is.iprop(b, "loopStart"), 3 * Q / 2, "...with its region");
       is.engine.redo();
-      expectEquals(top(), 3 * Q, "redo: the region start again");
+      expectEquals(is.top(b), 3 * Q, "redo: the region start again");
       // setSegments — a CELL CUT under the top drops it; a HEAL keeps it.
       is.window(b, Q, 5 * Q);
       is.engine.setTiming(b, 0, 7 * Q / 2);
-      expectEquals(top(), 7 * Q / 2, "a top in [3Q,4Q)");
-      is.engine.setSegments(b, segs({{Q, 3 * Q}, {4 * Q, 5 * Q}}));
-      expectEquals(top(), Q, "the cut removed its cell: the region start");
+      expectEquals(is.top(b), 7 * Q / 2, "a top in [3Q,4Q)");
+      is.engine.setSegments(b, mapOf({{Q, 3 * Q}, {4 * Q, 5 * Q}}));
+      expectEquals(is.top(b), Q, "the cut removed its cell: the region start");
       is.engine.undo();
-      expectEquals(top(), 7 * Q / 2, "undo: the top is back");
-      is.engine.setSegments(b, segs({{Q, 3 * Q}, {4 * Q, 5 * Q}}));
+      expectEquals(is.top(b), 7 * Q / 2, "undo: the top is back");
+      is.engine.setSegments(b, mapOf({{Q, 3 * Q}, {4 * Q, 5 * Q}}));
       is.engine.setTiming(b, 0, 9 * Q / 2);
-      expectEquals(top(), 9 * Q / 2, "a top in the second segment");
-      is.engine.setSegments(b, segs({{Q, 5 * Q}}));  // heal (n = 1)
-      expectEquals(top(), 9 * Q / 2, "the heal still plays it");
+      expectEquals(is.top(b), 9 * Q / 2, "a top in the second segment");
+      is.engine.setSegments(b, mapOf({{Q, 5 * Q}}));  // heal (n = 1)
+      expectEquals(is.top(b), 9 * Q / 2, "the heal still plays it");
       // A bypass leaves it; a CLEAR keeps it (the whole take plays it).
       is.engine.toggleLoopWindow(b);
       expect(is.bprop(b, "loopBypassed"), "bypassed");
-      expectEquals(top(), 9 * Q / 2, "a bypass leaves the top alone");
+      expectEquals(is.top(b), 9 * Q / 2, "a bypass leaves the top alone");
       is.engine.toggleLoopWindow(b);
       is.window(b, 0, 0);
-      expectEquals(top(), 9 * Q / 2, "a cleared map keeps the top");
+      expectEquals(is.top(b), 9 * Q / 2, "a cleared map keeps the top");
       // THE GESTURE'S START: a live drag reconciles every commit against
       // the top the drag started with, so sweeping past the ↺ and back
       // keeps it; the one undo step restores it exactly.
@@ -1399,34 +1006,28 @@ class TimeMapRecordTests : public juce::UnitTest {
       is.engine.setTiming(b, 0, 2 * Q);
       is.engine.setLoopPoints(b, 3 * Q / 2, 11 * Q / 2);  // the drag's first commit
       is.engine.setLoopPoints(b, 5 * Q / 2, 13 * Q / 2, true);
-      expectEquals(top(), 5 * Q / 2, "mid-drag the region left the top");
+      expectEquals(is.top(b), 5 * Q / 2, "mid-drag the region left the top");
       is.engine.setLoopPoints(b, 3 * Q / 2, 11 * Q / 2, true);
-      expectEquals(top(), 2 * Q, "…and back: the drag's own top returns");
-      is.engine.setSegments(b, segs({{3 * Q, 4 * Q}, {5 * Q, 8 * Q}}), true);
-      expectEquals(top(), 3 * Q, "a live cut that drops it");
+      expectEquals(is.top(b), 2 * Q, "...and back: the drag's own top returns");
+      is.engine.setSegments(b, mapOf({{3 * Q, 4 * Q}, {5 * Q, 8 * Q}}), true);
+      expectEquals(is.top(b), 3 * Q, "a live cut that drops it");
       is.engine.undo();
-      expectEquals(top(), 2 * Q, "one undo: the gesture's top");
-      expectEquals(is.iprop(b, "loopStart"), Q, "…and its region");
+      expectEquals(is.top(b), 2 * Q, "one undo: the gesture's top");
+      expectEquals(is.iprop(b, "loopStart"), Q, "...and its region");
     }
 
     beginTest(
         "ENGINE: an UNSET top (a take never edited) is its region start "
         "until the first map edit STORES it - a left slide keeps the top "
         "where it showed, a right slide past it takes the new start, a reset "
-        "stays put when the region slides back (P2; not v5's 'rides the "
-        "start'), and a live drag reconciles from where it showed");
+        "stays put when the region slides back, and a live drag reconciles "
+        "from where it showed");
     {
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      Rig is;
       is.record(Q);
       const juce::String b = is.record(8 * Q);
       auto* clip = dynamic_cast<ClipNode*>(is.nodePtr(b));
       expect(clip != nullptr, "the take");
-      auto top = [&] { return is.iprop(b, "loopTop"); };
-      auto stored = [&] {
-        return (juce::int64)(clip != nullptr ? clip->storedTop() : 0);
-      };
       // A window no edit has reconciled a top against — a take's
       // commit-time window, a session saved before tops: set on the node
       // itself, the top unset, the region start standing in.
@@ -1434,47 +1035,41 @@ class TimeMapRecordTests : public juce::UnitTest {
         if (clip == nullptr) return;
         clip->setLoopPoints(a, e);
         clip->setStoredTop(timing::kNoTop);
-        expectEquals(top(), a, "unset: the region start stands in");
+        expectEquals(is.top(b), a, "unset: the region start stands in");
       };
       fresh(2 * Q, 4 * Q);
       is.window(b, Q, 3 * Q);  // left 1Q
-      expectEquals(top(), 2 * Q,
+      expectEquals(is.top(b), 2 * Q,
                    "a left slide keeps the top where it showed: the splice "
                    "comes apart");
-      expectEquals(stored(), (juce::int64)(2 * Q), "…stored");
+      expectEquals(is.storedTop(b), 2 * Q, "...stored");
       is.engine.undo();
-      expectEquals(stored(), (juce::int64)timing::kNoTop,
-                   "undo: unset, exactly as found");
-      expectEquals(top(), 2 * Q, "…the region start again");
+      expectEquals(is.storedTop(b), timing::kNoTop, "undo: unset, exactly as found");
+      expectEquals(is.top(b), 2 * Q, "...the region start again");
       is.window(b, 3 * Q, 5 * Q);  // right 1Q
-      expectEquals(top(), 3 * Q, "a right slide past it: the new start");
-      // THE RESET STAYS PUT (the owner's bars 1–4 → 3–6 → 2–5): stored at
-      // the reset, the top holds bar 3 when the region slides back over it.
+      expectEquals(is.top(b), 3 * Q, "a right slide past it: the new start");
+      // THE RESET STAYS PUT (bars 1–4 → 3–6 → 2–5): stored at the reset,
+      // the top holds bar 3 when the region slides back over it.
       fresh(0, 4 * Q);
       is.window(b, 2 * Q, 6 * Q);
-      expectEquals(top(), 2 * Q, "bars 3–6 drop bar 1: the top resets to bar 3");
+      expectEquals(is.top(b), 2 * Q, "bars 3-6 drop bar 1: the top resets to bar 3");
       is.window(b, Q, 5 * Q);
-      expectEquals(top(), 2 * Q, "back to bars 2–5: the top stays on bar 3");
+      expectEquals(is.top(b), 2 * Q, "back to bars 2-5: the top stays on bar 3");
       // A LIVE DRAG from an unset top reconciles every commit from the
       // top it showed when the drag began (the gesture's first inverse
       // carries it), not from the last commit's.
       fresh(2 * Q, 4 * Q);
       is.engine.setLoopPoints(b, 3 * Q, 5 * Q);  // the drag's first commit
-      expectEquals(top(), 3 * Q, "mid-drag the region left the top");
+      expectEquals(is.top(b), 3 * Q, "mid-drag the region left the top");
       is.engine.setLoopPoints(b, Q, 3 * Q, true);
-      expectEquals(top(), 2 * Q, "…and back past it: the drag's own top");
-      is.engine.setSegments(b, [] {
-        timing::TimeMap m;
-        m.n = 2;
-        m.segs[0] = {Q, 2 * Q};
-        m.segs[1] = {3 * Q, 4 * Q};
-        return m;
-      }(), true);  // a live cut that drops it
-      expectEquals(top(), Q, "a live commit that drops it: the region start");
+      expectEquals(is.top(b), 2 * Q, "...and back past it: the drag's own top");
+      // A live cut that drops it.
+      is.engine.setSegments(b, mapOf({{Q, 2 * Q}, {3 * Q, 4 * Q}}), true);
+      expectEquals(is.top(b), Q, "a live commit that drops it: the region start");
       is.engine.undo();
-      expectEquals(stored(), (juce::int64)timing::kNoTop,
+      expectEquals(is.storedTop(b), timing::kNoTop,
                    "one undo: unset, as the drag found it");
-      expectEquals(is.iprop(b, "loopStart"), 2 * Q, "…with its region");
+      expectEquals(is.iprop(b, "loopStart"), 2 * Q, "...with its region");
     }
 
     beginTest(
@@ -1485,52 +1080,37 @@ class TimeMapRecordTests : public juce::UnitTest {
         "opening on a zero shift are two steps; a drag that returns to its "
         "start and dwells is one step; an undo ends the gesture");
     {
-      // Mock twin: ui/js/tests/set_timing.test.mjs.
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      Rig is;
       is.record(Q);
       const juce::String b = is.record(8 * Q);
-      auto* clip = dynamic_cast<ClipNode*>(is.nodePtr(b));
-      expect(clip != nullptr, "the take");
-      auto stored = [&] {
-        return clip != nullptr ? clip->storedTop() : int64_t{0};
-      };
-      auto region = [&] {
-        return juce::String(is.iprop(b, "loopStart") / Q) + "-" +
-               juce::String(is.iprop(b, "loopEnd") / Q);
-      };
       auto expectRegion = [&](const char* want, const juce::String& why) {
-        expect(region() == want, why + " (" + region() + ")");
+        expect(is.region(b) == want, why + " (" + is.region(b) + ")");
       };
-      // A WHOLE-Q SPLICE DRAG over a window commits the slid window; its
-      // first commit is the window it found — an identity, recording
-      // nothing.
-      auto slide = [&](int64_t a, bool live) {
-        is.engine.setSegments(b, timing::TimeMap::single(a, a + 4 * Q), live);
-      };
+      // A WHOLE-Q SPLICE DRAG over a window commits the slid window
+      // (Rig::slide); its first commit is the window it found — an
+      // identity, recording nothing.
       is.window(b, Q, 5 * Q);
       is.engine.setTiming(b, 0, 2 * Q);  // the ↺ on 2Q
       // Drag 1: [Q,5Q) → [3Q,7Q) leaves the ↺ behind: the region start.
-      slide(Q, false);
-      slide(2 * Q, true);
-      slide(3 * Q, true);
-      expectEquals(stored(), 3 * Q, "drag 1 dropped the ↺");
+      is.slide(b,Q, false);
+      is.slide(b,2 * Q, true);
+      is.slide(b,3 * Q, true);
+      expectEquals(is.storedTop(b), 3 * Q, "drag 1 dropped the (top)");
       // Drag 2 back to [Q,5Q) reconciles from ITS start (3Q, which the
       // region keeps playing) — never drag 1's (2Q).
-      slide(3 * Q, false);
-      slide(2 * Q, true);
-      slide(Q, true);
-      expectEquals(stored(), 3 * Q, "drag 2 kept the ↺ it found");
+      is.slide(b,3 * Q, false);
+      is.slide(b,2 * Q, true);
+      is.slide(b,Q, true);
+      expectEquals(is.storedTop(b), 3 * Q, "drag 2 kept the (top) it found");
       is.engine.undo();
       expectRegion("3-7", "undo: drag 2 alone");
-      expectEquals(stored(), 3 * Q, "…with its ↺");
+      expectEquals(is.storedTop(b), 3 * Q, "...with its (top)");
       is.engine.undo();
       expectRegion("1-5", "undo: drag 1");
-      expectEquals(stored(), 2 * Q, "…its ↺ exactly");
+      expectEquals(is.storedTop(b), 2 * Q, "...its (top) exactly");
       is.engine.redo();
       is.engine.redo();
-      expect(region() == "1-5" && stored() == 3 * Q, "redo: both drags");
+      expect(is.region(b) == "1-5" && is.storedTop(b) == 3 * Q, "redo: both drags");
 
       // RE-TIME DRAGS opening on a zero shift (the ↺ grabbed, not yet
       // moved): two drags, two steps.
@@ -1544,42 +1124,42 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(is.origin(b), O + 5 * Q / 4, "both drags applied");
       is.engine.undo();
       expectEquals(is.origin(b), O + 2 * Q, "undo: re-time drag 2 alone");
-      expectEquals(is.iprop(b, "retime"), R + 2 * Q, "…its re-time");
+      expectEquals(is.iprop(b, "retime"), R + 2 * Q, "...its re-time");
       is.engine.undo();
       expectEquals(is.origin(b), O, "undo: re-time drag 1");
-      expectEquals(is.iprop(b, "retime"), R, "…its re-time");
+      expectEquals(is.iprop(b, "retime"), R, "...its re-time");
 
       // A DRAG THAT DWELLS and RETURNS TO ITS START is one step: its
       // identities (and a refused commit) record nothing and keep it —
       // and so does a read between commits (only a logged step ends it).
-      slide(Q, false);
-      slide(Q, true);
-      slide(4 * Q, true);
+      is.slide(b,Q, false);
+      is.slide(b,Q, true);
+      is.slide(b,4 * Q, true);
       is.engine.setLoopPoints(b, 4 * Q, 13 * Q / 2, true);  // off Q: refused
-      slide(4 * Q, true);
+      is.slide(b,4 * Q, true);
       is.engine.getWaveform(b, 64);
-      slide(Q, true);  // back at its start
-      slide(Q, true);
-      slide(0, true);
+      is.slide(b,Q, true);  // back at its start
+      is.slide(b,Q, true);
+      is.slide(b,0, true);
       expectRegion("0-4", "the drag landed");
-      expectEquals(stored(), 3 * Q, "…reconciled from its start");
+      expectEquals(is.storedTop(b), 3 * Q, "...reconciled from its start");
       is.engine.undo();
       expectRegion("1-5", "one undo: the drag's start");
-      expectEquals(stored(), 3 * Q, "…and its ↺");
+      expectEquals(is.storedTop(b), 3 * Q, "...and its (top)");
       is.engine.undo();
       expectRegion("3-7", "the next undo is drag 2's");
 
       // AN UNDO ENDS THE GESTURE: a live commit after it logs its own
       // step, never joining the entry the undo left on top (drag 1's).
-      slide(2 * Q, false);
+      is.slide(b,2 * Q, false);
       is.engine.undo();
-      slide(4 * Q, true);
+      is.slide(b,4 * Q, true);
       is.engine.undo();
       expectRegion("3-7", "the stray live commit undid alone");
-      expectEquals(stored(), 3 * Q, "…with its ↺");
+      expectEquals(is.storedTop(b), 3 * Q, "...with its (top)");
       // A REFUSED first commit opens its gesture too.
       is.engine.setLoopPoints(b, 3 * Q, 11 * Q / 2);  // off Q: refused
-      slide(2 * Q, true);
+      is.slide(b,2 * Q, true);
       is.engine.undo();
       expectRegion("3-7", "after a refused first commit");
       is.engine.undo();
@@ -1591,23 +1171,13 @@ class TimeMapRecordTests : public juce::UnitTest {
         "it - its step dropped, the redo branch back; a re-time's origin, "
         "re-time and top exactly as they were, an unset top unset");
     {
-      // Mock twin: ui/js/tests/undo.test.mjs ("a cancelled drag…"). The
-      // UI used to restore a cancelled drag by one more live commit: the
-      // gesture's entry then read (start → start), a no-op undo step,
-      // and the redo branch its first commit invalidated was gone.
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      // Mock twin: ui/js/tests/undo.test.mjs ("a cancelled drag…"). A
+      // restore by one more live commit would leave a (start → start)
+      // undo step and lose the redo branch the first commit invalidated.
+      Rig is;
       is.record(Q);
       const juce::String b = is.record(8 * Q);
       const juce::String c = is.record(4 * Q);
-      auto region = [&] {
-        return juce::String(is.iprop(b, "loopStart") / Q) + "-" +
-               juce::String(is.iprop(b, "loopEnd") / Q);
-      };
-      auto slide = [&](int64_t a, bool live) {
-        is.engine.setSegments(b, timing::TimeMap::single(a, a + 4 * Q), live);
-      };
       is.window(b, 2 * Q, 6 * Q);
       // A redo branch to lose: a rename, undone.
       is.engine.renameNode(b, "Bass");
@@ -1616,42 +1186,42 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // THE DRAG: its first commit opens the gesture and logs its step
       // (redo is invalidated - for now); the live ones coalesce.
-      slide(3 * Q, false);
+      is.slide(b,3 * Q, false);
       expect(!is.engine.canRedo(), "an edit invalidates the redo branch");
-      slide(4 * Q, true);
-      expect(region() == "4-8", "the drag landed (" + region() + ")");
+      is.slide(b,4 * Q, true);
+      expect(is.region(b) == "4-8", "the drag landed (" + is.region(b) + ")");
       // ESCAPE.
       is.engine.cancelGesture(b);
-      expect(region() == "2-6", "back where the gesture found it (" + region() + ")");
+      expect(is.region(b) == "2-6", "back where the gesture found it (" + is.region(b) + ")");
       expect(is.engine.canRedo(), "the redo branch is back");
       is.engine.redo();
-      expect(is.sprop(b, "name") == "Bass", "…and it is the same branch");
+      expect(is.sprop(b, "name") == "Bass", "...and it is the same branch");
       // No step is the cancelled drag's: ⌘Z undoes the rename, then the
       // window itself.
       is.engine.undo();
       expect(is.sprop(b, "name") != "Bass", "undo: the rename");
       is.engine.undo();
-      expect(region() == "0-0", "undo: the window (" + region() + ")");
+      expect(is.region(b) == "0-0", "undo: the window (" + is.region(b) + ")");
       is.engine.redo();
-      expect(region() == "2-6", "redo: the window");
+      expect(is.region(b) == "2-6", "redo: the window");
 
       // A gesture that logged NOTHING (its first commit an identity)
       // cancels to nothing, and the stack is not touched.
-      slide(2 * Q, false);
+      is.slide(b,2 * Q, false);
       is.engine.cancelGesture(b);
-      expect(region() == "2-6", "an identity gesture: nothing to put back");
+      expect(is.region(b) == "2-6", "an identity gesture: nothing to put back");
       is.engine.undo();
-      expect(region() == "0-0", "the step on top is still the window's");
+      expect(is.region(b) == "0-0", "the step on top is still the window's");
       is.engine.redo();
       // Another node's gesture is not this node's to cancel…
-      slide(3 * Q, false);
+      is.slide(b,3 * Q, false);
       is.engine.cancelGesture(c);
-      expect(region() == "3-7", "another node's cancel changes nothing");
+      expect(is.region(b) == "3-7", "another node's cancel changes nothing");
       // …and a gesture that has ENDED (another entry was logged) cannot
       // be cancelled: the step on top is not its own.
       is.engine.renameNode(b, "Keys");
       is.engine.cancelGesture(b);
-      expect(is.sprop(b, "name") == "Keys" && region() == "3-7",
+      expect(is.sprop(b, "name") == "Keys" && is.region(b) == "3-7",
              "an ended gesture is not cancelled");
 
       // A RE-TIME drag on a plain loop whose top was never set: the
@@ -1666,8 +1236,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(cn->storedTop(), 3 * Q, "the top stored");
       is.engine.cancelGesture(c);
       expectEquals(is.origin(c), O, "cancel: the origin");
-      expectEquals(is.iprop(c, "retime"), R, "…the re-time");
-      expect(cn->storedTop() == timing::kNoTop, "…and the top unset again");
+      expectEquals(is.iprop(c, "retime"), R, "...the re-time");
+      expect(cn->storedTop() == timing::kNoTop, "...and the top unset again");
 
       // A SEEK while the gesture is open moves every absolute the log
       // holds - the redo branch the gesture keeps too: put back by the
@@ -1675,8 +1245,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       is.engine.setTiming(c, Q);       // an entry whose redo carries an origin
       is.engine.undo();
       expectEquals(is.origin(c), O, "undone");
-      slide(2 * Q, false);             // b's gesture: the redo branch is kept
-      slide(4 * Q, true);
+      is.slide(b,2 * Q, false);             // b's gesture: the redo branch is kept
+      is.slide(b,4 * Q, true);
       const int64_t z0 = is.zero();
       expect(is.engine.seekTransport((double)(Q / 2 + 123)), "seek applied");
       const int64_t moved = is.zero() - z0;
@@ -1694,21 +1264,16 @@ class TimeMapRecordTests : public juce::UnitTest {
         "nothing - the undo stack and the redo branch stand - and a drag "
         "whose first commit it is still forms one undo step");
     {
-      // Mock twin: ui/js/tests/noop_window_edit.test.mjs.
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      // Mock twins: ui/js/tests/mock_contract.test.mjs and the
+      // differential's window/refusals and cuts/refusals journeys.
+      Rig is;
       is.record(Q);
       const juce::String b = is.record(8 * Q);
       const AudioNode* node = is.nodePtr(b);
       expect(node != nullptr, "the take");
       // Two cells a Q apart, from `a`: period 2Q.
       auto cells = [](int64_t a) {
-        timing::TimeMap m;
-        m.n = 2;
-        m.segs[0] = {a, a + Q};
-        m.segs[1] = {a + 2 * Q, a + 3 * Q};
-        return m;
+        return mapOf({{a, a + Q}, {a + 2 * Q, a + 3 * Q}});
       };
       auto mapIs = [&](const timing::TimeMap& want) {
         if (node == nullptr) return false;
@@ -1726,7 +1291,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       expect(is.engine.canRedo(), "B waits on the redo branch");
       is.engine.setSegments(b, cells(Q));      // the stored map again
       expect(mapIs(cells(Q)), "the identity changed nothing");
-      expect(is.engine.canRedo(), "…and kept the redo branch");
+      expect(is.engine.canRedo(), "...and kept the redo branch");
       is.engine.redo();
       expect(mapIs(cells(2 * Q)), "redo: B");
       is.engine.undo();
@@ -1746,7 +1311,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       is.engine.undo();
       expect(mapIs(cells(Q)), "one undo takes the whole drag back");
       is.engine.undo();
-      expect(mapIs(timing::TimeMap::none()), "…and the next is A's");
+      expect(mapIs(timing::TimeMap::none()), "...and the next is A's");
     }
 
     beginTest(
@@ -1754,9 +1319,7 @@ class TimeMapRecordTests : public juce::UnitTest {
         "lock-collapse carries the top (raw - the window start) and the "
         "undo puts it back");
     {
-      using scenario::Island;
-      constexpr int64_t Q = 20000;
-      Island is;
+      Rig is;
       const juce::String c = is.record(Q);
       const juce::String d = is.record(2 * Q);
       is.engine.setTiming(c, 0, Q / 2);  // c is not the definer while d exists
@@ -1766,7 +1329,7 @@ class TimeMapRecordTests : public juce::UnitTest {
                    "c defines Q again");
       is.engine.setLoopPoints(c, Q / 4, 3 * Q / 4);  // Q13: Q := Q/2
       expectEquals(is.Q(), Q / 2, "the re-trim re-established Q");
-      expectEquals(is.iprop(c, "loopTop"), Q / 2, "…and kept the top it plays");
+      expectEquals(is.iprop(c, "loopTop"), Q / 2, "...and kept the top it plays");
       const int64_t moment = is.origin(c) + is.iprop(c, "loopTop");
       // A take armed against the trimmed island COLLAPSES the definer:
       // its window becomes the take (base += Q/4, origin += Q/4).
@@ -1775,7 +1338,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(is.dur(c), Q / 2, "collapsed to the window");
       expectEquals(is.iprop(c, "loopTop"), Q / 4, "the top, re-expressed in the collapsed take");
       expectEquals(is.origin(c) + is.iprop(c, "loopTop"), moment,
-                   "…at the same moment");
+                   "...at the same moment");
       is.engine.stopRecordingInNode(e);  // armed: a cancel
       is.settle();
       is.engine.undo();  // the collapse
@@ -1785,41 +1348,29 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(is.iprop(c, "loopTop"), (int64_t)0, "a re-trim past the top resets it");
       is.engine.undo();
       expectEquals(is.iprop(c, "loopTop"), Q / 2, "undo: the top with the trim");
-      expectEquals(is.Q(), Q / 2, "…and the grid it re-established");
+      expectEquals(is.Q(), Q / 2, "...and the grid it re-established");
     }
+  }
 
-    // === Phase 3, Stage 2: the fully-fractal clip kernel ===
-
+  /** A clip plays its own multi-segment map, and splices to it. */
+  void clipPlaybackTests() {
     beginTest(
-        "Multi-segment CLIP playback: the anchoring law, "
-        "seam-exact (owner-ruled fully fractal)");
+        "Multi-segment CLIP playback: the anchoring law, seam-exact");
     {
       // A 1000-sample ramp take, origin 100, cells {[250,450),[650,850)}
       // → period 400, anchored at origin + mapOffset(0) = 350.
-      ClipNode clip("cells", 44100.0);
       const int N = 1000;
       std::vector<float> content((size_t)N);
-      for (int i = 0; i < N; ++i) content[(size_t)i] = (float)(i + 1) * 1e-5f;
-      juce::AudioBuffer<float> buf(1, N);
-      buf.copyFrom(0, 0, content.data(), N);
-      clip.loadCommitted(buf, 0);
-      clip.duration_samples.store(N);
-      clip.origin_samples.store(100);
+      for (int i = 0; i < N; ++i) content[(size_t)i] = rampAt(i);
+      auto owned = test_utils::loadedClip("cells", 44100.0, 100, N, rampAt);
+      ClipNode& clip = *owned;
       clip.setLoopPoints(0, N);
-      timing::TimeMap cells;
-      cells.n = 2;
-      cells.segs[0] = {250, 450};
-      cells.segs[1] = {650, 850};
+      const timing::TimeMap cells = mapOf({{250, 450}, {650, 850}});
       clip.setMap(cells);
       clip.startPlayback();
 
       auto sampleAt = [&](int64_t t) {
-        float out[1] = {0.0f};
-        float* const outs[] = {out};
-        NodeContext nc = contextFor(clip, 1, t);
-        nc.ctx.is_playing = true;
-        clip.process(nullptr, outs, 0, 1, nc.ctx);
-        return out[0];
+        return test_utils::renderBlock(clip, 1, t).left[0];
       };
       const int64_t A = 100 + 250;  // origin + mapOffset(0)
       expectWithinAbsoluteError(sampleAt(A), content[250], 1e-7f,
@@ -1833,19 +1384,12 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectWithinAbsoluteError(sampleAt(A + 400), content[250], 1e-7f,
                                 "pass wraps to the top");
 
-      // Block render crossing the seam mid-block must be sample-exact
-      // (the run splitting inside the clip loop).
+      // A block crossing the seam at heard 200 must be sample-exact (the
+      // run splitting inside the clip loop).
       {
-        const int B = 128;
-        std::vector<float> out((size_t)B, 0.0f);
-        float* outPtr = out.data();
-        float* const outs[] = {outPtr};
-        // A block crossing the seam at heard 200.
-        NodeContext nc = contextFor(clip, B, A + 150);
-        nc.ctx.is_playing = true;
-        clip.process(nullptr, outs, 0, 1, nc.ctx);
+        const auto out = test_utils::renderBlock(clip, 128, A + 150).left;
         bool ok = true;
-        for (int i = 0; i < B && ok; ++i) {
+        for (int i = 0; i < 128 && ok; ++i) {
           const int64_t h = 150 + i;
           const int64_t p = h < 200 ? 250 + h : 650 + (h - 200);
           ok = std::abs(out[(size_t)i] - content[(size_t)p]) < 1e-7f;
@@ -1905,7 +1449,7 @@ class TimeMapRecordTests : public juce::UnitTest {
                                              /*old_top=*/500);
       clip.setMap(cells);
       expectEquals((juce::int64)clip.storedTop(), (juce::int64)500,
-                   "…and the un-splice puts the raw one back");
+                   "...and the un-splice puts the raw one back");
       clip.setLoopWindowBypassed(true);
       expectWithinAbsoluteError(sampleAt(100 + 999), content[999], 1e-7f,
                                 "unspliced: full material intact");

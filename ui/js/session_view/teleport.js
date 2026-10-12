@@ -2,20 +2,14 @@
  * [ / ] handle teleport.
  *
  * Dialing in a drum loop means zooming way in on one loop marker — and
- * then being "far" from the other one. [ and ]
- * WALK the viewport left/right through the SELECTED track's handles in
- * order — on a heard lane the take tile's splices and ↺ (the edge grips
- * retired 2026-09-24), on a raw lane its brackets and every cut edge —
- * from wherever the viewport currently is. Shift+[ / Shift+] go
- * straight to the outermost handle. A handle's gesture selects its
- * track when it ENDS (gesture.js `claim`), so the keys chain naturally
- * with a drag: grab a splice, swap it, hit the bracket key, drag the
- * next one.
- * No selection → no-op.
- * (The keydown wiring itself lives in init.js' unified dispatcher.
- * The mouse face of these keys used to be a per-lane nav dock; the
- * region panel — region_panel.js — replaced it 2026-09-11, and has its
- * own navigation: Z / ⇧Z and the wheel zoom its view.)
+ * then being "far" from the other one. [ and ] WALK the viewport
+ * left/right through the SELECTED track's handles in order — on a heard
+ * lane the take tile's splices and ↺ (a one-shot's: its grips and
+ * seams), on a raw lane its brackets and every cut edge — from wherever
+ * the viewport currently is. Shift+[ / Shift+] go straight to the
+ * outermost handle. A handle's press selects its track, so the keys
+ * chain with a drag: grab a splice, swap it, hit the bracket key, drag
+ * the next one. No selection → no-op. (The keys are wired in init.js.)
  */
 
 import { ctx } from './context.js';
@@ -28,19 +22,14 @@ const HANDLE_SELECTOR =
     '.win-bracket.start, .win-bracket.end, .cut-handle, .seam-handle, ' +
     '.lr-splice, .lr-top';
 
-/** Preview clones and drag layers are transient — never targets. Nor
- * is anything in the REGION PANEL (diagnosis N5, 2026-09-23): its cut
- * bands are the lane's band code (.cut-handle), but the panel is
- * pinned to the viewport, so centring one of its handles can never
- * converge — `]` got stuck re-targeting it, creeping the main view
- * ~45 px per press. The walk is the LANE's handles — the take tile's:
- * a GHOST repeat's splice or ↺ (2026-09-24) is the same splice again,
- * and a 3Q loop in a 12Q frame would walk it four times. */
+/** Preview clones and drag layers are transient — never targets — and
+ * so is a GHOST repeat's splice or ↺: it is the take tile's again, and
+ * a 3Q loop in a 12Q frame would walk it four times. (The region
+ * panel's handles are not in the row.) */
 export const isTransientHandle = node =>
     node.classList.contains('snap-ghost') ||
     node.classList.contains('lr-ghost') ||
-    !!node.closest('.drag-preview-layer') ||
-    !!node.closest('.lane-region');
+    !!node.closest('.drag-preview-layer');
 
 /* How long the landing handle stays force-visible after a teleport. */
 const TELEPORT_FLASH_MS = 900;

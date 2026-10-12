@@ -8,23 +8,24 @@
 #include "../src/dsp/fx_chain.h"
 #include "../src/dsp/vst3_slot.h"
 #include "../src/plugin_host_service.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
 /**
- * REAL-BINARY hosting validation (docs/vst3.md phase 3; owner-requested
- * 2026-08-15): scans, instantiates, and processes the in-repo test
- * plugin ("Celestrian Test Gain", test_plugin/) through the ACTUAL
- * VST3 path — the real-binary twin of the stub suite. Everything the
- * stub pins by construction, this pins through Steinberg's plumbing:
- * discovery, instantiation, deterministic processing (x0.5 default),
- * the 64-sample latency report, and the 4-byte state round-trip.
+ * REAL-BINARY hosting validation (docs/vst3.md §10): scans,
+ * instantiates, and processes the in-repo test plugin ("Celestrian
+ * Test Gain", test_plugin/) through the ACTUAL VST3 path — the
+ * real-binary twin of the stub suite. Everything the stub pins by
+ * construction, this pins through Steinberg's plumbing: discovery,
+ * instantiation, deterministic processing (x0.5 default), the
+ * 64-sample latency report, and the 4-byte state round-trip.
  *
  * Skips honestly (with a log line) when the bundle was not built
  * (CELESTRIAN_BUILD_TEST_PLUGIN=OFF) — never silently.
  *
- * A MessageManager exists for the duration (VST3 instantiation is a
- * message-thread affair); the console runner has none of its own.
+ * A MessageManager exists for the duration: VST3 instantiation is a
+ * message-thread affair.
  */
 class PluginHostIntegrationTests : public juce::UnitTest {
  public:
@@ -62,18 +63,13 @@ class PluginHostIntegrationTests : public juce::UnitTest {
     beginTest("background scan discovers the real plugin (worker path)");
     juce::String uid;
     {
-      auto data_dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                          .getChildFile("celestrian_plugin_integration");
-      data_dir.deleteRecursively();
-      PluginHostService service(data_dir);
+      PluginHostService service(test_utils::freshTempDir("plugin_integration"));
       // Confined to the build's bundle folder: the machine's own VST3
       // folders and AudioUnit registry stay out of the suite.
       service.startScan(bundle.getParentDirectory().getFullPathName(),
                         /*include_default_locations=*/false);
-      // The scan runs on its own thread; bounded wait.
-      for (int i = 0; i < 600 && service.isScanning(); ++i)
-        juce::Thread::sleep(50);
-      expect(!service.isScanning(), "scan completed within 30 s");
+      expect(test_utils::waitForScan(service, 30000),
+             "scan completed within 30 s");
       const auto plugins = service.getKnownPluginsVar();
       bool found = false;
       for (const auto& entry : *plugins.getArray()) {

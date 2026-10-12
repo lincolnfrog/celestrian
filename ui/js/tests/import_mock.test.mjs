@@ -1,12 +1,12 @@
 /**
- * Audio file import (docs/import.md) — the mock twin of
- * tests/import_tests.cc, observably: the verbs record the request,
- * refuse under a live take, place a first take on the nearest Q
- * boundary to the absolute origin the view names (docs/frame.md), cut
- * a new take onto a committed slot, and grow a stack a clip child
- * named after the file. Plus the pure drop-gesture pieces
- * (import_drop.js): Q placement from the pointer and the path a File
- * exposes.
+ * Audio file import (docs/import.md). Where a file lands — a first take
+ * on the nearest Q line to the origin the view names, a new take of a
+ * committed slot, a clip child of a stack — is held to the engine by
+ * the differential suite (ui/differential/ import/*). Here, the mock's
+ * own: the recorder the page specs read (what was asked, the form it
+ * took, the clip it landed on), the dialog verb, the refusals with no
+ * journey. Plus the pure drop-gesture pieces (import_drop.js): Q
+ * placement from the pointer and the path a File exposes.
  */
 
 import test from 'node:test';
@@ -16,71 +16,30 @@ import { callNative, loadScenario } from '../mock_backend.js';
 import { getLastImport, resetLastImport, DIALOG_PATH } from '../mock/import.js';
 import { state, findNode } from '../mock/state.js';
 import { dragHasFiles, dropFrameQ, filePathOf } from '../import_drop.js';
-import { nodeById, MOCK_Q } from './helpers.mjs';
+import { MOCK_Q } from './helpers.mjs';
+import { underLiveTake } from './mock_scene.mjs';
 
-/** A fresh empty clip in the loaded scenario; answers its id. */
-async function emptyClip() {
-    await callNative('createNode', 'clip', '');
-    const s = await callNative('getGraphState');
-    return s.nodes[s.nodes.length - 1].id;
-}
-
-test('a first take lands on the nearest Q boundary to the named origin, hysteresis-snapped', async () => {
-    loadScenario('single-clip');            // Q = 2 s (the sole clip defines it)
+test('the import recorder: what was asked, the form it took, the clip it landed on', async () => {
+    loadScenario('stack-with-clips');
     resetLastImport();
-    const Q = 2 * MOCK_Q;
-    const id = await emptyClip();
-    // The view names 1.5Q past the zero (a drop mid-lane, docs/frame.md);
-    // that rounds to the 2Q boundary; the file is 2.1Q long → snaps to 2Q.
-    const path = '/audio/pad.wav#len=' + Math.round(2.1 * Q);
-    const origin = state.islandZero + 1.5 * Q;
+    // An empty clip: a first take, recorded as asked.
+    const id = await callNative('createNode', 'clip', '');
+    const path = '/audio/pad.wav#len=' + 2 * MOCK_Q;
+    const origin = state.islandZero + 3 * MOCK_Q;
     assert.equal(await callNative('importAudio', id, path, origin), true);
-    const n = findNode(id);
-    assert.equal(n.origin, state.islandZero + 2 * Q);
-    assert.equal(n.duration, 2 * Q);
-    assert.equal(n.takes.length, 1);
     assert.deepEqual(getLastImport(),
         { uuid: id, path, origin, form: 'first', targetId: id });
-});
-
-test('a pre-Q import defines Q from the file length; the clock is the origin', async () => {
-    loadScenario('empty');
-    resetLastImport();
-    const id = await emptyClip();
-    const len = 3 * MOCK_Q;
-    assert.equal(await callNative('importAudio', id, '/audio/seed.wav#len=' + len, 0), true);
-    assert.equal(state.islandQ, len);
-    assert.equal(findNode(id).duration, len);
-    assert.equal(findNode(id).origin, state.islandZero, 'the first take is the zero');
-});
-
-test('a committed slot takes a NEW TAKE, active on arrival', async () => {
-    loadScenario('stack-with-clips');
-    resetLastImport();
-    const before = nodeById('clip-1', (await callNative('getGraphState')).nodes);
+    // A committed slot: a new take.
     assert.equal(await callNative('importAudio', 'clip-1', '/audio/alt.wav', 0), true);
-    const after = nodeById('clip-1', (await callNative('getGraphState')).nodes);
-    assert.equal(after.takes, 2);
-    assert.equal(after.activeTake, 1);
-    assert.equal(after.duration, before.duration, 'the slot period stands');
     assert.equal(getLastImport().form, 'take');
-    // Undoable: ⌘Z removes the take.
-    await callNative('undo');
-    assert.equal(nodeById('clip-1', (await callNative('getGraphState')).nodes).takes, 1);
-});
-
-test('a stack target gains a clip child named after the file', async () => {
-    loadScenario('stack-with-clips');
-    resetLastImport();
-    const origin = state.islandZero + state.islandQ;
+    // A stack: the request names the stack, the target is the clip it
+    // grew, named after the file.
     assert.equal(await callNative('importAudio', 'stack-1', '/audio/Vocal Take.wav', origin), true);
     const last = getLastImport();
     assert.equal(last.uuid, 'stack-1');
-    assert.notEqual(last.targetId, 'stack-1');
     const child = findNode(last.targetId);
     assert.equal(child.type, 'clip');
     assert.equal(child.name, 'Vocal Take');
-    assert.equal(child.origin, origin, 'placed where the view named');
     assert.equal(findNode('stack-1').nodes.some(n => n.id === child.id), true);
 });
 
@@ -95,13 +54,11 @@ test('the dialog verb records the dialog placeholder path', async () => {
 test('a live take refuses both verbs and records nothing', async () => {
     loadScenario('single-clip');
     resetLastImport();
-    const id = await emptyClip();
-    await callNative('startRecordingInNode', id);
-    assert.ok(nodeById(id, (await callNative('getGraphState')).nodes).isRecording);
-    assert.equal(await callNative('importAudio', 'clip-1', '/audio/x.wav', 0), false);
-    assert.equal(await callNative('importAudioWithDialog', 'clip-1', 0), false);
-    assert.equal(getLastImport(), null);
-    await callNative('stopRecordingInNode', id);
+    await underLiveTake(async () => {
+        assert.equal(await callNative('importAudio', 'clip-1', '/audio/x.wav', 0), false);
+        assert.equal(await callNative('importAudioWithDialog', 'clip-1', 0), false);
+        assert.equal(getLastImport(), null);
+    });
 });
 
 test('a MIDI track and an unreadable file refuse', async () => {

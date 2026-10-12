@@ -3,22 +3,18 @@
 #include <cstddef>
 #include <string>
 
+#include "dsp/vst3_slot.h"
 #include "plugin_scan_worker.h"
 
 namespace celestrian {
 
 /**
- * The scan coordinator. One-shot: constructed per scan with the search
- * path, joined in the service destructor (the poll loop checks the
- * exit flag every 100 ms and kills its worker on the way out, so
- * shutdown never waits on a probe).
- *
- * Enumeration (walking directories for .vst3 bundles; listing the
- * AudioUnit component registry on macOS) runs here, in this process —
- * no plugin code is involved. Probing runs ONLY in a worker process per
- * src/plugin_scan_worker.h; this thread tails the worker's results
- * file. Without a worker command a scan with pending files ends with
- * an error: this process never loads plugin code to probe it.
+ * The scan coordinator (the protocol: src/plugin_scan_worker.h).
+ * One-shot: constructed per scan with the search path, joined in the
+ * service destructor — the poll loop checks the exit flag every 100 ms
+ * and kills its worker on the way out, so shutdown never waits on a
+ * probe. Enumeration runs here, in this process: it walks directories
+ * and component registries and loads no plugin code.
  */
 class PluginHostService::ScanThread : public juce::Thread {
  public:
@@ -96,9 +92,11 @@ class PluginHostService::ScanThread : public juce::Thread {
 
   /** A probe that crashed or hung: out of the list for good. */
   void excludeCrashed(const juce::String& file, const juce::String& why) {
-    owner_.known_plugins_.addToBlacklist(file);
     {
+      // The blacklist is the registry's one unlocked member: the status
+      // poll reads its size under this same lock.
       const juce::ScopedLock lock(owner_.status_lock_);
+      owner_.known_plugins_.addToBlacklist(file);
       owner_.crashed_.add(juce::File(file).getFileName());
     }
     juce::Logger::writeToLog("plugin scan: " + why + " probing " + file +
@@ -224,9 +222,15 @@ class PluginHostService::ScanThread : public juce::Thread {
         if (bytes.size() != before) last_activity = juce::Time::getMillisecondCounter();
         drain(bytes, session);
         if (session.done || !alive) break;
-        if (session.in_flight.isNotEmpty() &&
-            (int)(juce::Time::getMillisecondCounter() - last_activity) >
-                owner_.probe_timeout_ms_) {
+        // A worker that has written nothing for too long is taken down:
+        // with a file in flight it is a hung probe, without one a
+        // worker that never started on its list (or stalled between
+        // two files) — each has its own allowance.
+        const int allowed_ms = session.in_flight.isNotEmpty()
+                                   ? owner_.probe_timeout_ms_
+                                   : owner_.worker_idle_timeout_ms_;
+        if ((int)(juce::Time::getMillisecondCounter() - last_activity) >
+            allowed_ms) {
           hung = true;
           worker.kill();
           break;
@@ -247,6 +251,12 @@ class PluginHostService::ScanThread : public juce::Thread {
         continue;
       }
       if (session.done) return;  // list exhausted; pending_ is empty
+      if (hung) {
+        // Silent with no file in flight: nothing to blame on a plugin,
+        // and a fresh worker would be the same binary. Stop.
+        setError("scan worker stopped responding (no plugin in flight)");
+        return;
+      }
       if (!session.made_progress) {
         // Exited before probing anything and without DONE: the worker
         // binary is broken. Stop rather than respawn forever.
@@ -269,16 +279,10 @@ class PluginHostService::ScanThread : public juce::Thread {
 
 PluginHostService::PluginHostService(const juce::File& data_directory)
     : data_directory_(data_directory) {
-  format_manager_.addFormat(new juce::VST3PluginFormat());
-#if JUCE_PLUGINHOST_AU && JUCE_MAC
-  // AudioUnit hosting (docs/vst3.md §11): the same registry, scan
-  // worker, and chain slot; identities carry the format name.
-  format_manager_.addFormat(new juce::AudioUnitPluginFormat());
-#endif
+  scan_worker::addHostedFormats(format_manager_);
   loadKnownPlugins();
 
-  // The default worker is this very executable in --scan-worker mode
-  // (the app and CelestrianTests both carry the flag).
+  // The default worker is this very executable in --scan-worker mode.
   scan_worker_command_ = {
       juce::File::getSpecialLocation(juce::File::currentExecutableFile)
           .getFullPathName(),
@@ -338,6 +342,34 @@ juce::var PluginHostService::getKnownPluginsVar() const {
   return juce::var(list);
 }
 
+bool PluginHostService::instantiateAsync(const juce::String& plugin_uid,
+                                         double sample_rate,
+                                         Instantiated done) {
+  for (const auto& description : known_plugins_.getTypes()) {
+    if (description.createIdentifierString() != plugin_uid) continue;
+    juce::AudioPluginFormat::PluginCreationCallback created =
+        [description, done = std::move(done)](
+            std::unique_ptr<juce::AudioPluginInstance> instance,
+            const juce::String& error) {
+          if (instance == nullptr) {
+            juce::Logger::writeToLog("plugin host: '" + description.name +
+                                     "' could not be instantiated: " + error);
+          }
+          done(std::move(instance), description);
+        };
+    if (creator_) {
+      creator_(description, sample_rate, dsp::Vst3Slot::kMaxBlockSize,
+               std::move(created));
+    } else {
+      format_manager_.createPluginInstanceAsync(
+          description, sample_rate, dsp::Vst3Slot::kMaxBlockSize,
+          std::move(created));
+    }
+    return true;
+  }
+  return false;
+}
+
 void PluginHostService::startScan(const juce::String& extra_path,
                                   bool include_default_locations) {
   if (scanning_.load()) return;
@@ -376,12 +408,12 @@ juce::var PluginHostService::getScanStatusVar() const {
     status->setProperty("crashed", juce::var(crashed));
     status->setProperty("crashedCount", crashed_.size());
     status->setProperty("error", scan_error_);
+    // Under the lock the scan thread blacklists under (excludeCrashed).
+    status->setProperty("blacklistCount",
+                        known_plugins_.getBlacklistedFiles().size());
   }
   status->setProperty("count", known_plugins_.getNumTypes());
-  status->setProperty("blacklistCount",
-                      known_plugins_.getBlacklistedFiles().size());
-  // Probing is out-of-process by construction; the field stays for
-  // the UI's status line.
+  // Constant: there is no in-process probe (the protocol publishes it).
   status->setProperty("outOfProcess", true);
   return juce::var(status);
 }

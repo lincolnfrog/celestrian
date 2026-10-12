@@ -1,861 +1,394 @@
 /**
- * mock/recording.js — the take lifecycle: arm (with Q11 pending starts,
- * the Q13 lock-collapse, and through-map arms), the awaiting-stop pad,
- * commit (Q establishment, heard-frame origin fold; no island fact
- * moves afterwards, docs/frame.md), and
- * the per-tick growth of live takes. Also owns `recView`, the frozen
- * view base the transport publishes against while any take records.
- */
-
-import { posMod, lcm } from '../math_utils.js';
-import { launchPointFor, nextStopBoundary, armTarget } from '../timeline_model.js';
-import { mapPeriod, mapOffset, mapActive } from '../time_map.js';
-import {
-    state, findNode, findParent, nodeMap, intrinsicOfNode, activeMapOf,
-    rootActiveMap, auditionMapOf, serializeGraph,
-    committedClipCount, anyNodeRecording, islandDefiner,
-    effectiveQuantumForState,
-    shiftOrigins, settleAnchors, frameOriginOf, nodeInner, rootFrameTop,
-} from './state.js';
-import { pushUndo, pushUndoSnapshot, onHistoryCleared } from './undo.js';
-import { committedCycle, effectiveCycle } from './cycles.js';
-import { setMidiArmed } from './effects.js';
-import { activeSeqLen, stepCued, stepIndexAt, firstVisitSpan } from './sequence.js';
-
-export const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
-
-/**
- * Arm a take in `id` (mirrors AudioEngine::startRecordingInNode).
+ * mock/recording.js — the take lifecycle (engine src/engine/
+ * take_service.cc and the arm / stop / commit paths of clip_node.cc):
+ * arm, the arm's own edits, the pending start, the awaited stop, the
+ * commit, the settle that logs a performance, and the per-block growth
+ * of live takes. Also `recView`, the cursor's frozen base while a take
+ * is up.
  *
- * Contract, in evaluation order:
- *  - Q13 LOCK-COLLAPSE: arming against a provisionally trimmed island
- *    finalizes the trim (window BECOMES the take; snapshot pushed so
- *    undo restores).
- *  - FIRST CLIP: no committed content anywhere → transport resets to 0.
- *  - The view base freezes (recView) so the published masterPos grows
- *    linearly past the cycle while recording.
- *  - THROUGH-MAP ARM: one ACTIVE ancestor map shapes the take (heard
- *    arm on the period grid, one-period cap, dense [0, C) commit);
- *    nested active maps refuse the arm outright.
- *  - Q11: with Q established, arming PENDS to the next Q boundary in
- *    the island frame; exactly-on-boundary starts immediately.
+ * What the mock leaves out: latency compensation, the reservation and
+ * storage upkeep, and MIDI capture (a MIDI take is a flag).
  */
-/** All clips in a subtree (document order). */
-function clipsUnder(node, out = []) {
-    if (node.type === 'clip') out.push(node);
-    (node.nodes || []).forEach(c => clipsUnder(c, out));
-    return out;
-}
 
-/** Resolve an arm/stop target: the root id acts as a stack over the
- * whole graph (the engine's root_node IS a StackNode; the mock's root
- * is synthetic — see publish.js `mock-root`). */
-function recTarget(id) {
-    if (id === 'mock-root') return { type: 'stack', nodes: state.nodes };
-    return findNode(id);
-}
+import { posMod } from '../math_utils.js';
+import { nextStopBoundary, armTarget } from '../timeline_model.js';
+import { periodDrifts } from '../period_law.js';
+import { mapPeriod, mapOffset } from '../time_map.js';
+import {
+    state, transport, nodeOrRoot, findNode, findParent, ancestorsOf, eachNode,
+    activeMapOf, storedMap, setStoredMap, storesGeometry, intrinsicOfNode,
+    takeLive, takeLength, takesOf, isCommittedClip, islandDefiner,
+    settleAnchors, frameOriginOf, serializeGraph, restoreGraph,
+} from './state.js';
+import { pushUndoSnapshot, pushTakeStep, onHistoryCleared } from './undo.js';
+import { effectiveCycle, audibleCycle } from './cycles.js';
+import { setMidiArmed } from './effects.js';
+import {
+    activeSeqLen, anyCue, stepCued, stepIndexAt, firstVisitSpan, auditionMapOf,
+} from './seq_query.js';
+import { receivedAt, songPositionAt } from './heard.js';
+import { lockCollapse } from './definer.js';
+import { MAX_TAKES } from './takes.js';
 
-/**
- * TAKES ARE UNDOABLE (engine parity, AudioEngine::PendingTake — docs/
- * sequencer.md §11.5): a performance registers here at arm with the
- * graph snapshot the take will undo TO; reconcileTakes() pushes it onto
- * the undo stack once every member has settled (committed or cancelled).
- * One entry per startRecordingInNode call = one undo step for a Q7
- * group take. The snapshot is taken AFTER the Q13 collapse (the engine
- * logs CollapseTake, then Take), BEFORE any member is marked recording.
- */
+/** The cursor view under a take (engine view_base_ / view_anchor_t_):
+ * frozen at the arm, the published masterPos then grows linearly. */
+export const recView = { active: false, base: 0, anchor: 0, heardAtArm: 0 };
+
+/** Performances armed and not yet logged: { ids, snap, retake,
+ * gateStack, gateStep } — `snap` is the graph at the arm, what the
+ * take's undo returns to. */
 const pendingTakes = [];
 onHistoryCleared(() => { pendingTakes.length = 0; });
 
-export function startRecordingInNode(id) {
-    const node = recTarget(id);
-    if (!node) return;
+const clipsUnder = (node, out = []) => {
+    eachNode(n => { if (n.type === 'clip') out.push(n); }, node);
+    return out;
+};
+const hasInstrument = clip =>
+    ((clip.effects && clip.effects.chain) || []).some(s => s.isInstrument);
 
-    // Q7 GROUP ARM (engine parity, AudioEngine::startRecordingInNode):
-    // record is fractal — a stack target arms every EMPTY clip beneath
-    // it in this ONE call, so the group shares one arm target and one
-    // committed duration (one performance, N microphones). Arm targets
-    // EMPTINESS: committed members just play; re-recording is the
-    // *takes* feature.
-    let targets;
-    if (node.type === 'stack') {
-        targets = clipsUnder(node)
-            .filter(c => !c.isRecording && !((c.duration || 0) > 0));
-        if (!targets.length) {
-            console.log('[MockBackend] record refused — no empty clip under', id);
-            return;
-        }
-    } else {
-        // Arm targets emptiness (Q7): a committed clip is never re-armed.
-        if (!node.isRecording && (node.duration || 0) > 0) {
-            console.log('[MockBackend] record refused — clip has content (Q7):', id);
-            return;
-        }
-        // Idempotent like the engine (ClipNode::startRecording gates on
-        // Idle): re-arming a live take must not reset its capture state.
-        if (node.isRecording) return;
-        targets = [node];
+// ---- the arm ------------------------------------------------------------
+
+/** Engine applyArmEdits: the definer's trim locks (unless the arm is
+ * through the definer itself) and a hand-off ends when new content is
+ * recorded. Applied unlogged; answers the snapshot each one undoes to. */
+function applyArmEdits(exclude, retakes) {
+    const steps = [];
+    const definer = islandDefiner();
+    if (definer && definer !== exclude) {
+        const snap = serializeGraph();
+        if (lockCollapse(definer)) steps.push(snap);
     }
-
-    lockCollapseAtArm(targets.map(t => t.id));
-    endHandoffAtArm(targets.map(t => t.id), false);
-
-    // The pending performance: its undo snapshot + the step auto-gate
-    // target (the auditioning DIRECT parent, §11.5 — root included).
-    const pending = { ids: targets.map(t => t.id), snap: serializeGraph(),
-                      gateStack: null, gateStep: -1 };
-    for (const t of targets) {
-        const parent = findParent(t.id);
-        if (parent) {
-            if (auditionMapOf(parent)) {
-                pending.gateStack = parent.id;
-                pending.gateStep = parent.auditionStep;
-                break;
-            }
-        } else if (rootActiveMap()) {
-            pending.gateStack = 'mock-root';
-            pending.gateStep = state.rootAuditionStep;
-            break;
-        }
+    const handed = state.definerDesignation ? findNode(state.definerDesignation) : null;
+    const within = clip => clip === handed || ancestorsOf(clip).includes(handed);
+    if (handed && !(retakes && retakes.length && retakes.every(within))) {
+        steps.push(serializeGraph());
+        state.definerDesignation = '';
     }
-    targets.forEach(armClip);
-    pendingTakes.push(pending);
+    return steps;
 }
 
-/**
- * Q13 LOCK-COLLAPSE at an arm (engine parity, AudioEngine::
- * startRecordingInNode / newTake → Edit::CollapseTake, CollapseGroup):
- * arming against a provisionally trimmed island finalizes the trim —
- * the sole committed clip's window BECOMES the take (duration = window
- * len, origin moves to the window top, window consumed), or a definer
- * stack's window becomes its members' take. `excludeIds` are the arm
- * targets a plain arm never collapses (they are empty); a new take
- * passes none — its own slot is what collapses. Undo (snapshot)
- * restores.
- */
-function lockCollapseAtArm(excludeIds) {
-    // THE DEFINER (state.islandDefiner — the sole clip or definer stack,
-    // or the node Q was handed to, Q22): one law for every kind.
-    const islandDef = islandDefiner();
-    {
-        const definer = islandDef && islandDef.type === 'clip' ? islandDef : null;
-        if (definer && !excludeIds.includes(definer.id) &&
-            !definer.loopBypassed) {
-            const ls = definer.loopStart || 0;
-            const le = Math.min(definer.loopEnd || 0, definer.duration);
-            const len = le - ls;
-            if (len > 0 && !(ls === 0 && le >= definer.duration)) {
-                pushUndo();
-                // The engine keeps the cut material behind content_base_;
-                // the mock (no buffers) remembers the pre-collapse facts
-                // so a re-opening delete can uncollapse (see deleteNode).
-                definer._precollapse = { dur: definer.duration, ls, le,
-                                         origin: definer.origin || 0 };
-                definer.origin = (definer.origin || 0) + ls;
-                // The top rides the content view (engine parity
-                // ClipNode::collapseContent): the same sample sits `ls`
-                // earlier in the collapsed take, so its moment holds.
-                if (definer.storedTop != null) definer.storedTop -= ls;
-                definer.duration = len;
-                definer.loopStart = 0;
-                definer.loopEnd = 0;  // consumed: the take IS the window
-                console.log('[MockBackend] Q13 lock-collapse:', definer.id,
-                    '→ duration =', len);
-            }
-        }
-    }
-
-    // The GROUP twin (engine parity collapseGroupNow, Q18 — composition
-    // .md §5 "lock-collapse at the second arm, clip or stack definer"):
-    // a trimmed definer STACK collapses to its window before any arm —
-    // members' duration := len, content base shifts by the window
-    // start, and the ORIGIN of the whole subtree (stack AND members)
-    // shifts by the window start too — exactly the sole-clip law
-    // (window top → origin), since the stack's window anchors at the
-    // stack's own origin. Audio-neutral: inner s + ((t − O − s) mod
-    // len) before == base s + ((t − (O + s)) mod len) after. Stack
-    // window consumed.
-    {
-        const ds = islandDef && islandDef.type === 'stack' ? islandDef : null;
-        if (ds && !ds.loopBypassed &&
-            !(Array.isArray(ds.segments) && ds.segments.length >= 2)) {
-            const members = (ds.nodes || []).filter(c =>
-                c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
-            const D = members.length ? members[0].duration : 0;
-            const ls = Math.max(0, ds.loopStart || 0);
-            const le = Math.min(ds.loopEnd || 0, D);
-            const len = le - ls;
-            if (D > 0 && len > 0 && !(ls === 0 && le >= D) &&
-                members.every(m => m.duration === D)) {
-                pushUndo();
-                members.forEach(m => {
-                    m._precollapse = { dur: D, ls: 0, le: 0, group: true };
-                    m.duration = len;
-                    m.loopStart = 0;
-                    m.loopEnd = 0;  // members whole (no window)
-                    // A member's top shifts with its content view (a
-                    // plain, invertible shift — engine parity).
-                    if (m.storedTop != null) m.storedTop -= ls;
-                });
-                // The group's own top rides too (engine collapseNode).
-                if (ds.storedTop != null) ds.storedTop -= ls;
-                shiftOrigins(ds, ls);
-                ds._precollapse = { ls, le, shift: ls };
-                ds.loopStart = 0;
-                ds.loopEnd = 0;
-                console.log('[MockBackend] Q13 group lock-collapse:', ds.id,
-                    '→ members duration =', len, '(origins +', ls + ')');
-            }
-        }
-    }
+/** Engine autoTargetCuedStep: an arm while the playhead is inside a cued
+ * step of the nearest sequenced ancestor aims at that step. Null when
+ * there is none, or the ancestor already auditions. */
+function autoTargetCuedStep(target) {
+    const stack = ancestorsOf(target).find(a => activeSeqLen(a) > 0);
+    if (!stack || auditionMapOf(stack) || !anyCue(stack.sequence)) return null;
+    const step = stepIndexAt(stack.sequence,
+        songPositionAt(stack, receivedAt(stack, state.masterPos)));
+    if (!stepCued(stack.sequence, step)) return null;
+    const span = firstVisitSpan(stack.sequence, step);
+    return { stack, step, span: span ? { segs: [span] } : null };
 }
 
-/**
- * THE HAND-OFF LOCKS AT THE NEXT TAKE (Q22, engine parity: the Definer
- * edit clearing the designation after collapseDefinerAtArm): a take that
- * records NEW content anywhere ends the hand-off — the handed-Q definer
- * is an ordinary track again, exactly as a first take's definer state
- * ends at the second arm. A new take of the definer itself (`retake`
- * with every target inside its subtree) keeps it. Its own undo step,
- * after the collapse's.
- */
-function endHandoffAtArm(targetIds, retake) {
-    if (!state.definerDesignation) return;
-    const d = findNode(state.definerDesignation);
-    // A designation naming a node no longer in the island is inert —
-    // clearing it would log an undo step that changes nothing, and an
-    // undo of the delete revives it (engine parity).
-    if (!d) return;
-    const inside = id => {
-        for (let n = findNode(id); n; n = findParent(n.id)) {
-            if (n === d) return true;
-        }
-        return false;
-    };
-    if (retake && d && targetIds.every(inside)) return;
-    pushUndo();
-    state.definerDesignation = '';
-    console.log('[MockBackend] hand-off locked at arm — Q stays', state.islandQ);
+/** Engine throughMapOf: how one target records through the maps above
+ * it — { cycle } (0 = a plain take) or { refusal }. */
+function throughMapOf(target, aim) {
+    const aimed = a => !!aim && a === aim.stack && !!aim.span;
+    const mapOf = a => (aimed(a) ? aim.span : activeMapOf(a));
+    const above = ancestorsOf(target);
+    const at = above.findIndex(a => mapOf(a));
+    if (at < 0) return { cycle: 0 };
+    const mapping = above[at];
+    if (above.slice(at + 1).some(a => mapOf(a))) return { refusal: 'nested active maps' };
+    if (!(state.islandQ > 0)) return { cycle: 0 };
+    const sequenced = activeSeqLen(mapping) > 0;
+    if (sequenced && anyCue(mapping.sequence) && !aimed(mapping) && !auditionMapOf(mapping)) {
+        return { refusal: 'an authored window over cued steps' };
+    }
+    const period = mapPeriod(mapOf(mapping));
+    return { cycle: sequenced ? period : Math.max(intrinsicOfNode(mapping), period) };
 }
 
-/**
- * NEW TAKE (docs/takes.md; engine parity AudioEngine::newTake): arm a
- * further take of a COMMITTED clip — or of every committed direct clip
- * child of a stack, one performance — without emptying it. The slot
- * keeps origin, duration, loop points and comp; the previous takes
- * stay in the list; the clip is silent while the take is live. Arm
- * target: the next t ≡ origin (mod duration); capture runs exactly one
- * period and auto-finishes (growRecordingClips); a stop before that
- * cancels (stopClipRecording). Logged at settle like any take (the
- * snapshot taken here is what undo restores: the previous list).
- * Refused with no committed target, on a one-shot, or under an active
- * ancestor map (the slot top may never be heard through it).
- */
-export function newTake(id) {
-    const node = recTarget(id);
-    if (!node) return;
-    const committedIdle = c => c.type === 'clip' && !c.isRecording && (c.duration || 0) > 0;
-    const targets = node.type === 'stack'
-        ? (node.nodes || []).filter(committedIdle)
-        : (committedIdle(node) ? [node] : []);
-    if (!targets.length) {
-        console.log('[MockBackend] new take refused — no committed idle clip under', id);
-        return;
-    }
-    for (const t of targets) {
-        if (t.periodSource === 'context') {
-            console.log('[MockBackend] new take refused — one-shot:', t.id);
-            return;
-        }
-        for (let p = findParent(t.id); p; p = findParent(p.id)) {
-            if (activeMapOf(p)) {
-                console.log('[MockBackend] new take refused — an active map encloses', t.id);
-                return;
-            }
-        }
-        if (rootActiveMap()) {
-            console.log('[MockBackend] new take refused — the root audition encloses', t.id);
-            return;
-        }
-    }
-    lockCollapseAtArm([]);
-    endHandoffAtArm(targets.map(t => t.id), true);
-    const pending = { ids: targets.map(t => t.id), snap: serializeGraph(),
-                      gateStack: null, gateStep: -1, retake: true };
-    targets.forEach(armRetake);
-    pendingTakes.push(pending);
+/** Freeze the cursor view for the performance being armed. */
+function freezeRecView() {
+    if (recView.active) return;
+    recView.base = state.islandQ > 0
+        ? posMod(state.masterPos - frameOriginOf(state.root), effectiveCycle()) : 0;
+    recView.anchor = state.masterPos;
+    recView.heardAtArm = audibleCycle();
+    recView.active = true;
 }
 
-/** Arm one slot for a new take: silent, pending its own next top. */
-function armRetake(node) {
-    console.log('[MockBackend] newTake', node.id);
-    if (!recView.active) {
-        const raw = state.masterPos;
-        const Q = effectiveQuantumForState();
-        const viewCycle = effectiveCycle(Q);
-        const rel = raw - rootFrameTop();  // the root's frame top (frame.md §4)
-        recView.base = viewCycle > 0 ? posMod(rel, viewCycle) : rel;
-        recView.anchor = raw;
-        recView.lcmBefore = committedCycle(Q);
-        recView.heardAtArm = viewCycle;
-        recView.active = true;
+/** Engine armPerformance: a stopped transport starts, and the view
+ * freezes. (Under a stepped clock the test moves time: state.js
+ * `transport`.) */
+function beginPerformance() {
+    if (!state.isPlaying) {
+        state.isPlaying = true;
+        transport.running = !transport.stepped;
     }
-    const period = node.duration;
-    const origin = node.origin || 0;
-    const raw = state.masterPos;
-    const rel = Math.max(0, raw - origin);
-    const at = origin + Math.ceil(rel / period) * period;
-    node._retake = { period, captured: 0 };
+    freezeRecView();
+}
+
+/** Arm `node` at absolute clock `at`: pending until an audio callback
+ * finds the clock there (growRecordingClips) — the next one, when it
+ * already is. Until then a stop is a cancel. */
+function armAt(node, at) {
     node.isRecording = true;
-    node.isPlaying = false;
-    if (at > raw) {
-        node.isPendingStart = true;
-        node.pendingStartAt = at;
-        console.log('[MockBackend] New take pending at the slot top', at);
-    } else {
-        node.recordingStartPos = at;
-    }
+    node.isPendingStart = true;
+    node.pendingStartAt = at;
 }
 
-/** A new take reached its period: it joins the list and becomes the
- * active take; the slot's facts and comp stand. */
-function commitRetake(node) {
-    const takes = takesOf(node).slice();
-    takes.push({ seed: nextTakeSeed(node) });
-    node.takes = takes;
-    node.activeTake = takes.length - 1;
-    node.isRecording = false;
+function beginCapture(node, at) {
     node.isPendingStart = false;
     delete node.pendingStartAt;
-    delete node._retake;
-    node.isPlaying = true;
-    node._retakeDone = 'committed';
-    if (!anyNodeRecording()) recView.active = false;
-    console.log(`[MockBackend] New take committed on ${node.id}: take ${node.activeTake}`);
+    node.recordingStartPos = at;
+    if (node._retake) node._retake.captured = state.masterPos - at;
+    else node.duration = state.masterPos - at;
+}
+
+/** Place a first take (engine clip_node.cc, the Armed block). */
+function armFirstTake(node, cycle) {
+    if (storedMap(node).segs.length >= 2) setStoredMap(node, []);  // stale cells die
+    node.contentKind = hasInstrument(node) ? 'midi' : 'audio';
+    node.duration = 0;
+    const Q = state.islandQ;
+    const raw = state.masterPos;
+    const mapping = cycle > 0 ? ancestorsOf(node).find(a => activeMapOf(a)) : null;
+    if (!(Q > 0)) {
+        // The first take starts now; its arm moment is the provisional zero.
+        state.islandZero = raw;
+        armAt(node, raw);
+    } else if (mapping) {
+        // Through a map: the arm runs on the map period's grid from the
+        // map's heard top; the take's origin is an inner position, re-based
+        // to the song top under a cued step's audition.
+        const map = activeMapOf(mapping);
+        const mapOrigin = frameOriginOf(mapping);
+        const heardTop = mapOrigin + mapOffset(map, 0);
+        const tRel = armTarget(raw - heardTop, Q, mapPeriod(map));
+        const cued = auditionMapOf(mapping) && stepCued(mapping.sequence, mapping.auditionStep);
+        const cueBase = cued ? firstVisitSpan(mapping.sequence, mapping.auditionStep)[0] : 0;
+        node._mapArm = { C: cycle, period: mapPeriod(map),
+                         innerOrigin: mapOrigin + mapOffset(map, tRel) - cueBase };
+        armAt(node, heardTop + tRel);
+    } else {
+        // The next Q boundary on the grid of the cycle the clip's scope
+        // hands it, from the island zero.
+        const zero = state.islandZero || 0;
+        const contextLoop = Math.max(Q, receivedAt(node, raw).scope.contextCycle);
+        armAt(node, zero + armTarget(raw - zero, Q, contextLoop));
+    }
+}
+
+/** Arm a first take on every empty clip at or under `id`. True when the
+ * take is armed; false, nothing changed, when it is refused. */
+export function startRecordingInNode(id) {
+    const node = nodeOrRoot(id);
+    if (!node) return false;
+    const targets = clipsUnder(node).filter(c => !c.isRecording && !(takeLength(c) > 0));
+    if (!targets.length) return false;
+
+    // The arm's own edits go in first: the checks judge the graph the
+    // take will record against. Any member's refusal refuses the group
+    // and puts them back.
+    const before = serializeGraph();
+    const armEdits = applyArmEdits(node, null);
+    const aim = autoTargetCuedStep(targets[0]);
+    const through = targets.map(t => throughMapOf(t, aim));
+    if (through.some(t => t.refusal)) {
+        if (armEdits.length) restoreGraph(before);
+        return false;
+    }
+
+    armEdits.forEach(pushUndoSnapshot);
+    if (aim) aim.stack.auditionStep = aim.step;
+    const snap = serializeGraph();
+    beginPerformance();
+    targets.forEach((t, i) => armFirstTake(t, through[i].cycle));
+    const midi = targets.find(t => t.contentKind === 'midi');
+    if (midi && !midi.midiArmed) setMidiArmed(midi.id, true);
+
+    // Aimed at a looping step: the auditioning direct parent of a member
+    // names the auto-gate.
+    const gated = targets.map(t => findParent(t.id)).find(p => auditionMapOf(p));
+    pendingTakes.push({ ids: targets.map(t => t.id), snap, retake: false,
+                        gateStack: gated ? gated.id : null,
+                        gateStep: gated ? gated.auditionStep : -1 });
+    return true;
+}
+
+/** A further take of a committed clip — or of a stack's committed direct
+ * clips, one performance: each arms at its own slot's next top and runs
+ * one period. True when the take is armed; false when it is refused. */
+export function newTake(id) {
+    const node = nodeOrRoot(id);
+    if (!node) return false;
+    const idle = c => isCommittedClip(c) && !c.isRecording;
+    const targets = node.type === 'stack' ? (node.nodes || []).filter(idle)
+                                          : (idle(node) ? [node] : []);
+    if (!targets.length) return false;
+    for (const t of targets) {
+        if (t.periodSource === 'context') return false;
+        if (ancestorsOf(t).some(a => activeMapOf(a))) return false;
+        if (takesOf(t).length >= MAX_TAKES) return false;
+        if (hasInstrument(t) !== (t.contentKind === 'midi')) return false;
+    }
+    applyArmEdits(null, targets).forEach(pushUndoSnapshot);
+    const snap = serializeGraph();
+    beginPerformance();
+    for (const t of targets) {
+        const raw = state.masterPos;
+        t._retake = { period: t.duration, captured: 0 };
+        armAt(t, raw + posMod((t.origin || 0) - raw, t.duration));
+    }
+    pendingTakes.push({ ids: targets.map(t => t.id), snap, retake: true,
+                        gateStack: null, gateStep: -1 });
+    return true;
+}
+
+// ---- the stop and the commit ---------------------------------------------
+
+/** Ask every live take at or under `id` to stop: an armed one cancels
+ * here, a capturing one ends at an audio callback (stopClip). False when
+ * there was none. */
+export function stopRecordingInNode(id) {
+    const node = nodeOrRoot(id);
+    if (!node) return false;
+    const hadQ = state.islandQ > 0;
+    const live = clipsUnder(node).filter(c => c.isRecording);
+    live.forEach(c => stopClip(c, hadQ));
+    reconcileTakes();
+    return live.length > 0;
+}
+
+function endLiveTake(node) {
+    node.isRecording = false;
+    node.isPendingStart = false;
+    node.isAwaitingStop = false;
+    for (const k of ['pendingStartAt', 'recordingStartPos', 'awaitingStopAt',
+                     '_mapArm', '_retake']) delete node[k];
+    if (!takeLive()) recView.active = false;
+}
+
+function cancelRetake(node) {
+    endLiveTake(node);
+    node._retakeDone = 'cancelled';
+}
+
+/** Engine ClipNode::stopRecording. */
+function stopClip(node, hadQ) {
+    if (node._retake) {
+        // A new take stopped short of its period cancels: at once while
+        // armed, at the next block once it captures.
+        if (node.isPendingStart) cancelRetake(node);
+        else node._retake.cancel = true;
+        return;
+    }
+    if (node.isPendingStart) {
+        endLiveTake(node);  // never reached its boundary: un-armed, empty
+        node.duration = 0;
+        return;
+    }
+    // (A test that moves the clock with setMasterPos grows no take: the
+    // clock's own reading stands in.)
+    const length = Math.max(node.duration || 0,
+        state.masterPos - (node.recordingStartPos || 0));
+    node.duration = length;
+    // A REQUEST: the take ends at an audio callback (growRecordingClips).
+    // With Q it pads forward to its boundary — a through-map take's
+    // ceiling is one map pass; an island's first take has no boundary and
+    // ends at the next callback, at the length it has now.
+    node.isAwaitingStop = true;
+    node.awaitingStopAt = hadQ ? nextStopBoundary(length, state.islandQ) : length;
+    if (node._mapArm) node.awaitingStopAt = Math.min(node.awaitingStopAt, node._mapArm.period);
+}
+
+/** The island's first content establishes (Q, zero) together; geometry
+ * authored before Q that the new grid cannot carry is cleared (engine
+ * scrubIncoherentGeometry). */
+export function establishIsland(q, zero) {
+    state.islandQ = q;
+    state.islandZero = zero;
+    eachNode(n => {
+        if (storesGeometry(n) && periodDrifts(mapPeriod(storedMap(n)), q)) setStoredMap(n, []);
+    });
+}
+
+/** Commit a first take at exactly `duration` (engine commitRecording): a
+ * commit stores origin and duration and authors no map; the island's
+ * first one establishes (Q, zero). */
+function commitClip(node, duration) {
+    const mapArm = node._mapArm || null;
+    const origin = mapArm ? mapArm.innerOrigin : (node.recordingStartPos || 0);
+    endLiveTake(node);
+    node.duration = mapArm ? mapArm.C : duration;
+    node.origin = origin;
+    setStoredMap(node, []);
+    if (!(state.islandQ > 0) && node.duration > 0) establishIsland(node.duration, origin);
+    settleAnchors();
     reconcileTakes();
 }
 
-/** The take list of a clip: `takes` when materialized, else the one
- * implicit take a committed clip holds (engine parity takeCount). */
-export function takesOf(node) {
-    if (Array.isArray(node.takes) && node.takes.length) return node.takes;
-    return (node.duration || 0) > 0 ? [{ seed: 0 }] : [];
+function commitRetake(node) {
+    const takes = takesOf(node).slice();
+    takes.push({ seed: takes.reduce((m, t) => Math.max(m, t.seed || 0), 0) + 1 });
+    node.takes = takes;
+    node.activeTake = takes.length - 1;
+    endLiveTake(node);
+    node._retakeDone = 'committed';
+    reconcileTakes();
 }
 
-/** A fresh waveform seed for a new take (distinct peaks per take). */
-function nextTakeSeed(node) {
-    const takes = takesOf(node);
-    return takes.reduce((m, t) => Math.max(m, t.seed || 0), 0) + 1;
-}
-
-/** Settle pending performances (engine parity: reconcileTakes). A new
- * take logs only when it committed (a cancel leaves the slot as it was
- * and records nothing). */
+/** Engine reconcileTakes: a performance whose members have all settled
+ * is logged — unless every member cancelled. A new take plays as
+ * performed: its slot's re-time resets. */
 function reconcileTakes() {
-    for (let i = 0; i < pendingTakes.length;) {
-        const p = pendingTakes[i];
+    if (takeLive()) return;
+    for (const p of pendingTakes.splice(0)) {
         const members = p.ids.map(id => findNode(id)).filter(Boolean);
-        if (members.some(m => m.isRecording)) { i++; continue; }
-        pendingTakes.splice(i, 1);
-        const committed = p.retake
-            ? members.filter(m => m._retakeDone === 'committed')
-            : members.filter(m => (m.duration || 0) > 0);
+        const committed = members.filter(m => (p.retake ? m._retakeDone === 'committed'
+                                                        : takeLength(m) > 0));
         members.forEach(m => { delete m._retakeDone; });
-        if (!committed.length) continue;  // the whole performance cancelled
-        // A NEW TAKE PLAYS AS PERFORMED (owner, 2026-09-24; engine parity
-        // reconcileTakes): armed at the slot's own top — the current,
-        // possibly re-timed origin — it resets the re-time, which then
-        // describes the newest take; the older takes keep their shift as
-        // a baked fact. The arm-time snapshot restores the old re-time
-        // on undo; redo restores the 0.
+        if (!committed.length) continue;
         if (p.retake) committed.forEach(m => { m.retime = 0; });
-        pushUndoSnapshot(p.snap);
-        console.log('[MockBackend] take logged (undoable) -', committed.length, 'clip(s)');
-        if (p.gateStack != null && p.gateStep >= 0) applyAutoGate(p, committed);
+        if (p.gateStack !== null && p.gateStep >= 0) applyAutoGate(p, committed);
+        pushTakeStep(p.snap);
     }
 }
 
-/** S19 auto-gate (engine parity, AudioEngine::applyAutoGate): each
- * committed DIRECT child of the looping stack gates ON in that step,
- * OFF elsewhere — part of the take's one undo step (the snapshot
- * precedes both). */
+/** Engine applyAutoGate (S19): each committed direct child of the
+ * auditioning stack gates on in that step and off elsewhere. */
 function applyAutoGate(p, committed) {
-    const holder = p.gateStack === 'mock-root'
-        ? { get sequence() { return state.rootSequence; },
-            set sequence(v) { state.rootSequence = v; } }
-        : findNode(p.gateStack);
-    if (!holder || !holder.sequence) return;
-    const n = holder.sequence.steps.length;
-    if (p.gateStep >= n) return;
+    const holder = nodeOrRoot(p.gateStack);
+    if (!holder || !holder.sequence || p.gateStep >= holder.sequence.steps.length) return;
     const gates = { ...(holder.sequence.gates || {}) };
-    let changed = false;
     for (const c of committed) {
-        const parent = findParent(c.id);
-        const direct = p.gateStack === 'mock-root' ? !parent : (parent && parent.id === p.gateStack);
-        if (!direct) continue;
+        if (findParent(c.id) !== holder) continue;
         gates[c.id] = holder.sequence.steps.map((_, k) => k === p.gateStep);
-        changed = true;
-    }
-    if (!changed) {
-        console.log('[MockBackend] step-take landed ungated (not a direct child)');
-        return;
     }
     holder.sequence = { ...holder.sequence, gates };
 }
 
-function armClip(node) {
-    const id = node.id;
-    console.log('[MockBackend] startRecordingInNode', id);
+// ---- the clock ------------------------------------------------------------
 
-    // STALE GEOMETRY DIES AT ARM (engine parity: exchangeMapOverride at
-    // arm): a map override surviving a take strip on the now-empty
-    // clip would warp the NEW take.
-    delete node.segments;
-
-    // FIRST CLIP: with no committed content anywhere in the island the
-    // global transport resets to 0. committedClipCount walks the FULL
-    // tree — a shallower scan would miss deeply nested clips and reset
-    // the transport under them.
-    const hasExistingAudio = committedClipCount() > 0;
-
-    if (!hasExistingAudio) {
-        state.masterPos = 0;
-        console.log('[MockBackend] First Clip Detected -> Reset Global Transport to 0');
-    }
-
-    // Freeze the view base (mirrors AudioEngine view_base_/view_anchor_t_):
-    // from here the published masterPos grows linearly past the cycle.
-    // Base = the EFFECTIVE (window-aware) view the user was watching;
-    // lcmBefore = INTRINSIC (commit/re-base compares committed material).
-    if (!recView.active) {
-        const raw = state.masterPos;
-        const Q = effectiveQuantumForState();
-        const viewCycle = effectiveCycle(Q);
-        const rel = raw - rootFrameTop();  // the root's frame top (frame.md §4)
-        recView.base = viewCycle > 0 ? posMod(rel, viewCycle) : rel;
-        recView.anchor = raw;
-        recView.lcmBefore = committedCycle(Q); // engine's lcm_before_take_
-        recView.heardAtArm = viewCycle;        // engine's heard_cycle_at_arm_
-        recView.active = true;
-    }
-
-    // S21 AUTO-TARGET (engine parity): arming while the playhead is
-    // inside a CUED step becomes Mode-2
-    // record-into-that-step — the nearest sequenced ancestor's
-    // audition engages so the take lands where cue playback reads it
-    // (the song top). An audition already active means the performer
-    // aimed explicitly and wins.
-    {
-        const rootSeqHolder = {
-            sequence: state.rootSequence,
-            sequenceBypassed: state.rootSequenceBypassed,
-        };
-        let aimed = false;
-        for (let p = findParent(id); p && !aimed; p = findParent(p.id)) {
-            if (p.type !== 'stack') continue;
-            if (auditionMapOf(p)) { aimed = true; break; }
-            if (activeSeqLen(p) > 0) {
-                // The song position is inner(t) from the STACK's own
-                // frame (Q18, engine StackNode::childContext cue lookup).
-                const rel = nodeInner(p, state.masterPos);
-                const i = stepIndexAt(p.sequence, rel);
-                if (stepCued(p.sequence, i)) {
-                    p.auditionStep = i;
-                    console.log('[MockBackend] arm inside cued step', i,
-                        '- auto-targeting it (S21)');
-                }
-                aimed = true;  // nearest sequenced ancestor answers
-            }
-        }
-        if (!aimed && !rootActiveMap() && activeSeqLen(rootSeqHolder) > 0) {
-            const rel = state.masterPos - state.islandZero;
-            const i = stepIndexAt(state.rootSequence, rel);
-            if (stepCued(state.rootSequence, i)) {
-                state.rootAuditionStep = i;
-                console.log('[MockBackend] arm inside cued ROOT step', i,
-                    '- auto-targeting it (S21)');
-            }
-        }
-    }
-
-    // THROUGH-MAP ARM (time_maps.md phase 2, engine parity with
-    // AudioEngine::startRecordingInNode): an ACTIVE map on an ancestor
-    // group shapes this take — heard arm math on the map period's
-    // grid, one-period cap, dense [0, C) commit. Nested active maps
-    // refuse (composed maps are phase-3+ territory).
-    let mapArm = null;
-    {
-        const activeAncestors = [];
-        for (let p = findParent(id); p; p = findParent(p.id)) {
-            if (activeMapOf(p)) activeAncestors.push(p);  // audition-aware
-        }
-        // The ROOT's step audition (§11.2) maps every top-level track.
-        const rootMap = rootActiveMap();
-        if (rootMap) activeAncestors.push({ _root: true, _map: rootMap });
-        if (activeAncestors.length > 1) {
-            console.log('[MockBackend] record refused — nested active loop windows');
-            return;
-        }
-        const Qnow = effectiveQuantumForState();
-        if (activeAncestors.length === 1 && Qnow > 0) {
-            const g = activeAncestors[0];
-            const map = g._root ? g._map : activeMapOf(g);  // segment-general (phase 3)
-            const period = mapPeriod(map);
-            // S18: under an ACTIVE SEQUENCE the take is a step-sized
-            // PART — C = the map period, no silence inserted. Without
-            // a sequence, the phase-2 rule (the mapping node's full
-            // inner cycle) stands.
-            const gseq = g._root ? state.rootSequence : g.sequence;
-            const gAudStep = g._root
-                ? (state.rootAuditionStep ?? -1)
-                : (auditionMapOf(g) ? g.auditionStep : -1);
-            const sequenced = g._root
-                ? activeSeqLen({ sequence: state.rootSequence,
-                                 sequenceBypassed: state.rootSequenceBypassed }) > 0
-                : activeSeqLen(g) > 0;
-            // CUE x AUTHORED WINDOW (engine parity): an authored window
-            // over a sequence with cued steps is a multi-step
-            // composition outside the ratified scope.
-            const anyCue = sequenced && gseq &&
-                gseq.steps.some(st => !!st.cue);
-            const isAudition = g._root ? true : !!auditionMapOf(g);
-            if (anyCue && !isAudition) {
-                console.log('[MockBackend] record refused — an authored ' +
-                    'window over a sequence with cued steps');
-                return;
-            }
-            const C = sequenced ? period : Math.max(intrinsicOfNode(g), period);
-            // Mode-2 into a CUED step composes the cue (engine parity,
-            // StackNode::childContext): the take lands at the SONG TOP
-            // [0, stepLen) — cue playback reads it there.
-            // The audition loops the step's FIRST visit (§14).
-            const cueBase = sequenced && gAudStep >= 0 &&
-                stepCued(gseq, gAudStep)
-                ? (firstVisitSpan(gseq, gAudStep) || [0])[0] : 0;
-            // Q18 (engine parity StackNode::childContext →
-            // map_origin / map_heard_top): the map's inner positions
-            // are offsets from the mapping node's ORIGIN (an anchored
-            // stack's own; the received cycle top otherwise — and the
-            // synthetic root's frame is the zero), and the heard grid
-            // anchor the arm math runs against is origin + mapOffset(0).
-            const mapOrigin = g._root ? (state.islandZero || 0)
-                                      : frameOriginOf(g);
-            mapArm = { map, period, C, mapOrigin,
-                       heardTop: mapOrigin + mapOffset(map, 0), cueBase };
-        }
-    }
-
-    // MIDI takes (phase 5, engine parity ClipNode::startRecording): an
-    // instrument slot on the clip makes the take notes, not audio —
-    // and record MIDI-arms it (AudioEngine::startRecordingInNode).
-    const chain = (node.effects && node.effects.chain) || [];
-    node.contentKind = chain.some(s => s.isInstrument) ? 'midi' : 'audio';
-    if (node.contentKind === 'midi' && !node.midiArmed) setMidiArmed(node.id, true);
-
-    node.isRecording = true;
-
-    if (mapArm) {
-        const Qm = effectiveQuantumForState();
-        const raw = state.masterPos;
-        const relH = Math.max(0, raw - mapArm.heardTop);
-        const tRel = armTarget(relH, Qm, mapArm.period);
-        const at = mapArm.heardTop + tRel;
-        node._mapArm = {
-            C: mapArm.C,
-            period: mapArm.period,
-            // The anchor's inner position, absolute (engine parity
-            // clip_node.cc through-map arm): map_origin + mapOffset(t_rel).
-            // The cue composition subtracts the step base: the audition
-            // map selects [stepStart, stepEnd) of the song, the cue
-            // re-bases that span to the song top (engine parity).
-            innerOrigin: mapArm.mapOrigin +
-                mapOffset(mapArm.map, tRel) - (mapArm.cueBase || 0),
-        };
-        node.duration = 0;
-        if (at > raw) {
-            node.isPendingStart = true;
-            node.pendingStartAt = at;
-            console.log('[MockBackend] Through-map pending start at', at,
-                '(inner origin', node._mapArm.innerOrigin + ')');
+/** Advance every live take by `samples` (the clock has already moved):
+ * a pending one starts at its boundary; an awaited stop, a through-map
+ * pass or a new take's period commits when reached. */
+export function growRecordingClips(samples) {
+    for (const node of clipsUnder(state.root)) {
+        if (!node.isRecording) continue;
+        if (node.isPendingStart) {
+            if (state.masterPos >= node.pendingStartAt) beginCapture(node, node.pendingStartAt);
+        } else if (node._retake) {
+            node._retake.captured += samples;
         } else {
-            node.recordingStartPos = at;
+            node.duration = (node.duration || 0) + samples;
         }
-        return;
-    }
-
-    // Q11 (engine parity): with Q established, arming PENDS until the
-    // next Q boundary in the island frame — recording begins there, so
-    // origins always land ON boundaries (a mid-Q origin would make the
-    // commit re-base shift every lane's grid by a fraction).
-    // Exactly-on-boundary starts immediately.
-    const Q = effectiveQuantumForState();
-    const raw = state.masterPos;
-    if (Q > 0) {
-        const rel = posMod(raw - state.islandZero, Q);
-        const toNext = rel === 0 ? 0 : Q - rel;
-        if (toNext > 0) {
-            node.isPendingStart = true;
-            node.pendingStartAt = raw + toNext;
-            node.duration = 0;
-            console.log('[MockBackend] Pending start at raw', node.pendingStartAt);
-            return;
+        if (node.isPendingStart) continue;
+        // A first take stores the cycle it is performed against once the
+        // audio thread captures (engine ClipNode::beginCapture).
+        if (!node._retake) node.contextCycle = recView.heardAtArm;
+        node.currentPeak = 0.3 + Math.random() * 0.4;
+        if (node._retake) {
+            if (node._retake.cancel) cancelRetake(node);
+            else if (node._retake.captured >= node._retake.period) commitRetake(node);
+        } else if (node.isAwaitingStop && node.duration >= node.awaitingStopAt) {
+            commitClip(node, node.awaitingStopAt);
+        } else if (node._mapArm && node.duration >= node._mapArm.period) {
+            commitClip(node, node._mapArm.period);
         }
-    } else {
-        // FIRST-CLIP ARM ESTABLISHES THE PROVISIONAL ZERO (engine
-        // parity: establishIsland(0, zero) — q == 0 sets a provisional
-        // zero only). A stale zero standing until commit would run
-        // the pre-commit projections (recording view, ghost tiles) in
-        // the wrong frame.
-        state.islandZero = raw;
     }
-    node.recordingStartPos = raw;
-}
-
-export function stopRecordingInNode(id) {
-    const node = recTarget(id);
-    if (!node) return;
-
-    // Q7: stop is fractal like arm — a stack target stops every live
-    // take beneath it in ONE call. Snapshot the island-Q fact BEFORE
-    // any stop runs (engine parity, AudioEngine::stopRecordingInNode):
-    // a first-take group stop's first commit ESTABLISHES Q, which would
-    // flip the siblings onto the awaiting-stop path and run them a full
-    // extra Q (one performance, one committed duration).
-    if (node.type === 'stack') {
-        const hot = clipsUnder(node).filter(c => c.isRecording);
-        const hadQ = effectiveQuantumForState() > 0;
-        hot.forEach(c => stopClipRecording(c, hadQ));
-        return;
-    }
-    if (!node.isRecording) return;
-    stopClipRecording(node, effectiveQuantumForState() > 0);
-}
-
-function stopClipRecording(node, islandHasQuantum) {
-    const id = node.id;
-    console.log('[MockBackend] stopRecordingInNode', id);
-
-    // A NEW TAKE stopped before its period CANCELS (docs/takes.md):
-    // nothing shorter can be a take of the slot; the previous take
-    // sounds again and nothing is logged.
-    if (node._retake) {
-        node.isRecording = false;
-        node.isPendingStart = false;
-        delete node.pendingStartAt;
-        delete node._retake;
-        node.isPlaying = true;
-        node._retakeDone = 'cancelled';
-        if (!anyNodeRecording()) recView.active = false;
-        console.log('[MockBackend] New take cancelled before its period:', id);
-        reconcileTakes();
-        return;
-    }
-
-    // Engine parity (ClipNode::stopRecording, Armed → CANCEL): stopping
-    // a clip that never reached its arm boundary un-arms it — no
-    // content, no phantom awaiting-stop.
-    if (node.isPendingStart) {
-        node.isRecording = false;
-        node.isPendingStart = false;
-        delete node.pendingStartAt;
-        delete node._mapArm;
-        node.duration = 0;
-        if (!anyNodeRecording()) recView.active = false;
-        console.log('[MockBackend] Arm cancelled before capture:', id);
-        reconcileTakes();
-        return;
-    }
-
-    const Q = effectiveQuantumForState();
-    // Length authority: live duration (grown by the transport) and the
-    // masterPos delta must agree; setMasterPos-driven tests only move
-    // the latter, so reconcile here
-    const rawLen = Math.max(node.duration || 0,
-        state.masterPos - (node.recordingStartPos || 0));
-    node.duration = rawLen;
-
-    // ENGINE PARITY (ClipNode::stopRecording; stops always pad
-    // FORWARD): with Q established, a stop request
-    // enters AWAITING-STOP — recording continues to nextStopBoundary and
-    // commits there (growRecordingClips). Only the first clip (no Q at
-    // the moment the stop SET was resolved — the group-stop snapshot)
-    // commits immediately at its raw length.
-    if (islandHasQuantum) {
-        node.isAwaitingStop = true;
-        node.awaitingStopAt = nextStopBoundary(rawLen, Q);
-        // Through-map: one map pass is the hard ceiling (engine parity).
-        if (node._mapArm) {
-            node.awaitingStopAt = Math.min(node.awaitingStopAt, node._mapArm.period);
-        }
-        console.log('[MockBackend] Awaiting stop at len', node.awaitingStopAt,
-            '(current', rawLen + ')');
-        return;
-    }
-    commitClip(node, rawLen);
-}
-
-/** Q ESTABLISHMENT SCRUB (engine parity
- * AudioEngine::scrubIncoherentGeometry): pre-Q authored windows/maps
- * whose period cannot live on the just-established grid are cleared.
- * Committed clips' full-span windows are commit furniture, untouched. */
-function scrubIncoherentGeometry(q) {
-    if (!(q > 0)) return;
-    const coherent = p => p > 0 && (p % q === 0 || q % p === 0);
-    const visit = nodes => (nodes || []).forEach(n => {
-        if (Array.isArray(n.segments) && n.segments.length >= 2) {
-            // Internal form: an array of [start, end] PAIRS.
-            const p = n.segments.reduce((acc, sg) => acc + (sg[1] - sg[0]), 0);
-            if (!coherent(p)) {
-                delete n.segments;
-                n.loopStart = 0;
-                n.loopEnd = 0;
-                console.log('[MockBackend] cleared pre-Q map on', n.id);
-            }
-        } else {
-            const ls = n.loopStart || 0, le = n.loopEnd || 0;
-            const fullSpanClip = n.type === 'clip' && ls <= 0 &&
-                (n.duration || 0) > 0 && le >= n.duration;
-            if (le > ls && !fullSpanClip && !coherent(le - ls)) {
-                n.loopStart = 0;
-                n.loopEnd = 0;
-                console.log('[MockBackend] cleared pre-Q window on', n.id);
-            }
-        }
-        if (n.type === 'stack') visit(n.nodes);
-    });
-    visit(state.nodes);
-}
-
-/** Commit a recording at exactly `duration` (mirrors commitRecording). */
-export function commitClip(node, duration) {
-    // Q BEFORE committing, so the stopping clip cannot define its own
-    // quantum (mirrors C++ commit order)
-    const Q = effectiveQuantumForState();
-
-    // THROUGH-MAP COMMIT (engine parity, ClipNode::commitRecording):
-    // the take commits at the mapping node's full inner cycle C —
-    // heard snapping chose WHEN, C is WHAT commits.
-    const mapArm = node._mapArm || null;
-    if (mapArm) {
-        duration = mapArm.C;
-        delete node._mapArm;
-        console.log('[MockBackend] Through-map commit — C =', duration);
-    }
-
-    node.isRecording = false;
-    node.isAwaitingStop = false;
-
-    // Commit resets geometry whole: no stale multi-segment map may
-    // outlive the material it selected. COMMIT STORES (origin, duration)
-    // ONLY (engine parity, audit D4-7): no window is authored on a take
-    // — a take is its whole content unless trimmed.
-    delete node.segments;
-    node.duration = duration;
-    node.isPlaying = true;
-    node.loopStart = 0;
-    node.loopEnd = 0;
-
-    // First committed take ESTABLISHES Q (design_language.md Q1: the DNA
-    // of the scratch track) — STORED island state, plus the per-node
-    // effectiveQuantum declaration (computeEffectiveQuantum's fallback
-    // derivation reads it).
-    const establishing = Q <= 0 && duration > 0;
-    if (establishing) {
-        state.islandQ = duration;
-        node.effectiveQuantum = duration;
-        console.log('[MockBackend] First take establishes Q =', duration);
-    }
-
-    // THE ORIGIN IS THE CAPTURE BOUNDARY (engine parity, owner ruling
-    // 2026-09-09 reversing Q15): no heard-frame fold — a take anchors
-    // where its capture began. A through-map take's origin is the
-    // anchor's INNER position (already an inner-time fact).
-    let foldedOrigin = node.recordingStartPos || 0;
-    const heardAtArm = recView.heardAtArm || 0;
-    if (mapArm) foldedOrigin = mapArm.innerOrigin;
-
-    // The take's HEARD FRAME (Q14/Q15): the EFFECTIVE cycle it was
-    // performed against — display take-marking folds by this.
-    node.contextCycle = heardAtArm > 0 ? heardAtArm
-        : (recView.lcmBefore > 0 ? recView.lcmBefore : 0);
-
-    // A commit moves no island fact (engine parity, StackNode::takeCommitted;
-    // docs/frame.md): the island's zero is the first take's origin and
-    // stays there. Where the new take sits on screen is seated by the
-    // view from the lanes — in the cycle it started in.
-
-    // Release the frozen view base when the LAST recording stops
-    // (mirrors the engine's was_any_node_recording_ edge)
-    if (!anyNodeRecording()) recView.active = false;
-
-    // Origin is THE canonical timing fact (docs/kernel.md): the cycle
-    // moment content[0] belongs to — heard-frame FOLDED (Q15, above).
-    // Launch point is its projection, kept for UI compatibility.
-    node.origin = foldedOrigin;
-    node.launchPoint = launchPointFor(node.origin, duration);
-    // First commit: (Q, zero) establish TOGETHER (engine parity
-    // establishIsland(d, origin)) — the zero is the first take's
-    // origin, not whatever the arm left behind.
-    if (establishing) {
-        state.islandZero = foldedOrigin;
-        scrubIncoherentGeometry(state.islandQ);
-    }
-    // Q18 (engine parity reconcileTakes → settleAnchors): the first
-    // content under a stack anchors it — a group take anchors its group
-    // at the take's origin, and every unanchored ancestor up to the
-    // root. Rides the take's undo entry (the pending snapshot predates
-    // it, so Untake un-anchors).
-    settleAnchors();
-
-    console.log(`[MockBackend] Committed ${node.id}: Dur=${duration} (Q=${Q})`);
     reconcileTakes();
-}
-
-// Grow recording clips by a given sample count. An AWAITING-STOP clip
-// commits the moment its length reaches the boundary (engine parity:
-// ClipNode's awaiting_stop_at crossing check).
-export function growRecordingClips(nodes, samples) {
-    (nodes || []).forEach(node => {
-        if (node.isRecording && node._retake) {
-            // A NEW TAKE: the slot's duration stands; the capture count
-            // runs from the slot top to exactly one period (the cap).
-            if (node.isPendingStart) {
-                if (state.masterPos >= node.pendingStartAt) {
-                    node.isPendingStart = false;
-                    node.recordingStartPos = node.pendingStartAt;
-                    node._retake.captured = state.masterPos - node.pendingStartAt;
-                    node.currentPeak = 0.3 + Math.random() * 0.4;
-                }
-            } else {
-                node._retake.captured += samples;
-                node.currentPeak = 0.3 + Math.random() * 0.4;
-            }
-            if (!node.isPendingStart && node._retake &&
-                node._retake.captured >= node._retake.period) {
-                commitRetake(node);
-            }
-        } else if (node.isRecording) {
-            if (node.isPendingStart) {
-                // Q11 trigger: recording begins AT the boundary
-                if (state.masterPos >= node.pendingStartAt) {
-                    node.isPendingStart = false;
-                    node.recordingStartPos = node.pendingStartAt;
-                    node.duration = state.masterPos - node.pendingStartAt;
-                    node.currentPeak = 0.3 + Math.random() * 0.4;
-                }
-            } else {
-                node.duration = (node.duration || 0) + samples;
-                // Simulate live peak data (oscillating value)
-                node.currentPeak = 0.3 + Math.random() * 0.4;
-                if (node.isAwaitingStop && node.duration >= node.awaitingStopAt) {
-                    commitClip(node, node.awaitingStopAt);
-                } else if (node._mapArm && node.duration >= node._mapArm.period) {
-                    // One-period cap (engine parity): a full map pass
-                    // auto-finishes cleanly.
-                    commitClip(node, node._mapArm.period);
-                }
-            }
-        }
-        if (node.nodes) growRecordingClips(node.nodes, samples);
-    });
 }

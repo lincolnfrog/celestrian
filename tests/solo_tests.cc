@@ -1,6 +1,6 @@
 /**
- * SOLO CANON invariant tests (design_language.md Q16, ruled 2026-08-13)
- * — the group-arm treatment for solo. Three properties, each named:
+ * SOLO CANON invariant tests (design_language.md Q16). Three
+ * properties, each named:
  *
  *   ISLAND-WIDE: a solo anywhere silences every leaf without a soloed
  *     ancestor, across sibling stacks — not just within its own group.
@@ -8,8 +8,9 @@
  *   FRACTAL:     solo on a group covers its subtree (I5), resolved
  *     through snapshot parent indices on the audio thread.
  *
- * Plus the standing precedence rule (output_stage_tests): mute beats
- * solo — a muted node is silent even while soloed.
+ * Plus the precedence rule: mute beats solo — a muted node, and every
+ * node under a muted container, is silent even while soloed. And the
+ * engine publishes solo as a per-node `isSoloed` flag.
  *
  * Twin: ui/js/tests/solo.test.mjs (mock flags + view-model exposure).
  *
@@ -21,38 +22,14 @@
 
 #include <juce_core/juce_core.h>
 
-#include <cmath>
 #include <memory>
-#include <vector>
 
+#include "../src/audio_engine.h"
 #include "../src/clip_node.h"
-#include "../src/graph_snapshot.h"
 #include "../src/stack_node.h"
 #include "test_utils.h"
 
 namespace celestrian {
-
-using test_utils::contextFor;
-using test_utils::NodeContext;
-
-namespace {
-
-/** A committed clip carrying a constant-amplitude take, already
- * sounding (the output_stage_tests idiom). */
-std::unique_ptr<ClipNode> makePlayingClip(const char* name, double sr,
-                                          float amp, int len = 4410) {
-  auto clip = std::make_unique<ClipNode>(name, sr);
-  std::vector<float> in((size_t)len, amp);
-  float* const ins[] = {in.data()};
-  NodeContext rec = contextFor(*clip, len);
-  clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec.ctx);
-  clip->stopRecording();
-  clip->startPlayback();
-  return clip;
-}
-
-}  // namespace
 
 class SoloTests : public juce::UnitTest {
  public:
@@ -60,16 +37,16 @@ class SoloTests : public juce::UnitTest {
 
   void runTest() override {
     constexpr double sr = 44100.0;
-    constexpr int N = 441;
+    constexpr int N = 441;  // exactly one solo fade
 
     // island root ── stackA ── a1 (0.1), a2 (0.2)
     //             └─ stackB ── b1 (0.4)
     StackNode root("island");
     auto stackA = std::make_unique<StackNode>("A");
     auto stackB = std::make_unique<StackNode>("B");
-    auto a1o = makePlayingClip("a1", sr, 0.1f);
-    auto a2o = makePlayingClip("a2", sr, 0.2f);
-    auto b1o = makePlayingClip("b1", sr, 0.4f);
+    auto a1o = test_utils::committedClip("a1", sr, 10 * N, 0.1f);
+    auto a2o = test_utils::committedClip("a2", sr, 10 * N, 0.2f);
+    auto b1o = test_utils::committedClip("b1", sr, 10 * N, 0.4f);
     ClipNode* a1 = a1o.get();
     ClipNode* a2 = a2o.get();
     ClipNode* b1 = b1o.get();
@@ -80,25 +57,11 @@ class SoloTests : public juce::UnitTest {
     root.addChild(std::move(stackA));
     root.addChild(std::move(stackB));
 
-    NodeContext nc = contextFor(root, N);
-    nc.ctx.is_playing = true;
-
-    // Render the root through the production path: snapshot attached,
-    // any_solo scanned from the flags at the block top — exactly what
-    // the callback does.
+    // The SETTLED audibility resolution, through the production path:
+    // snapshot attached, any_solo scanned from the flags at the block
+    // top. DC content: any mid sample works.
     auto rendered = [&]() {
-      std::vector<float> outL((size_t)N, 0.0f), outR((size_t)N, 0.0f);
-      float* outs[] = {outL.data(), outR.data()};
-      nc.refresh();
-      const ProcessContext& play = nc.ctx;
-      // Two passes, read the second: solo edges FADE now (~10 ms, S7
-      // smoothness law — sequencer.md §9; N = 441 = exactly one fade),
-      // and these pins assert the SETTLED audibility resolution.
-      root.process(nullptr, outs, 0, 2, play);
-      std::fill(outL.begin(), outL.end(), 0.0f);
-      std::fill(outR.begin(), outR.end(), 0.0f);
-      root.process(nullptr, outs, 0, 2, play);
-      return outL[(size_t)(N / 2)];  // DC content: any mid sample works
+      return test_utils::renderSettled(root, N).left[(size_t)(N / 2)];
     };
     auto clearSolos = [&] {
       a1->is_soloed.store(false);
@@ -142,14 +105,39 @@ class SoloTests : public juce::UnitTest {
       near(rendered(), 0.3f, "stack A soloed: a1 + a2 sound, b1 silent");
     }
 
-    beginTest("mute beats solo (the output-stage precedence rule)");
+    beginTest("mute beats solo: on the soloed node, and on its container");
     {
       clearSolos();
       a1->is_soloed.store(true);
       a1->is_muted.store(true);
       near(rendered(), 0.0f, "soloed-but-muted a1 is silent; rest soloed out");
       a1->is_muted.store(false);
+      A->is_muted.store(true);
+      near(rendered(), 0.0f, "a muted ancestor silences even a soloed child");
+      A->is_muted.store(false);
+      near(rendered(), 0.1f, "unmuted, the solo sounds");
       clearSolos();
+    }
+
+    beginTest("the engine publishes solo as a per-node isSoloed flag");
+    {
+      auto engine = std::make_unique<AudioEngine>();
+      engine->createNode("clip");
+      const juce::String a = test_utils::lastTopLevelId(*engine);
+      engine->createNode("clip");
+      const juce::String b = test_utils::lastTopLevelId(*engine);
+      const auto soloed = [&](const juce::String& id) {
+        return test_utils::deepBool(*engine, id, "isSoloed");
+      };
+
+      engine->toggleSolo(a);
+      expect(soloed(a), "A soloed");
+      engine->toggleSolo(b);  // ADDITIVE: B joins, A stays lit
+      expect(soloed(a) && soloed(b), "solos sum - never radio-button");
+      engine->toggleSolo(a);  // A off, B still lit
+      expect(!soloed(a) && soloed(b), "un-solo is per-node too");
+      engine->toggleSolo(b);
+      expect(!soloed(a) && !soloed(b), "all clear");
     }
   }
 };

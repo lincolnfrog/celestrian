@@ -1,37 +1,29 @@
-// Single backend facade (refactoring_proposal.md P2-9). This is the ONLY
-// module that knows whether the app is talking to the JUCE bridge, the
-// index_test.html harness, or the browser mock (?mock=true). Every other
-// module imports { callNative, log, getState } from here — never from
-// bridge.js or mock_backend.js directly, so all modes exercise the same
-// persistence path.
+// The backend facade: the ONE module that knows which backend the app
+// is talking to. Every other module takes { callNative, log, getState }
+// from here — never from bridge.js or mock_backend.js — so every mode
+// runs the same code above this line. Decided once, at module load:
 //
-// The three-way selection, decided once at module load (top-level await):
+//   MOCK     ?mock=true: mock_backend.js, imported dynamically, with
+//            its test surface on window.__celestrianTest — the one
+//            namespace Playwright drives the mock through. With
+//            &harness=1 the scenario sidebar is mounted beside the app
+//            (harness_sidebar.js), for working on the UI by hand.
+//   ENGINE   ?engine=true: the real engine behind the headless server's
+//            HTTP twin of the bridge (bridge_http.js; docs/
+//            test_harness.md "Engine e2e"). __celestrianTest carries
+//            callNative and the server's `engine` control surface.
+//   NATIVE   otherwise: the JUCE bridge (bridge.js).
 //
-//   1. HARNESS  — window.celestrian already set (index_test.html imports
-//      mock_backend statically and installs it BEFORE app.js loads; see
-//      the import-order note in that file). We adopt its backend as-is.
-//   2. MOCK     — ?mock=true in the URL: mock_backend.js is imported
-//      dynamically and, for Playwright, exposed as the single test
-//      namespace window.__celestrianTest (loadScenario / setMasterPos /
-//      setIsPlaying / callNative / startTransport / pauseTransport /
-//      advanceBy) — e2e drives the mock through that surface only.
-//   3. ENGINE   — ?engine=true: the REAL engine behind the headless
-//      server's HTTP twin of the bridge (bridge_http.js; docs/
-//      test_harness.md "Engine e2e"). `getState` is null like NATIVE;
-//      window.__celestrianTest exposes callNative + the server's
-//      `engine` control surface (clock, input, the truth probe).
-//   4. NATIVE   — neither: the JUCE bridge (bridge.js). `getState` is
-//      null in this mode; the polling loop detects that and calls
-//      callNative('getGraphState') instead of a synchronous getter.
+// `getState` is the mock's synchronous state getter. It is null on a
+// real bridge, where the state is read with callNative('getGraphState')
+// (shell_io.js readState).
 
 let callNative, log, getState;
 
-const useMock = typeof window !== 'undefined' && (
-    (window.celestrian) ||
-    (new URLSearchParams(window.location.search).get('mock') === 'true')
-);
-const useEngine = typeof window !== 'undefined' && !useMock &&
-    new URLSearchParams(window.location.search).get('engine') === 'true';
+const params = new URLSearchParams(
+    typeof window !== 'undefined' ? window.location.search : '');
+const useMock = params.get('mock') === 'true';
+const useEngine = !useMock && params.get('engine') === 'true';
 
 if (useEngine) {
     const http = await import('./bridge_http.js');
@@ -43,40 +35,38 @@ if (useEngine) {
     };
     console.log('[Backend] Using HTTP engine bridge (headless engine server)');
 } else if (useMock) {
-    if (window.celestrian) {
-        // Test harness environment (index_test.html) - use provided backend
-        ({ callNative, log, getState } = window.celestrian);
-        console.log('[Backend] Using Harness backend');
-    } else {
-        // Browser/Playwright Manual Mock Mode
-        const mockBackend = await import('./mock_backend.js');
-        ({ callNative, log, getState } = mockBackend);
+    const mockBackend = await import('./mock_backend.js');
+    ({ callNative, log, getState } = mockBackend);
 
-        // Single test namespace for Playwright (no window.* scatter)
-        window.__celestrianTest = {
-            loadScenario: mockBackend.loadScenario,
-            setMasterPos: mockBackend.setMasterPos,
-            setIsPlaying: mockBackend.setIsPlaying,
-            callNative: mockBackend.callNative,
-            // The last accepted bounce request (mock/bounce.js)
-            getLastBounce: mockBackend.getLastBounce,
-            // The last accepted import request (mock/import.js)
-            getLastImport: mockBackend.getLastImport,
-            // Transport simulation
-            startTransport: mockBackend.startTransport,
-            pauseTransport: mockBackend.pauseTransport,
-            advanceBy: mockBackend.advanceBy,
-            // Simulated audio per wall-clock second (mock/transport.js)
-            SIMULATED_SAMPLES_PER_SECOND: mockBackend.SIMULATED_SAMPLES_PER_SECOND,
-        };
-
-        console.log('[Backend] Using Loaded Mock backend');
+    window.__celestrianTest = {
+        loadScenario: mockBackend.loadScenario,
+        setMasterPos: mockBackend.setMasterPos,
+        setIsPlaying: mockBackend.setIsPlaying,
+        callNative: mockBackend.callNative,
+        // The last accepted bounce / import request (mock/bounce.js,
+        // mock/import.js)
+        getLastBounce: mockBackend.getLastBounce,
+        getLastImport: mockBackend.getLastImport,
+        // The simulated transport (mock/transport.js). stepClock hands
+        // time to the test or back to the polls; readState reads the
+        // published state without a poll's tick of the clock.
+        startTransport: mockBackend.startTransport,
+        pauseTransport: mockBackend.pauseTransport,
+        advanceBy: mockBackend.advanceBy,
+        stepClock: mockBackend.stepClock,
+        readState: mockBackend.readState,
+        SIMULATED_SAMPLES_PER_SECOND: mockBackend.SIMULATED_SAMPLES_PER_SECOND,
+    };
+    if (params.get('harness') === '1') {
+        const { mountHarnessSidebar } = await import('./harness_sidebar.js');
+        mountHarnessSidebar(mockBackend.loadScenario);
     }
+
+    console.log('[Backend] Using Loaded Mock backend');
 } else {
-    // Production environment - use JUCE bridge
     const bridge = await import('./bridge.js');
     ({ callNative, log } = bridge);
-    getState = null; // Not used in production (polling uses callNative('getGraphState'))
+    getState = null;
     console.log('[Backend] Using JUCE bridge');
 }
 

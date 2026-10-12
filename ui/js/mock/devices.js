@@ -105,7 +105,10 @@ export function getInputList() {
 let calibration = { phase: 'idle', startedAt: 0, roundTripSamples: -1 };
 const MOCK_ROUND_TRIP_SAMPLES = 1024;
 
+/** A run in flight is left to finish: a second start is refused. */
 export function startLatencyCalibration() {
+    getLatencyCalibration();  // a capture whose window has passed is done
+    if (calibration.phase === 'capturing') return false;
     calibration = { phase: 'capturing', startedAt: Date.now(), roundTripSamples: -1 };
     console.log('[MockBackend] Latency calibration started');
     return true;

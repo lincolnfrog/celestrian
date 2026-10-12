@@ -17,11 +17,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { deriveViewModel, isArmable, armMode } from '../view_model.js';
-import { cycleCell, cycleComp, compCellTints, takeHue, compBadge,
+import { cycleCell, cycleComp, compLayout, takeHue, compBadge,
          TAKE_PALETTE } from '../comp_model.js';
-import { SCENE_Q as Q, clip, stack, state } from './helpers.mjs';
-
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
+import { SCENE_Q as Q, clip, stack, state, laneOf } from './helpers.mjs';
 
 test('clip lanes carry the take facts; groups nothing; compMode is view state', () => {
     const c = clip(4, { takes: 3, activeTake: 1, comp: [0, -1, 2, -1] });
@@ -137,13 +135,12 @@ test('a retaking lane reads the SLOT\'s length off the engine\'s shape too ' +
     // The engine publishes the LIVE captured length on `duration` while
     // a new take captures (AudioNode::getMetadata) and the slot's own on
     // `periodQ`; a state that keeps `duration` the slot's and carries no
-    // `periodQ` (a fixture, an older engine — the mock itself until
-    // 2026-10-01; called "mock" below) must draw the same picture: the
-    // slot's resting tiles, silent, at the slot's period — never
-    // re-tiled at the captured length (engine probe 2026-10-01: thirty
-    // 0.26Q tiles a quarter Q into a new take of a 4Q slot), the bar
-    // measured from the slot top. (The mock's own published state runs
-    // through the view in takes_mock.test.mjs (h).)
+    // `periodQ` (a fixture; called "mock" below) must draw the same
+    // picture: the slot's resting tiles, silent, at the slot's period —
+    // never re-tiled at the captured length (thirty 0.26Q tiles a
+    // quarter Q into a new take of a 4Q slot) — the bar measured from
+    // the slot top. (The mock's own published state runs through the
+    // view in takes_mock.test.mjs (h).)
     const base = { isRecording: true, takes: 2, activeTake: 1,
                    comp: [0, -1, 0, -1] };
     const id = 'retaking-slot';
@@ -178,19 +175,17 @@ test('a retaking lane reads the SLOT\'s length off the engine\'s shape too ' +
     // A fractional slot (a divisor of Q) reads through num/den.
     const half = picture(clip(0.1, { ...base, id, comp: [], periodQ: { num: 1, den: 2 } }), 0.1);
     assert.equal(half.intrinsicQ, 0.5);
-    // No `periodQ` and nothing captured yet (an engine that publishes
-    // none): a plain pending lane, as before.
+    // No `periodQ` and nothing captured yet: a plain pending lane.
     const bare = picture(clip(0, { ...base, id }), 0);
     assert.equal(bare.retake, false);
     assert.equal(bare.pendingStart, true);
 });
 
 test('a new take of the loop that alone makes the frame keeps the frame — ' +
-     'nothing grows (view_model settledForFrame)', () => {
+     'nothing grows (vm/published.js settledForFrame)', () => {
     // A 1Q loop and a 4Q slot: the slot alone makes the frame 4Q. Read
-    // as a fresh take it left the cycle and drove the growing frame —
-    // the engine's shape collapsed the frame to 1Q and regrew it 2Q,
-    // 3Q, 4Q; the mock's read 5Q (engine probe 2026-10-01).
+    // as a fresh take it would leave the cycle and drive the growing
+    // frame (collapsed to 1Q and regrown, or stretched to 5Q).
     const id = 'the-4q-slot';
     const frame = (slot, capturedQ, opts = { retakes: new Set([id]) }) => {
         const vm = deriveViewModel(state([clip(1), slot], {
@@ -225,10 +220,10 @@ test('a new take of the loop that alone makes the frame keeps the frame — ' +
 test('a GROUP whose mics take a new take keeps its lane: the slot\'s period, ' +
      'one tile — never re-tiled at Q', () => {
     // A 1Q loop and a 4Q kit of two mics (one take). ● on the group is a
-    // new take of both. Its own lane read the mics AS PUBLISHED: on the
-    // engine's shape a capturing mic's `duration` is the live captured
-    // length, the kit's inner cycle read Q, and the group lane re-tiled
-    // as four 1Q tiles for as long as the take ran (audit 2026-10-01).
+    // new take of both. On the engine's shape a capturing mic's
+    // `duration` is the live captured length: read as published, the
+    // kit's inner cycle would be Q and the group lane four 1Q tiles for
+    // as long as the take runs.
     const mics = ['mic-1', 'mic-2'];
     const lane = (members, capturedQ, opts = { retakes: new Set(mics) }) => {
         const vm = deriveViewModel(state([clip(1),
@@ -277,12 +272,16 @@ test('a click commits the whole cell array; all-active normalizes to [] (no comp
 });
 
 test('the tint mapping: cells naming another take carry that take\'s hue', () => {
-    const tints = compCellTints([0, -1, 1, 1], 4, 1);
+    // Every cell of the editor's grid (comp mode), as the lane draws it.
+    const tintsOf = (comp, cells, activeTake) => compLayout({
+        comp, cells, cellQ: 1, offsetQ: 0, extentQ: cells, activeTake, compMode: true,
+    }).map(c => c.tint);
+    const tints = tintsOf([0, -1, 1, 1], 4, 1);
     assert.deepEqual(tints[0], { take: 0, hue: takeHue(0) });
     assert.equal(tints[1], null, '−1 = the active take: no tint');
     assert.equal(tints[2], null, 'naming the active take explicitly: no tint');
     assert.equal(tints[3], null);
-    assert.deepEqual(compCellTints([], 3, 0), [null, null, null]);
+    assert.deepEqual(tintsOf([], 3, 0), [null, null, null]);
     // Distinct hues across the palette, wrapping past it.
     const hues = new Set(TAKE_PALETTE.map((_, k) => takeHue(k)));
     assert.equal(hues.size, TAKE_PALETTE.length);

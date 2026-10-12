@@ -1,13 +1,17 @@
 /**
  * Project lifecycle tests (src/project_manager.h — docs/projects.md).
  *
- * Pins the contracts the header documents: tick's mid-take guard,
- * saveNow's ⌘S-births-the-project branch, the boot-empty rule's
- * never-boot-empty ritual, duplicateProject's fork-forward, rename's
- * empty-name fallback, and template listing.
+ * Pins the contracts the header documents beyond the model itself
+ * (project_manager_tests.cc: birth, rename, templates, recents): the
+ * flush before a session is replaced, legal template folder names,
+ * saveNow's births-the-project branch, the empty boot,
+ * duplicateProject's fork-forward, rename's empty-name fallback, and
+ * template listing.
  */
 
 #include <juce_core/juce_core.h>
+
+#include <memory>
 
 #include "../src/audio_engine.h"
 #include "../src/project_manager.h"
@@ -16,10 +20,9 @@
 
 namespace celestrian {
 
+using test_utils::recordSilentTake;
 using test_utils::freshTempDir;
-using test_utils::isClipCommitted;
 using test_utils::nodesOf;
-using test_utils::recordClip;
 
 class ProjectLifecycleTests : public juce::UnitTest {
  public:
@@ -28,43 +31,117 @@ class ProjectLifecycleTests : public juce::UnitTest {
   void runTest() override {
     const int Q = 44100;  // engine default rate: 1 s seed take
 
-    beginTest("tick() skips while a take is in flight (crash-safety guard)");
+    // A bundle that is nobody's project yet: something to open.
+    const auto otherBundle = [&](const juce::String& label) {
+      StackNode root("Other");
+      auto dir = freshTempDir(label);
+      expect(session_io::save(root, 44100.0, dir), "the other bundle saved");
+      return dir;
+    };
+    // The project folders under a manager's Projects root.
+    const auto projectFolders = [](const ProjectManager& pm) {
+      return pm.projectsRoot().findChildFiles(juce::File::findDirectories,
+                                              false);
+    };
+
+    beginTest("opening another project first puts the current one on disk "
+              "(no tick in between)");
     {
-      AudioEngine engine;
+      const auto engine_owner = std::make_unique<AudioEngine>();
+      AudioEngine& engine = *engine_owner;
       ProjectManager pm(engine);
-      pm.setRootForTest(freshTempDir("pl_tick_guard"));
-      auto process = [&engine](int total) {
-        test_utils::driveEngine(engine, total);
+      pm.setRootForTest(freshTempDir("pl_flush_open"));
+      recordSilentTake(engine, Q);
+      expect(!pm.born(), "no tick has run: the take is in memory only");
+
+      const juce::File other = otherBundle("pl_flush_open_other");
+      expect(pm.openProject(other), "the other project opens");
+      expect(pm.folder() == other, "and is the current one");
+
+      const auto folders = projectFolders(pm);
+      expectEquals(folders.size(), 1, "the take's project was born on the way");
+      if (folders.size() == 1) {
+        expect(folders[0].getChildFile("session.json").existsAsFile(),
+               "its session.json is on disk");
+        expectEquals(folders[0].getChildFile("audio").getNumberOfChildFiles(
+                         juce::File::findFiles, "*.wav"),
+                     1, "and so is the take's wav");
+      }
+    }
+
+    beginTest("a new-from-template and a second open put the current "
+              "project's last edits on disk");
+    {
+      const auto engine_owner = std::make_unique<AudioEngine>();
+      AudioEngine& engine = *engine_owner;
+      ProjectManager pm(engine);
+      pm.setRootForTest(freshTempDir("pl_flush_edits"));
+      const juce::String clip_id = recordSilentTake(engine, Q);
+      pm.tick();
+      expect(pm.born(), "project born");
+      const juce::File first = pm.folder();
+      expect(pm.saveAsTemplate("Rig"), "a template to start from");
+
+      const auto savedNames = [](const juce::File& folder) {
+        juce::StringArray names;
+        auto loaded = session_io::load(folder, 44100.0);
+        for (const auto& child : loaded.children) names.add(child->getName());
+        return names;
       };
 
+      // An edit after the last tick, then a new project from the template.
+      engine.renameNode(clip_id, "Late edit");
+      expect(pm.newFromTemplate("Rig"), "new from the template");
+      expect(!pm.born(), "the new session is unborn");
+      expect(savedNames(first) == juce::StringArray({"Late edit"}),
+             "the edit reached the first project before it was replaced");
+
+      // The unborn session takes a take; opening the first project again
+      // must not lose it.
+      recordSilentTake(engine, Q);
+      expect(pm.openProject(first), "the first project reopens");
+      expectEquals(projectFolders(pm).size(), 2,
+                   "the template session's take was born as its own project");
+    }
+
+    beginTest("a template's folder is a legal name; the display name is "
+              "the one typed");
+    {
+      const auto engine_owner = std::make_unique<AudioEngine>();
+      AudioEngine& engine = *engine_owner;
+      ProjectManager pm(engine);
+      pm.setRootForTest(freshTempDir("pl_template_names"));
       engine.createNode("clip");
-      const juce::String clip_id = test_utils::firstNodeId(engine);
-      engine.startRecordingInNode(clip_id);
-      process(100);
-      process(Q / 2);
-      expect(engine.hasActiveTake(), "take is in flight");
 
-      // Transient capture state is never saved: every tick mid-take is
-      // a no-op, even though content is being captured.
-      pm.tick();
-      pm.tick();
-      pm.tick();
-      expect(!pm.born(), "mid-take ticks never birth the project");
+      expect(pm.saveAsTemplate("Rock/Metal rig"), "a name with a separator");
+      const auto templates = pm.listTemplates();
+      expectEquals((int)templates.size(), 1, "the template is listed");
+      if (templates.size() == 1) {
+        expectEquals(templates[0].name, juce::String("Rock/Metal rig"),
+                     "under the name the user typed");
+        expect(pm.templatesRoot().getChildFile(templates[0].id).isDirectory(),
+               "its folder sits directly in the templates root");
+        // The listing's id is what the picker hands back.
+        expect(pm.newFromTemplate(templates[0].id), "and it loads by its id");
+      }
 
-      engine.stopRecordingInNode(clip_id);
-      for (int i = 0; i < 400 && !isClipCommitted(engine, clip_id); ++i)
-        process(512);
-      expect(isClipCommitted(engine, clip_id), "take committed");
-      pm.tick();
-      expect(pm.born(), "first post-commit tick births the project");
-      expect(pm.folder().getChildFile("session.json").existsAsFile(),
-             "mirror on disk");
+      // A name that is only a path step names no folder of its own.
+      expect(!pm.saveAsTemplate(".."), "'..' is refused");
+      expect(!pm.saveAsTemplate("."), "'.' is refused");
+      expect(!pm.saveAsTemplate("/"), "a bare separator is refused");
+      expect(!pm.templatesRoot()
+                  .getParentDirectory()
+                  .getChildFile("session.json")
+                  .existsAsFile(),
+             "nothing was written into the base folder");
+      expectEquals((int)pm.listTemplates().size(), 1,
+                   "the refused names made no template");
     }
 
     beginTest("saveNow() births an unborn project");
     {
-      // Header contract: an explicit ⌘S before the first take is intent
-      // enough to birth — even a fresh empty session gets a folder.
+      // An explicit save before the first take is intent enough to
+      // birth: even a fresh empty session gets a folder.
       AudioEngine engine;
       ProjectManager pm(engine);
       pm.setRootForTest(freshTempDir("pl_save_now"));
@@ -80,10 +157,9 @@ class ProjectLifecycleTests : public juce::UnitTest {
 
     beginTest("boot is EMPTY (Q17): no seeded track, no Default template");
     {
-      // The launch ritual is RETIRED (Q17, 2026-08-13): no seeded
-      // "Track 1", no auto-persisted Default template — the creation
-      // menu (+ = template picker) and R-on-empty own the first
-      // gesture now. A fresh ProjectManager does nothing at boot.
+      // A fresh ProjectManager does nothing at boot (Q17): no seeded
+      // track, no auto-persisted Default template. The creation menu
+      // (+ = template picker) and R-on-empty own the first gesture.
       AudioEngine engine;
       ProjectManager pm(engine);
       pm.setRootForTest(freshTempDir("pl_launch"));
@@ -105,10 +181,7 @@ class ProjectLifecycleTests : public juce::UnitTest {
       AudioEngine engine;
       ProjectManager pm(engine);
       pm.setRootForTest(freshTempDir("pl_duplicate"));
-      auto process = [&engine](int total) {
-        test_utils::driveEngine(engine, total);
-      };
-      recordClip(engine, process, Q);
+      recordSilentTake(engine, Q);
       pm.tick();
       expect(pm.born(), "project born");
       const juce::File original = pm.folder();
@@ -137,10 +210,7 @@ class ProjectLifecycleTests : public juce::UnitTest {
       AudioEngine engine;
       ProjectManager pm(engine);
       pm.setRootForTest(freshTempDir("pl_rename"));
-      auto process = [&engine](int total) {
-        test_utils::driveEngine(engine, total);
-      };
-      recordClip(engine, process, Q);
+      recordSilentTake(engine, Q);
       pm.tick();
       expect(pm.born(), "project born");
 

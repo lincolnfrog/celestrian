@@ -1,32 +1,37 @@
 /**
- * Shared micro-helpers for the session view modules: the one Q→%
- * conversion, the idempotent-DOM-write trio, and the small shared
- * idioms (transition snap, drop-payload parse, guarded pointer
- * capture, element creation).
+ * Shared helpers for the session view modules: the one Q→% conversion,
+ * the idempotent DOM writes, element creation, and the shared gesture
+ * idioms — guarded pointer capture, the held control, the inline rename
+ * editor.
  */
 
 export const pct = (q, cycleQ) => (q / cycleQ) * 100 + '%';
+
+/* Lanes indent at most this many levels; deeper ones share the last
+ * (`data-depth`, which the stylesheet styles up to here). */
+export const MAX_INDENT_DEPTH = 2;
+
+/* Two Q values closer than this are one value: float noise. */
+const Q_NOISE = 1e-6;
 
 /* Q labels: snap fp noise to the whole Q it means (an exactly-1Q map
  * must never print "0.9999…Q"); honest fractions keep two decimals. */
 export const fmtQ = q => {
     const r = Math.round(q);
-    if (Math.abs(q - r) < 1e-6) return String(r);
+    if (Math.abs(q - r) < Q_NOISE) return String(r);
     return String(Math.round(q * 100) / 100);
 };
 
 /**
- * Idempotent DOM writes. Assigning textContent/innerHTML REPLACES the
- * text node even when the string is identical — and WebKit (the JUCE
- * webview) swallows a click whose mousedown target node is destroyed
- * before mouseup. With a 50ms patch tick, unconditional writes would
- * make most human clicks on rail buttons land in a replaced-node
- * window (clicks silently dropped). Never write unless the value
- * changed.
+ * IDEMPOTENT DOM WRITES: never write unless the value changed.
+ * Assigning textContent REPLACES the text node even when the string is
+ * identical, and WebKit (the JUCE webview) swallows a click whose
+ * mousedown target node is destroyed before its mouseup — under a 50ms
+ * patch tick, an unconditional write would drop most clicks on a rail
+ * button.
  */
 export const setText = (el, s) => { if (el.textContent !== s) el.textContent = s; };
 export const setTitle = (el, s) => { if (el.title !== s) el.title = s; };
-
 export const setStyle = (el, prop, v) => { if (el.style[prop] !== v) el.style[prop] = v; };
 
 /** Element-creation shorthand: tag + class + own-property assignment
@@ -48,8 +53,8 @@ export const snapThenAnimate = node => {
         requestAnimationFrame(() => { node.style.transition = ''; }));
 };
 
-/** Parse a lane-drag drop payload (JSON id array, or a single id from
- * older payloads) into an array of ids; null when unparseable. */
+/** Parse a lane-drag drop payload — a JSON id array (a lone JSON value
+ * counts as one id) — into an array of ids; null when unparseable. */
 export const parseDropIds = e => {
     let ids;
     try { ids = JSON.parse(e.dataTransfer.getData('text/plain')); }
@@ -58,21 +63,19 @@ export const parseDropIds = e => {
     return ids;
 };
 
-/** Pointer capture that survives webviews which refuse it: capture
- * keeps a drag alive off-element, but a synthetic pointer (or a JUCE
- * webview in a bad mood) can throw — the gesture wiring must not die
- * with it. */
+/** Pointer capture that survives a refusal: capture keeps a drag alive
+ * off-element, but setPointerCapture can throw (a synthetic pointer, a
+ * webview that declines) — the gesture's wiring must not die with it. */
 export const capturePointer = (node, ev) => {
     try { node.setPointerCapture(ev.pointerId); } catch (_) {}
 };
 
-/** GESTURE SAFETY NET: `onLost()` fires ONCE if the
- * pointer capture is lost before the gesture's own end handler ran
- * (WebView2 drops captures on focus loss / Alt-Tab; a synthetic
- * pointer may never deliver pointerup) or the window blurs. Without
- * it a lost capture left the overlay-freeze latch set forever — the overlay
- * never rebuilt and the stale gesture closure kept answering. Returns
- * release(): call it from the normal end path. */
+/** GESTURE SAFETY NET: `onLost()` fires ONCE if the pointer capture is
+ * lost before the gesture's own end ran (WebView2 drops captures on
+ * focus loss / Alt-Tab; a synthetic pointer may never deliver its
+ * pointerup) or the window blurs — without it the gesture's latches
+ * stay set and its closures keep answering. Returns release(): call it
+ * from the normal end path. */
 export const guardGesture = (node, onLost) => {
     let armed = true;
     const cleanup = () => {
@@ -90,10 +93,83 @@ export const guardGesture = (node, onLost) => {
     return () => { armed = false; cleanup(); };
 };
 
+/**
+ * A HELD CONTROL (the `_hot` law — context.js): a primary press on
+ * `node` holds it until the release, `node._hot` true in between.
+ *   onStart(ev) — the press; return false to decline it (nothing held).
+ *   onMove(ev)  — each move while held.
+ *   onEnd(ev)   — once per hold: `ev` is the release, or null when the
+ *                 hold ended without one (cancelled, capture lost,
+ *                 window blurred) — nothing was released: commit nothing.
+ * The pointer is captured, so the drag outlives the node's bounds.
+ * `capture: false` is for a native control that tracks the pointer
+ * itself (a range input): its release is caught at the window.
+ */
+export function holdControl(node, { onStart, onMove, onEnd, capture = true } = {}) {
+    node.addEventListener('pointerdown', down => {
+        if (down.button !== 0 || node._hot) return;
+        if (onStart && onStart(down) === false) return;
+        node._hot = true;
+        if (capture) capturePointer(node, down);
+        const source = capture ? node : window;
+        // Heard in the capture phase: at the window that is before any
+        // target can stop the event.
+        const phase = { capture: true };
+        const move = ev => { if (onMove) onMove(ev); };
+        const finish = ev => {
+            if (!node._hot) return;
+            node._hot = false;
+            disarm();
+            source.removeEventListener('pointermove', move, phase);
+            source.removeEventListener('pointerup', finish, phase);
+            source.removeEventListener('pointercancel', lost, phase);
+            if (onEnd) onEnd(ev);
+        };
+        const lost = () => finish(null);
+        const disarm = guardGesture(node, lost);
+        source.addEventListener('pointermove', move, phase);
+        source.addEventListener('pointerup', finish, phase);
+        source.addEventListener('pointercancel', lost, phase);
+    });
+}
+
+/**
+ * AN INLINE RENAME EDITOR over `nameEl`: the name hides and a text input
+ * takes its place, focused, its text selected. Enter or a blur commits,
+ * Escape cancels. `onCommit(next)` runs only for a name that CHANGED
+ * (trimmed; an empty one only with `allowEmpty`); `onDone()` runs when
+ * the editor closes, either way, before the commit.
+ */
+export function inlineRename(nameEl, { value, maxLength, className,
+                                       allowEmpty = false, onCommit, onDone }) {
+    const input = el('input', className, { type: 'text' });
+    input.value = value;
+    input.maxLength = maxLength;
+    nameEl.style.display = 'none';
+    nameEl.after(input);
+    input.focus();
+    input.select();
+    let done = false;  // Enter removes the input, which blurs it: run once
+    const finish = commit => {
+        if (done) return;
+        done = true;
+        const next = input.value.trim();
+        input.remove();
+        nameEl.style.display = '';
+        if (onDone) onDone();
+        if (commit && next !== value && (next || allowEmpty)) onCommit(next);
+    };
+    input.addEventListener('keydown', e => {
+        e.stopPropagation();  // typing reaches no hotkey
+        if (e.key === 'Enter') finish(true);
+        else if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+}
+
 /** True when the key event targets a text-entry surface (a form
- * control or a contentEditable rename editor) — global hotkeys (Space,
- * ⌘Z, ⌘S, zoom, teleport, R) must never fire while the user types.
- * The ONE copy: keys.js (the sole keydown dispatcher) applies it. */
+ * control or a contentEditable editor): no global hotkey fires while
+ * the user types. keys.js, the one keydown dispatcher, applies it. */
 export const isTypingTarget = e => {
     const t = e.target;
     const tag = t && t.tagName;
@@ -101,9 +177,6 @@ export const isTypingTarget = e => {
         !!(t && t.isContentEditable);
 };
 
-/** Approximate Q equality, matching fmtQ's fp-noise tolerance: display
- * decisions (edge-tick suppression) must not hinge on exact float
- * identity for a fractionally-derived tick. (The ruler and the
- * gridlines are placed in reused elements every patch — they glide with
- * a settling frame — so no tick-set signature keys a rebuild.) */
-export const approxQ = (a, b) => Math.abs(a - b) < 1e-6;
+/** Approximate Q equality, at fmtQ's tolerance: a display decision must
+ * not hinge on exact float identity for a fractionally-derived Q. */
+export const approxQ = (a, b) => Math.abs(a - b) < Q_NOISE;

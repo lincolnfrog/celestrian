@@ -56,10 +56,43 @@ The **first recorded clip** establishes the quantum:
 > **Q survives its creator (owner ruling 2026-07-07).** The first take
 > sets the groove; muting or even deleting it must NOT change Q — "the
 > DNA of the original scratch track remains." Q is island state, not a
-> derivation from surviving clips. (The current implementation derives Q
-> from the minimum child duration, so deleting/shortening clips silently
-> changes it — that is a confirmed bug, fixed by refactoring_proposal.md
-> P0-3 storing Q explicitly.)
+> derivation from surviving clips: it is stored once, at the island
+> root, and reverts only when the island holds no committed content
+> (scenario S11).
+
+### The record verbs, and what they answer
+
+Each answers whether it applied (the answer law, ui.md); the status
+line is read from that answer.
+
+- **`startRecordingInNode(uuid)`** arms every empty clip beneath the
+  node as one performance, and answers whether a take was armed. **It
+  validates before it changes anything.** Refused — and nothing at all
+  changes: not the graph, not the transport, not the undo or redo
+  log — for an unknown node, no empty clip beneath, a take already
+  live (one take at a time), or a through-map arm the map cannot place
+  (nested active maps, a window over cued steps, a cycle too long for
+  a take). The arm's own edits — the lock-collapse of the definer, the
+  end of a Q hand-off — are applied first, because the refusals must
+  be judged against the graph they leave; a refusal puts them back and
+  the log never hears of them. Only a certain arm logs them, engages a
+  step audition it aims at, and starts a stopped transport. The clip
+  JUDGES first (`mayRecord` / `mayRetake`), then the arm cannot fail.
+- **`stopRecordingInNode(uuid)`** ASKS every take live beneath the
+  node to stop — fractal like the arm, so a group commits at one
+  shared boundary. An armed take cancels at once; a capturing one ends
+  on the audio thread at a block top — its boundary, or for an island's
+  first take that very top, at its write head — so `isRecording` and
+  the take's undo step follow the call by a block and a poll. It
+  answers false when nothing beneath was armed or capturing.
+- **`newTake(uuid)`** is the arm on a committed slot (takes.md §2);
+  same answer, its own refusals.
+- **A take with no input still runs.** An audio take whose device
+  offers no input advances by the clock over silence, so its stop
+  commits at the boundary like any other.
+- **Monitoring hears the input the take records** — one input rule for
+  capture and for monitoring: the assigned channel, else the nearest
+  the device has.
 
 ---
 
@@ -146,14 +179,15 @@ Outer Stack:
 
 *(Table trued 2026-09-01. `launch_point_samples`, `anchor_phase_samples`
 and `trigger_master_position` were deleted 2026-07-16 — kernel.md §5
-step 2; `launchPoint` in metadata derives at read time.)*
+step 2. The launch point is no stored and no published field: it is
+`timing::launchPointFor(origin, duration)`, golden-pinned.)*
 
 | Field | Description | Set When |
 |-------|-------------|----------|
 | **`origin`** | **THE canonical timing fact** (kernel.md): the absolute performance moment the clip's `content[0]` belongs to (samples on the monotonic clock; QTime offset from the island zero in the save format, Q12). Every other timing quantity — launch point `(−origin) mod period`, tile x, playhead — is a projection of it. | Recording arms (folded per Q15 / re-anchored per Q13 at edits) |
 | `duration` | Total clip length, samples (heard-time snap to the next boundary; live written length while recording) | Recording commits |
 | `periodSource` | `own` (loops at `duration`) or `context` (one-shot: period = the context cycle, Q5) — a knob, not a formula | Default `own`; the ↺/1× chip toggles it (undoable) |
-| window / map | The node's time-map: single-segment loop points (`loop_start/end` + bypass flag) or a multi-segment `segments` override; active iff valid and not bypassed (time_maps.md). Periods are whole multiples or exact divisors of Q (engine_lcm_guard.md) | Commit sets the full span; edits thereafter |
+| window / map | The node's time-map: single-segment loop points (`loop_start/end` + bypass flag) or a multi-segment `segments` override; active iff valid and not bypassed (time_maps.md). Periods are whole multiples or exact divisors of Q (engine_lcm_guard.md) | A take commits with NO map — whole is no window (the one exception: a stop outside the snap tolerance stores `[0, L)` over the padded take). Edits thereafter |
 | `contextCycle` | The heard frame the take was performed against (effective island cycle at arm) — the fold modulus for take marking (Q14b) | Recording arms |
 | buffer | The content: a dense sample buffer in origin frame (no rotation, no remap); immutable after commit | Recording commits |
 
@@ -498,7 +532,10 @@ When Clip 3 commits at 4Q:
 > The UI-facing `masterPos` is a **derived view** computed in
 > `getGraphState`: `t mod LCM` normally; while recording, a base frozen
 > at record start plus linear growth, so the cursor extends past the
-> committed LCM exactly as the cursor table below specifies.
+> committed LCM exactly as the cursor table below specifies. The
+> island's FIRST take has no cycle to continue: until Q exists the view
+> is the take's own position, the clock read from the island zero its
+> arm stores (ui.md, the masterPos contract).
 
 ### Example: Large LCM (1Q + 8Q + 3Q)
 
@@ -608,8 +645,10 @@ When you stop recording at timeline=6Q:
 
 2. **Never wrap the clock.** The transport is monotonic. The published
    `masterPos` is a DERIVED view: `t mod effective cycle` while idle or
-   playing, growing linearly while recording (ui.md, the masterPos
-   contract). Consumers never re-wrap it.
+   playing, growing linearly while recording — from a base frozen as
+   the take begins (its place in the cycle, never negative), or, for
+   the island's first take, from the take's own top (ui.md, the
+   masterPos contract). Consumers never re-wrap it.
 
 3. **Recalculate the LCM when clips change** — a clip added, a duration
    changed, a clip deleted.
@@ -701,7 +740,7 @@ Where:
 | Mode | Cursor Behavior |
 |------|-----------------|
 | **Playback** | derived view = `t % LCM`, wraps at LCM boundary |
-| **Recording** | derived view grows linearly (frozen base + elapsed) until commit |
+| **Recording** | derived view grows linearly (frozen base + elapsed) until commit. The island's first take: the take's own position (the clock from the zero its arm stores), which leads the captured length by the round-trip latency |
 | **Commit** | view switches back to `t % LCM` of the *new* cycle — no clock mutation; clip alignment comes from stored origins |
 
 #### Visual Alignment Invariant

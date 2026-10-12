@@ -1,16 +1,17 @@
 /**
- * Ruler scrub (owner ruling 2026-08-27) — the two halves of the seek:
+ * Ruler scrub — the two halves of the seek:
  *
  *   1. seekTargetFromFrac (session_view/ruler_seek.js): the pure
  *      display→engine mapping — pointer fraction of the ruler to a
  *      seekTransport target, clamped into the audible loop's span
  *      (one rule for plain playback, trim view, and auditions).
- *   2. The mock's seekTransport (mock/transport.js, engine parity):
- *      a PHASE ADVANCE (docs/frame.md) — the island's zero and every
- *      origin move back by it; the monotonic clock is never touched
+ *   2. seek.js seekDelta against the backend's seekTransport: a PHASE
+ *      ADVANCE (docs/frame.md) — the island's zero and every origin
+ *      move back by it; the monotonic clock is never touched
  *      (kernel.md) — corrected for the clock since the poll it was
  *      computed against (`atClock`), and REFUSED while any take is
- *      live or armed. seek.js turns the ruler's target phase into it.
+ *      live or armed. (The verb itself is held to the engine by
+ *      ui/differential/ seek/*.)
  */
 
 import test from 'node:test';
@@ -113,19 +114,6 @@ test('the advance corrects for the clock since the poll (atClock)', async () => 
     near(getState().masterPos, 2 * Q, 'a bare advance moves the phase from where it is');
 });
 
-test('any advance folds on the audible cycle; a zero advance is a no-op', async () => {
-    loadScenario('example-1q-4q'); // cycle 4Q
-    const p0 = getState().masterPos;
-    assert.ok(await callNative('seekTransport', 5 * Q));
-    near(getState().masterPos, (p0 + Q) % (4 * Q), '5Q advances one Q on a 4Q cycle');
-    assert.ok(await callNative('seekTransport', -Q));
-    near(getState().masterPos, p0, 'a negative advance moves back');
-    const z = getState().islandZero;
-    assert.deepEqual(await callNative('seekTransport', 0),
-        { advance: 0, clock: getState().islandPos + z }, 'zero advance: answered');
-    assert.equal(getState().islandZero, z, 'zero advance: nothing moves');
-});
-
 test('refused while a take is live or armed (engine rule)', async () => {
     loadScenario('empty');
     const stackId = await callNative('createNode', 'stack', '');
@@ -135,6 +123,9 @@ test('refused while a take is live or armed (engine rule)', async () => {
         'live take: seek refused');
     advanceBy(Q);
     await callNative('stopRecordingInNode', clip);
+    assert.equal(await callNative('seekTransport', 0), false,
+        'asked to stop, not yet ended: still refused');
+    advanceBy(0);  // the audio callback ends the take
     assert.ok(await callNative('seekTransport', 0),
         'take settled: seek allowed again');
 });

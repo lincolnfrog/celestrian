@@ -106,9 +106,40 @@ class TrackTemplateTests : public juce::UnitTest {
                    "empty => armable (Q7: arm targets emptiness)");
     }
 
-    // Audit D7-4: a template's step lengths are the session's EXACT
-    // rational ({num, den}), not a lossy double — and the double a
-    // pre-2026-09-10 template stored still builds.
+    beginTest("a template's sequence builds in part: a step with no length "
+              "and a successor naming no listed step are left out, and a "
+              "gate row for a child the group does not have");
+    {
+      const int64_t q = 1000;
+      const juce::var tpl = juce::JSON::parse(
+          R"({"type": "stack", "name": "Song",
+              "children": [{"type": "clip", "name": "Kick"}],
+              "sequence": {"bypassed": true, "steps": [
+                  {"name": "a", "lenQ": {"num": 1, "den": 1},
+                   "next": [{"to": 1}, {"to": 5}]},
+                  {"name": "b", "lenQ": 2.0},
+                  {"name": "nothing", "lenQ": {"num": 0, "den": 1}}],
+                "gates": [{"child": 0, "bits": [1, 0, 1]},
+                          {"child": 4, "bits": [1]}]}})");
+      auto built = track_templates::build(tpl, 48000.0, q);
+      auto* stack = dynamic_cast<StackNode*>(built.get());
+      const Sequence* seq = stack != nullptr ? stack->sequencePtr() : nullptr;
+      expect(seq != nullptr, "the sequence built");
+      if (seq != nullptr) {
+        expectEquals(seq->numSteps(), 2, "the step with no length is left out");
+        expectEquals(seq->steps[0].len, q);
+        expectEquals(seq->steps[1].len, 2 * q, "a bare Q count still reads");
+        expectEquals((int)seq->steps[0].next.size(), 1,
+                     "the successor naming no listed step is left out");
+        expectEquals((int)seq->gates.size(), 1, "one row: the child it has");
+        expectEquals((int)seq->maskFor(stack->getChild(0)->getUuid()), 0b101,
+                     "keyed onto the built child's uuid");
+        expect(stack->isSequenceBypassed(), "bypassed, as the template says");
+      }
+    }
+
+    // A template's step lengths are the session's EXACT rational ({num,
+    // den}); a bare Q count, the other shape a file may hold, builds too.
     beginTest("sequence lengths capture as exact QTime; a legacy double Q "
               "count still builds");
     {

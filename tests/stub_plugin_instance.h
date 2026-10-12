@@ -2,18 +2,57 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <cstring>
+#include <memory>
+
+#include "../src/audio_node.h"
+#include "../src/dsp/vst3_slot.h"
+
 namespace celestrian::test_utils {
 
 /**
- * The in-tree stub plugin (Q-V5 ruling): a minimal AudioPluginInstance
- * with DETERMINISTIC, assertable behavior — no real plugin binaries in
- * unit tests. Multiplies every sample by `gain` (default 0.5), reports
- * kLatency samples of latency, and round-trips `gain` as its state
- * blob (a single float). The real-binary twin of this stub is the
- * in-repo test plugin (test_plugin/ — "Celestrian Test Gain"), which
- * the plugin_host integration test hosts through the actual VST3 path.
+ * What both in-tree stubs answer the same way: the AudioProcessor
+ * virtuals no test asks a stub about, and a state blob of ONE float
+ * (each stub names which), `state_restores` counting the
+ * setStateInformation calls.
  */
-class StubPluginInstance : public juce::AudioPluginInstance {
+class StubInstanceBase : public juce::AudioPluginInstance {
+ public:
+  int state_restores = 0;
+
+  void releaseResources() override {}
+  double getTailLengthSeconds() const override { return 0.0; }
+  bool producesMidi() const override { return false; }
+  juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+  bool hasEditor() const override { return false; }
+  int getNumPrograms() override { return 1; }
+  int getCurrentProgram() override { return 0; }
+  void setCurrentProgram(int) override {}
+  const juce::String getProgramName(int) override { return {}; }
+  void changeProgramName(int, const juce::String&) override {}
+  void getStateInformation(juce::MemoryBlock& dest) override {
+    dest.replaceAll(&stateValue(), sizeof(float));
+  }
+  void setStateInformation(const void* data, int size) override {
+    ++state_restores;
+    if (size == (int)sizeof(float)) memcpy(&stateValue(), data, sizeof(float));
+  }
+
+ protected:
+  /** The one float this stub saves and restores. */
+  virtual float& stateValue() = 0;
+};
+
+/**
+ * The in-tree stub plugin: a minimal AudioPluginInstance with
+ * DETERMINISTIC, assertable behavior — no real plugin binaries in unit
+ * tests. Multiplies every sample by `gain` (default 0.5), reports
+ * kLatency samples of latency, and round-trips `gain` as its state
+ * blob. The real-binary twin of this stub is the in-repo test plugin
+ * (test_plugin/ — "Celestrian Test Gain"), which the plugin_host
+ * integration test hosts through the actual VST3 path.
+ */
+class StubPluginInstance : public StubInstanceBase {
  public:
   static constexpr int kLatency = 64;
 
@@ -38,55 +77,37 @@ class StubPluginInstance : public juce::AudioPluginInstance {
     prepared_block = block_size;
     setLatencySamples(kLatency);
   }
-  void releaseResources() override {}
   void processBlock(juce::AudioBuffer<float>& buffer,
                     juce::MidiBuffer&) override {
     buffer.applyGain(gain);
   }
-  double getTailLengthSeconds() const override { return 0.0; }
   bool acceptsMidi() const override { return false; }
-  bool producesMidi() const override { return false; }
-  juce::AudioProcessorEditor* createEditor() override { return nullptr; }
-  bool hasEditor() const override { return false; }
-  int getNumPrograms() override { return 1; }
-  int getCurrentProgram() override { return 0; }
-  void setCurrentProgram(int) override {}
-  const juce::String getProgramName(int) override { return {}; }
-  void changeProgramName(int, const juce::String&) override {}
-  void getStateInformation(juce::MemoryBlock& dest) override {
-    dest.replaceAll(&gain, sizeof(gain));
-  }
-  void setStateInformation(const void* data, int size) override {
-    ++state_restores;
-    if (size == (int)sizeof(gain)) memcpy(&gain, data, sizeof(gain));
-  }
-  int state_restores = 0;  // setStateInformation calls (rider pins)
+
+ protected:
+  float& stateValue() override { return gain; }
 };
 
 /**
- * The stub INSTRUMENT (phase 4): acceptsMidi, generates a constant
- * 0.25 level while any note is held (note-on sets held, note-off
- * clears it — SAMPLE-ACCURATE from the event's block offset, no
- * envelope math: deterministic assertions on where a note starts and
- * stops). OVERWRITES the buffer, the chain-head instrument semantic
- * (docs/vst3.md §8). Counts note-ons/offs for the phase-5 tests and
- * records the SOUND-OFF pair (CC 123 / CC 120, docs/vst3.md §11): each
- * clears the held note, is counted, and marks its channel. Its state
- * blob is `patch` (one float) for the take-undo rider pins.
+ * The stub INSTRUMENT: acceptsMidi, generates a constant 0.25 level
+ * while any note is held (note-on sets held, note-off clears it —
+ * SAMPLE-ACCURATE from the event's block offset, no envelope math:
+ * deterministic assertions on where a note starts and stops).
+ * OVERWRITES the buffer, the chain-head instrument semantic
+ * (docs/vst3.md §8). Counts note-ons/offs and records the SOUND-OFF
+ * pair (CC 123 / CC 120, docs/vst3.md §8.3): each clears the held note,
+ * is counted, and marks its channel. Its state blob is `patch`.
  */
-class StubSynthInstance : public juce::AudioPluginInstance {
+class StubSynthInstance : public StubInstanceBase {
  public:
   static constexpr float kLevel = 0.25f;
 
   bool note_held = false;
-  int blocks_processed = 0;
   int note_ons = 0;
   int note_offs = 0;
   int all_notes_off = 0;               // CC 123 received
   int all_sound_off = 0;               // CC 120 received
   juce::uint16 sound_off_channels = 0;  // bit c: channel c got the pair
   float patch = 0.0f;
-  int state_restores = 0;
 
   void fillInPluginDescription(juce::PluginDescription& d) const override {
     d.name = "Stub Synth";
@@ -98,10 +119,8 @@ class StubSynthInstance : public juce::AudioPluginInstance {
 
   const juce::String getName() const override { return "Stub Synth"; }
   void prepareToPlay(double, int) override {}
-  void releaseResources() override {}
   void processBlock(juce::AudioBuffer<float>& buffer,
                     juce::MidiBuffer& midi) override {
-    ++blocks_processed;
     // Overwrite: an instrument GENERATES (the incoming buffer is the
     // chain's promoted silence on the play-through path). Segment by
     // event offset: [prev, offset) carries the state before the event.
@@ -136,23 +155,41 @@ class StubSynthInstance : public juce::AudioPluginInstance {
     }
     if (cursor < n) fillTo(n);
   }
-  double getTailLengthSeconds() const override { return 0.0; }
   bool acceptsMidi() const override { return true; }
-  bool producesMidi() const override { return false; }
-  juce::AudioProcessorEditor* createEditor() override { return nullptr; }
-  bool hasEditor() const override { return false; }
-  int getNumPrograms() override { return 1; }
-  int getCurrentProgram() override { return 0; }
-  void setCurrentProgram(int) override {}
-  const juce::String getProgramName(int) override { return {}; }
-  void changeProgramName(int, const juce::String&) override {}
-  void getStateInformation(juce::MemoryBlock& dest) override {
-    dest.replaceAll(&patch, sizeof(patch));
-  }
-  void setStateInformation(const void* data, int size) override {
-    ++state_restores;
-    if (size == (int)sizeof(patch)) memcpy(&patch, data, sizeof(patch));
-  }
+
+ protected:
+  float& stateValue() override { return patch; }
 };
+
+/** A live slot around a fresh stub gain plugin, as the engine's add
+ * path receives one. */
+inline std::shared_ptr<dsp::Vst3Slot> makeStubGainSlot(float gain = 0.5f) {
+  return std::make_shared<dsp::Vst3Slot>(
+      std::make_unique<StubPluginInstance>(gain), "Stub-uid", "Stub Gain",
+      "/stub/StubGain.vst3");
+}
+
+/** A live INSTRUMENT slot around a fresh stub synth. */
+inline std::shared_ptr<dsp::Vst3Slot> makeStubSynthSlot() {
+  return std::make_shared<dsp::Vst3Slot>(
+      std::make_unique<StubSynthInstance>(), "Stub-synth-uid", "Stub Synth",
+      "/stub/StubSynth.vst3", /*is_instrument=*/true);
+}
+
+/** Appends a stub-synth instrument slot to `node`'s chain, prepared at
+ * `sample_rate` and enabled. Returns the stub, for assertions on what
+ * the instrument was sent. */
+inline StubSynthInstance* installStubSynth(AudioNode& node,
+                                           double sample_rate) {
+  auto slots = node.fxChain()->slots();
+  auto synth = makeStubSynthSlot();
+  auto* slot = synth.get();
+  slots.push_back(std::move(synth));
+  delete node.exchangeFxChain(
+      dsp::FxChain::makeFromSlots(std::move(slots)).release());
+  node.fxChain()->prepare(sample_rate);
+  slot->enabled.store(true);
+  return static_cast<StubSynthInstance*>(slot->instance());
+}
 
 }  // namespace celestrian::test_utils

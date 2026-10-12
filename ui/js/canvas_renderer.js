@@ -1,54 +1,45 @@
 /**
- * Waveform renderer — Tape Room (docs/session_view.md §3).
+ * Waveform and MIDI tile renderer (docs/session_view.md §3).
  *
- * Draws a filled, vertically symmetric envelope (not per-peak bars):
- * peaks are MAX-POOLED into one value per CSS pixel column, so the
- * same content renders identically at any tile width (per-bar drawing
- * aliased — ghost tiles of the same take looked like different audio).
- * DPR-aware: the backing store is devicePixelRatio× the CSS size (see
- * theme.fitCanvas), so waveforms are crisp on retina displays; all
- * drawing here is in CSS-pixel space.
- *
- * Palette lives in theme.js (TAPE / COMPOSITE / ECHO), the single
- * source kept in lockstep with css/session.css :root.
- *
- * Two column samplers feed ONE envelope renderer (drawEnvelope):
- * poolColumns (a whole peaks array, fit or fixed scale) and
- * mappedColumns (a heard tile: each column through the time map).
+ * A waveform is a filled, vertically symmetric envelope: peaks are
+ * max-pooled into one value per CSS pixel column, so the same content
+ * draws identically at any tile width. Two column samplers feed ONE
+ * envelope renderer (drawEnvelope): poolColumns (a whole peaks array)
+ * and mappedColumns (a heard tile, each column through the time map).
+ * All drawing is in CSS pixels (theme.fitCanvas); the palette is
+ * theme.js.
  */
 
 import { TAPE, COMPOSITE, ECHO, fitCanvas } from './theme.js';
 import { mapOffset, mapPeriod, seamDistance } from './time_map.js';
 import { posMod } from './math_utils.js';
+import { boostForMax } from './display_boost.js';
+import { MIDDLE_OCTAVE } from './midi_notes.js';
 
-/** Peak value at index i as a clean absolute number (peaks may arrive
- *  as strings from JSON; NaN reads as silence). */
+/** Peak i as a clean magnitude (peaks may arrive as strings from JSON;
+ * NaN reads as silence). */
 function peakAbs(peaks, i) {
     return Math.abs(parseFloat(peaks[i]) || 0);
 }
 
-/* A column edge within this many PEAKS of a bin edge IS that edge. The
- * same raw position computed two ways (before and after a map slide:
- * s + h vs (s + δ) + (h − δ)) differs in the last float bits, and a
- * floor/ceil flip there would change a column nothing moved — the
- * heard-tile invariant (heard_tile_sampler.test.mjs) is exact only
- * with this tolerance. A millionth of a peak is far below a pixel. */
+/* A column edge within this many PEAKS of a bin edge is that edge. The
+ * same raw position computed two ways (before and after a map slide)
+ * differs in the last float bits, and a floor/ceil flip there would
+ * change a column nothing moved. Far below a pixel. */
 const EDGE_EPS_PEAKS = 1e-6;
-/* A heard piece thinner than this (in fractions of the take) is a
- * float sliver at a seam, not material: skipped, and the walk steps
- * past it by at least this much so it always makes progress. */
+/* A heard piece thinner than this (fractions of the take) is a float
+ * sliver at a seam, not material: skipped, and the walk steps past it
+ * by at least this much so it always makes progress. */
 const PIECE_EPS = 1e-12;
 
 /**
- * THE POOLING KERNEL — one column's value over the peaks range
- * [lo, hi) in fractional peak indices (peak i covers [i, i + 1)).
- * Downsampling (≥ 1 peak): the max over every peak the range touches.
- * Upsampling (< 1 peak): linear interpolation at `lo` (committed
- * material), or with `nearest` the peak `lo` sits in (live bars — see
- * poolColumns' fixed scale). A range starting at or past the end
- * reads as silence (a fixed-scale canvas wider than its content).
- * Shared by poolColumns and mappedColumns, so a heard tile and the
- * whole take pool identically.
+ * THE POOLING KERNEL: one column's value over the peaks range [lo, hi)
+ * in fractional peak indices (peak i covers [i, i + 1)). A range of a
+ * peak or more is the max over every peak it touches. A narrower one is
+ * a linear interpolation at `lo` — or, with `nearest`, the peak `lo`
+ * sits in: a live bar must not interpolate toward a peak that has not
+ * arrived, or its last column changes when it does. A range starting
+ * past the end reads as silence.
  */
 function poolRange(peaks, lo, hi, nearest = false) {
     const n = peaks.length;
@@ -63,11 +54,7 @@ function poolRange(peaks, lo, hi, nearest = false) {
         return v;
     }
     const i = Math.max(0, Math.min(n - 1, Math.floor(lo + EDGE_EPS_PEAKS)));
-    // Fixed scale upsampling: NEAREST only. Interpolating toward the
-    // next peak changes the edge column when that peak later arrives —
-    // the last visible sliver of the live bar wiggled.
     if (nearest) return peakAbs(peaks, i);
-    // Fit upsampling (committed, at rest): linear interpolation
     const j = Math.min(n - 1, i + 1);
     const t = Math.max(0, Math.min(1, lo - i));
     const a = peakAbs(peaks, i);
@@ -75,22 +62,16 @@ function poolRange(peaks, lo, hi, nearest = false) {
 }
 
 /**
- * One envelope value per CSS pixel column, max-pooled over the peaks
- * that column covers (or interpolated when upsampling). Two mappings:
+ * One pooled value per CSS pixel column of a whole peaks array.
  *
- * FIT (pxPerPeak omitted): column x covers peaks [x/W·n, (x+1)/W·n) —
- * right for COMMITTED clips, whose peaks are drawn once at rest.
+ * FIT (no pxPerPeak): column x covers peaks [x/W·n, (x+1)/W·n) — for
+ * committed clips, drawn once at rest.
  *
- * FIXED SCALE (pxPerPeak = p): column x covers peaks [x/p, (x+1)/p) — a
- * function of p ONLY, never of the peak count. Required for LIVE bars:
- * under fit mapping, W = round(n·p) makes W/n wobble as n grows, so
- * every drawn column would shift sub-pixel on every poll — a
- * left/right jitter on the recording waveform, worst when p shrinks
- * after a frame extension. With fixed scale, a peak's pixels are
- * immutable for the life of the take: new content appends, earlier
- * content never remaps.
- *
- * Exported for the append-stability unit test.
+ * FIXED SCALE (pxPerPeak = p): column x covers [x/p, (x+1)/p), a
+ * function of p only. Required for LIVE bars: under fit the mapping
+ * moves with the growing peak count, so every drawn column would shift
+ * on every poll. At a fixed scale new content appends and earlier
+ * content never remaps (waveform_stability.test.mjs).
  */
 export function poolColumns(peaks, cssW, pxPerPeak) {
     const n = peaks.length;
@@ -105,30 +86,16 @@ export function poolColumns(peaks, cssW, pxPerPeak) {
 }
 
 /**
- * THE HEARD-TILE SAMPLER (loop-region phase 1, 2026-09-23; flash-chrome
- * F2 / seam-model SM-7): one pooled value per CSS px column of a tile
- * that draws a MAPPED slice of a take — a heard tile's window content
- * with its loop top rotated in, or any raw range of the take.
- *
- * Each column is a span of the tile's PERIOD PHASE; its heard offset is
- * (phase − rotFrac) mod 1 of the map period, and the map carries that
- * to raw take positions — mapOffset / seamDistance, the heard view's
- * own mapping (time_map.js), walked piece by piece when the column
- * straddles a seam. The raw pieces pool with FRACTIONAL edges
- * (poolRange). Nothing is sliced, rotated or refit in whole peaks: the
- * old renderer cut srcSegs at floor/ceil peaks, rotated by a rounded
- * peak count and stretched the result over the tile, so a sub-peak
- * edit flipped the peak count (re-stretching the tile) and the rounding
- * (every feature jumped ½–1 peak, ~11 px at the field's 156 px/Q) — the
- * whole lane lurched on every live commit.
- *
- * THE INVARIANT this buys (heard_tile_sampler.test.mjs): a column
- * depends only on the raw material its own heard span selects, so a map
- * SLIDE changes exactly the columns its swept seam passes over — the
- * rest of the lane stays put (to float noise, far below a pixel).
+ * THE HEARD-TILE SAMPLER: one pooled value per CSS column of a tile
+ * that draws a MAPPED slice of a take. Each column is a span of the
+ * tile's period phase; its heard span walks the map piece by piece
+ * (time_map.js mapOffset / seamDistance) and pools the raw material
+ * with FRACTIONAL edges — nothing is cut, rotated or refit in whole
+ * peaks. So a column depends only on the material its own heard span
+ * selects, and a map slide changes exactly the columns its seam crosses
+ * (heard_tile_sampler.test.mjs).
  *
  * @param {ArrayLike<number|string>} peaks the take's FULL peaks array
- *     (uniform over the raw take, fractions [0, 1))
  * @param {number} cssW column count (CSS px)
  * @param {Object} m
  * @param {Array<[number, number]>} m.src content ranges, fractions of
@@ -136,9 +103,9 @@ export function poolColumns(peaks, cssW, pxPerPeak) {
  * @param {number} [m.rotFrac] where the loop's heard top sits in the
  *     period (a rep's srcTopFrac); 0 = the top at phase 0
  * @param {number} [m.u0] the tile's left edge in PERIODS on the tile
- *     grid (startQ / P — heard tiles tile from the frame's 0)
+ *     grid (startQ / P)
  * @param {number} [m.u1] its right edge (endQ / P): a full tile spans
- *     one period; a tile clipped by the frame shows the LEADING part of
+ *     one period; a tile clipped by the frame shows the leading part of
  *     its period, never the whole period squeezed in
  * @returns {Float32Array} cssW values in [0, 1]
  */
@@ -171,61 +138,41 @@ export function mappedColumns(peaks, cssW, { src, rotFrac = 0, u0 = 0, u1 = 1 })
     return cols;
 }
 
-// Envelope geometry + display-normalization tuning.
-// AMP_FRAC: envelope half-height as a fraction of the canvas height —
-//   0.46 leaves a small margin so a full-scale peak never kisses the
-//   tile border.
-// FLOOR_PX: minimum half-height in px — silent-but-present audio stays
-//   visible as a hairline spine.
-// SHAPE_EXP: gentle perceptual exponent (v^0.65) lifting quiet detail.
-// NORM_TARGET: normalization scales the clip's own maximum to this
-//   (0.95, not 1.0 — headroom against the smoothing pass overshooting).
-// NORM_MAX_BOOST: normalization boost cap — silence stays flat instead
-//   of amplifying noise floor to full scale.
-const AMP_FRAC = 0.46;
-const FLOOR_PX = 0.75;
-const SHAPE_EXP = 0.65;
-const NORM_TARGET = 0.95;
-const NORM_MAX_BOOST = 8;
+// Envelope geometry.
+const AMP_FRAC = 0.46;   // half-height as a fraction of the canvas: a
+                         // full-scale peak stops short of the tile border
+const FLOOR_PX = 0.75;   // minimum half-height: silent-but-present audio
+                         // stays visible as a hairline spine
+const SHAPE_EXP = 0.65;  // perceptual exponent lifting quiet detail
 
-// Fallback CSS size for a canvas with no layout (detached, or
-// display:none): a typical tile footprint. NEVER fall back to
-// canvas.width/height — that is the BACKING store, already css×dpr
-// from the previous draw, so each redraw of a detached canvas would
-// inflate the "CSS" size by another dpr factor on retina.
+// The CSS size of a canvas with no layout (detached, display:none): a
+// typical tile. NEVER canvas.width/height — that is the backing store,
+// already css×dpr, so each redraw would inflate the size by another dpr.
 const DEFAULT_CSS_W = 200;
 const DEFAULT_CSS_H = 60;
 
 /**
  * @typedef {Object} DrawWaveformOptions
- * @property {number} [cssWidth] CSS-pixel width to draw at (defaults to
- *     the canvas's current layout width, then DEFAULT_CSS_W)
- * @property {number} [cssHeight] CSS-pixel height (defaults to layout
- *     height, then DEFAULT_CSS_H)
- * @property {boolean} [isComposite] lighter, creamier gold tone — the
- *     group's mixdown (theme.COMPOSITE)
- * @property {boolean} [isEcho] cool cyan tone for ghost tiles — audible
- *     repetitions, never material (theme.ECHO); wins over isComposite
+ * @property {number} [cssWidth] CSS-pixel width (default: the canvas's
+ *     layout width, then DEFAULT_CSS_W)
+ * @property {number} [cssHeight] CSS-pixel height (likewise)
+ * @property {boolean} [isComposite] the group mixdown's tone
+ * @property {boolean} [isEcho] the ghost-tile tone; wins over isComposite
  * @property {number} [pxPerPeak] fixed horizontal scale in px per peak.
- *     REQUIRED for live bars (append stability — see poolColumns);
- *     omit for committed clips, which fit to the canvas width.
- * @property {number} [fixedBoost] externally smoothed normalization
- *     boost (live_peaks.liveBoost) — live bars pass this so the shape
- *     doesn't "pump" when a louder peak arrives mid-take
- * @property {boolean} [normalize] set false to draw raw amplitudes
- *     (no per-clip normalization); default true
+ *     REQUIRED for live bars (poolColumns); omit for committed clips
+ * @property {number} [fixedBoost] the display boost to draw at
+ *     (peaksBoost for a committed take, live_peaks.liveBoost for a live
+ *     bar); omitted, the canvas normalizes to its own columns
+ * @property {boolean} [normalize] false draws raw amplitudes
  */
 
 /**
- * ONE DISPLAY GAIN PER TAKE (loop-region phase 1, 2026-09-23): the
- * auto boost drawWaveform would pick for the WHOLE peaks array, cached
- * per array identity. Every surface that draws a slice of a take —
- * heard tiles, the reveal, the region panel at any zoom — passes this
- * as `fixedBoost`, so a slice never rescales against its own loudest
- * peak (the "breathing" waveform of the field video).
- *
- * @param {ArrayLike<number|string>} peaks the take's full peaks array
- * @returns {number} the boost to pass as opts.fixedBoost
+ * ONE DISPLAY GAIN PER TAKE: the boost for a WHOLE peaks array
+ * (display_boost.js), cached by array identity. Every surface that
+ * draws a slice of a take passes it as `fixedBoost` — a slice
+ * normalized to its own loudest peak rescales as the slice moves.
+ * Pass committed arrays only: a live array is mutated in place, and its
+ * cached boost would go stale.
  */
 const boostCache = new WeakMap();
 export function peaksBoost(peaks) {
@@ -237,19 +184,13 @@ export function peaksBoost(peaks) {
         const v = +peaks[i];
         if (v > maxV) maxV = v;
     }
-    const b = maxV > 0 ? Math.min(NORM_TARGET / maxV, NORM_MAX_BOOST) : 1;
+    const b = boostForMax(maxV);
     boostCache.set(peaks, b);
     return b;
 }
 
-/**
- * Draw the envelope for `peaks` into `canvas`.
- *
- * @param {HTMLCanvasElement} canvas target (backing store is resized
- *     to fit; drawing happens in CSS-pixel space)
- * @param {ArrayLike<number|string>} peaks peak amplitudes 0..1
- * @param {DrawWaveformOptions} [opts]
- */
+/** Draw the envelope of a whole `peaks` array (amplitudes 0..1) into
+ * `canvas`. */
 export function drawWaveform(canvas, peaks, opts = {}) {
     if (!canvas) return;
     const cols = peaks && peaks.length
@@ -260,17 +201,12 @@ export function drawWaveform(canvas, peaks, opts = {}) {
 
 /**
  * The CSS-px size a canvas draws at: the explicit option, else its
- * layout size, else the default footprint — NEVER canvas.width/height
- * (the backing store, already css×dpr; see DEFAULT_CSS_W). Samplers
- * size their column arrays with this, so columns and canvas agree.
- * ROUNDED, as every caller sizes the canvas element
- * (`style.width = Math.round(cssW) + 'px'`): one column per CSS px, and
- * a tile width carrying float noise (623.9999999 px for a 4Q tile at
- * 156 px/Q) never loses a column — flooring re-mapped every column of
- * the tile, a lurch of its own.
+ * layout size, else the default (see DEFAULT_CSS_W). Samplers size
+ * their column arrays with this, so columns and canvas agree. The
+ * width is ROUNDED, as every caller sizes the element: a tile width
+ * carrying float noise (623.9999999 px) must not lose a column, which
+ * would remap every column of the tile.
  *
- * @param {HTMLCanvasElement} canvas
- * @param {{cssWidth?: number, cssHeight?: number}} [opts]
  * @returns {{cssW: number, cssH: number}}
  */
 export function canvasCssSize(canvas, opts = {}) {
@@ -282,42 +218,24 @@ export function canvasCssSize(canvas, opts = {}) {
     };
 }
 
-/**
- * The display boost for a set of pooled columns: `fixedBoost` when the
- * caller supplies one (live bars: live_peaks.liveBoost; committed
- * tiles: peaksBoost — one gain per take), else the columns' own
- * maximum scaled to NORM_TARGET (capped at NORM_MAX_BOOST), else 1
- * with `normalize: false`.
- *
- * DISPLAY NORMALIZATION: waveforms show SHAPE, meters show level —
- * real takes at sane input gain would draw as invisible hairlines if
- * amplitude mapped linearly. LIVE bars pass fixedBoost (a smoothed
- * ratchet) — re-normalizing against a running max inside each draw
- * rescaled the whole waveform whenever a louder peak arrived (the
- * recording "pump"), and drawing un-normalized popped at commit
- * instead. The self-normalizing branch is right only for a canvas that
- * shows a WHOLE array; a slice normalized to its own loudest peak
- * breathes as the slice moves (peaksBoost). Exported for the tests.
- */
+/** The display boost for a set of pooled columns: `fixedBoost` when
+ * given, 1 with `normalize: false`, else the columns' own
+ * (display_boost.js) — right only for a canvas showing a WHOLE array
+ * at rest (peaksBoost says why). */
 export function envelopeBoost(cols, opts = {}) {
     if (typeof opts.fixedBoost === 'number') return opts.fixedBoost;
     if (opts.normalize === false) return 1;
     let maxV = 0;
     for (let x = 0; x < cols.length; x++) if (cols[x] > maxV) maxV = cols[x];
-    return maxV > 0 ? Math.min(NORM_TARGET / maxV, NORM_MAX_BOOST) : 1;
+    return boostForMax(maxV);
 }
 
 /**
- * Pooled columns → the drawn envelope heights (fractions of AMP):
- * boost, the gentle perceptual exponent (SHAPE_EXP lifts quiet
- * detail), then the CONNECTED-envelope smoothing (design handoff rule
- * 6): a 3-point moving average joins the max-pooled columns into one
- * continuous shape without losing bar-level detail — "do not
- * oversmooth into blobs". Runs AFTER pooling/normalization so
- * poolColumns' append-stability contract (fixed-scale live bars) is
- * untouched: a new column only re-shades its immediate neighbor, it
- * never remaps old content (and a heard tile's swept sliver re-shades
- * at most one column either side). Pure; exported for the tests.
+ * Pooled columns → drawn heights (fractions of the amplitude): the
+ * boost, the perceptual exponent, then a 3-point moving average that
+ * joins the columns into one connected shape without blurring it. The
+ * smoothing runs AFTER pooling, so a new or changed column re-shades
+ * only its immediate neighbours and never remaps old content.
  *
  * @param {Float32Array} cols pooled amplitudes in [0, 1]
  * @param {number} boost the display boost (envelopeBoost)
@@ -339,16 +257,15 @@ export function shapeColumns(cols, boost) {
 }
 
 /**
- * THE ENVELOPE RENDERER — every waveform in the app draws through
- * here: `cols` holds one pooled amplitude per CSS px column of the
- * canvas (poolColumns for a whole array, mappedColumns for a heard
- * tile), shaded as the filled symmetric envelope with the tone's
- * vertical gradient and a hairline floor (FLOOR_PX). Null/empty `cols`
- * draws the quiet centre hairline (no content yet).
+ * THE ENVELOPE RENDERER — every waveform draws through here. `cols`
+ * holds one pooled amplitude per CSS px column (poolColumns or
+ * mappedColumns), shaded as the filled symmetric envelope in the tone's
+ * vertical gradient. Null or empty `cols` draws the quiet centre
+ * hairline (no content yet).
  *
  * @param {HTMLCanvasElement} canvas target (backing store resized to fit)
  * @param {?Float32Array} cols pooled amplitudes, canvasCssSize().cssW long
- * @param {DrawWaveformOptions} [opts] size, tone and boost options
+ * @param {DrawWaveformOptions} [opts]
  */
 export function drawEnvelope(canvas, cols, opts = {}) {
     if (!canvas) return;
@@ -386,15 +303,15 @@ export function drawEnvelope(canvas, cols, opts = {}) {
     ctx.fill();
 }
 
-/* MIDI tile geometry: a note bar fills this fraction of its pitch row
- * (the rest is the gap between adjacent semitones), never thinner than
- * MIDI_BAR_MIN_PX; velocity maps to alpha between the two bounds. */
+/* MIDI tile geometry: a note bar fills this fraction of its pitch row,
+ * never thinner than MIDI_BAR_MIN_PX; velocity maps to alpha from
+ * MIDI_ALPHA_FLOOR up. */
 const MIDI_BAR_ROW_FRAC = 0.8;
 const MIDI_BAR_MIN_PX = 1.5;
 const MIDI_ALPHA_FLOOR = 0.35;
-/* The velocity lane under the piano roll: a hairline gap, then one
- * stem per note onset whose height is its velocity, capped by a small
- * head so a soft note still reads as a note. */
+/* The velocity lane under the roll: a hairline gap, then one stem per
+ * note onset whose height is its velocity, capped by a small head so a
+ * soft note still reads as a note. */
 const MIDI_VEL_GAP_PX = 2;
 const MIDI_VEL_STEM_PX = 1.5;
 const MIDI_VEL_HEAD_PX = 3;
@@ -409,25 +326,20 @@ export const MIDI_VELOCITY_LANE = 0.28;
  * @typedef {Object} DrawMidiTileOptions
  * @property {number} [cssWidth] CSS-pixel width (defaults like drawWaveform)
  * @property {number} [cssHeight] CSS-pixel height
- * @property {boolean} [isEcho] cool cyan tone for ghost tiles (audible
- *     repetitions, never material — theme.ECHO)
- * @property {{lo: number, hi: number}} range the pitch range the tile
- *     maps over its height (midi_notes.fitPitchRange of the WHOLE take,
- *     so every rep of one take shares one vertical scale)
+ * @property {boolean} [isEcho] the ghost-tile tone
+ * @property {{lo: number, hi: number}} range the pitch range mapped
+ *     over the tile's height (midi_notes.fitPitchRange of the WHOLE
+ *     take, so every rep of one take shares one vertical scale)
  * @property {number} [velocityLane] fraction of the height given to a
  *     velocity lane under the roll (0 / omitted = roll only)
  */
 
 /**
- * Draw a MIDI clip's tile: one bar per note — pitch → row over the
- * tile's height (the compact range fit), length → width, velocity →
- * alpha — in the tape hue (echo tone for ghosts). With `velocityLane`
- * the roll yields the bottom of the tile to a velocity lane (one stem
- * per onset, height = velocity). `notes` are already
- * sliced into tile fractions (midi_notes.sliceNotesToTile): the audio
- * tile's mapping (srcSegs, rotation, the tile's window onto its
- * period — mappedColumns' exact fractions) ran before this, so
- * windows, cuts and comps apply here exactly as they do to peaks.
+ * Draw a MIDI clip's tile: one bar per note — pitch → row, length →
+ * width, velocity → alpha — and, with `velocityLane`, one velocity stem
+ * per onset beneath. `notes` are already sliced into tile fractions
+ * (midi_notes.sliceNotesToTile, the audio tile's mapping), so windows,
+ * cuts and comps apply here exactly as they do to peaks.
  *
  * @param {HTMLCanvasElement} canvas target
  * @param {Array<{f0: number, f1: number, note: number, vel: number}>} notes
@@ -445,11 +357,10 @@ export function drawMidiTile(canvas, notes, opts = {}) {
         ctx.globalAlpha = 1;
         return;
     }
-    // Two lanes: the piano roll on top, velocity stems beneath.
     let velH = Math.floor(cssH * Math.max(0, Math.min(0.5, opts.velocityLane || 0)));
     if (velH < MIDI_VEL_MIN_PX) velH = 0;
     const rollH = velH ? cssH - velH - MIDI_VEL_GAP_PX : cssH;
-    const range = opts.range || { lo: 54, hi: 66 };
+    const range = opts.range || MIDDLE_OCTAVE;
     const rows = Math.max(1, range.hi - range.lo + 1);
     const rowH = rollH / rows;
     const barH = Math.max(MIDI_BAR_MIN_PX, rowH * MIDI_BAR_ROW_FRAC);

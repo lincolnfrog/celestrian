@@ -9,7 +9,8 @@
 namespace celestrian::bridge {
 
 namespace {
-juce::String projectInfosToJson(const std::vector<ProjectManager::Info>& infos) {
+/** [{id, name, path}] — a project or a template each. */
+juce::var projectInfosVar(const std::vector<ProjectManager::Info>& infos) {
   juce::Array<juce::var> arr;
   for (const auto& i : infos) {
     auto* o = new juce::DynamicObject();
@@ -18,10 +19,11 @@ juce::String projectInfosToJson(const std::vector<ProjectManager::Info>& infos) 
     o->setProperty("path", i.path);
     arr.add(juce::var(o));
   }
-  return juce::JSON::toString(juce::var(arr), true);
+  return juce::var(arr);
 }
 
-juce::String trackTemplatesToJson(
+/** [{name, kind, tracks}] — the track-template library. */
+juce::var trackTemplatesVar(
     const std::vector<ProjectManager::TrackTemplateInfo>& infos) {
   juce::Array<juce::var> arr;
   for (const auto& i : infos) {
@@ -31,50 +33,41 @@ juce::String trackTemplatesToJson(
     o->setProperty("tracks", i.tracks);  // "Drums · 5 tracks"
     arr.add(juce::var(o));
   }
-  return juce::JSON::toString(juce::var(arr), true);
+  return juce::var(arr);
 }
 
-/** Async VST3 instantiation → engine AddSlot edit (docs/vst3.md §4).
- * index < 0 appends. The completion runs on the MESSAGE thread; the
- * engine preps + publishes + records the undoable AddSlot. A node
- * deleted mid-flight no-ops in the engine. Identity comes from the
- * REGISTRY description (captured by value) — a description refilled
- * from a hosted instance drops the format tag, and the uid must match
- * what the known list reports at revival time. */
+/** A registered plugin, instantiated, becomes the engine's undoable
+ * AddSlot edit (docs/vst3.md §4); index < 0 appends. Answers once the
+ * outcome is known: true when the slot is in the node's chain; false —
+ * nothing changed — for a plugin the registry does not hold (at once),
+ * one that could not be loaded, and a node deleted before the instance
+ * arrived. */
 void addPluginToChain(Services s, const juce::String& node_uuid,
-                      const juce::String& plugin_uid, int index) {
-  const auto types = s.plugins.knownPlugins().getTypes();
-  const juce::PluginDescription* found = nullptr;
-  for (const auto& type : types) {
-    if (type.createIdentifierString() == plugin_uid) {
-      found = &type;
-      break;
-    }
-  }
-  if (found == nullptr) {
-    juce::Logger::writeToLog("addPluginToChain: unknown plugin uid " +
-                             plugin_uid);
-    return;
-  }
-  const juce::PluginDescription description = *found;
+                      const juce::String& plugin_uid, int index,
+                      Answer answer) {
   AudioEngine* engine = &s.engine;
-  s.plugins.formats().createPluginInstanceAsync(
-      description, s.engine.currentSampleRateOrFallback(),
-      dsp::Vst3Slot::kMaxBlockSize,
-      [engine, node_uuid, index, description](
+  const bool known = s.plugins.instantiateAsync(
+      plugin_uid, s.engine.currentSampleRateOrFallback(),
+      [engine, node_uuid, index, answer](
           std::unique_ptr<juce::AudioPluginInstance> instance,
-          const juce::String& error) {
+          const juce::PluginDescription& description) {
         if (instance == nullptr) {
-          juce::Logger::writeToLog("addPluginToChain: instantiation failed: " +
-                                   error);
+          answer(false);
           return;
         }
-        auto slot = std::make_shared<dsp::Vst3Slot>(
-            std::move(instance), description.createIdentifierString(),
-            description.name, description.fileOrIdentifier,
-            description.isInstrument, description.pluginFormatName);
-        engine->addPluginSlotToChain(node_uuid, std::move(slot), index);
+        answer(engine->addPluginSlotToChain(
+            node_uuid,
+            std::make_shared<dsp::Vst3Slot>(
+                std::move(instance), description.createIdentifierString(),
+                description.name, description.fileOrIdentifier,
+                description.isInstrument, description.pluginFormatName),
+            index));
       });
+  if (!known) {
+    juce::Logger::writeToLog("addPluginToChain: unknown plugin uid " +
+                             plugin_uid);
+    answer(false);
+  }
 }
 }  // namespace
 
@@ -88,6 +81,65 @@ void logCall(const char* name) {
 #endif
 }
 
+void revivePlaceholders(Services s) {
+  // Discovery first (the visit must not see a chain change under it),
+  // then the instantiations.
+  struct Placeholder {
+    juce::String node_uuid, slot_uuid, plugin_uid;
+  };
+  std::vector<Placeholder> placeholders;
+  s.engine.forEachVst3Placeholder(
+      [&placeholders](const juce::String& node_uuid,
+                      const juce::String& slot_uuid,
+                      const juce::String& plugin_uid) {
+        placeholders.push_back({node_uuid, slot_uuid, plugin_uid});
+      });
+  AudioEngine* engine = &s.engine;
+  for (const auto& p : placeholders) {
+    s.plugins.instantiateAsync(
+        p.plugin_uid, s.engine.currentSampleRateOrFallback(),
+        [engine, p](std::unique_ptr<juce::AudioPluginInstance> instance,
+                    const juce::PluginDescription&) {
+          engine->reviveVst3Slot(p.node_uuid, p.slot_uuid,
+                                 std::move(instance));
+        });
+  }
+}
+
+juce::var findNodeVar(const juce::var& tree, const juce::String& uuid) {
+  if (tree.getProperty("id", "").toString() == uuid) return tree;
+  if (auto* children = tree.getProperty("nodes", juce::var()).getArray()) {
+    for (const auto& child : *children) {
+      const juce::var hit = findNodeVar(child, uuid);
+      if (!hit.isVoid()) return hit;
+    }
+  }
+  return {};
+}
+
+juce::String mimeFor(const juce::File& file) {
+  struct Type {
+    const char* extension;
+    const char* mime;
+  };
+  // WKWebView will not render an <img> SVG served as text/plain.
+  static constexpr Type kTypes[] = {
+      {".html", "text/html"},
+      {".css", "text/css"},
+      {".js", "application/javascript"},
+      {".mjs", "application/javascript"},
+      {".json", "application/json"},
+      {".png", "image/png"},
+      {".svg", "image/svg+xml"},
+      {".ico", "image/x-icon"},
+      {".wav", "audio/wav"},
+  };
+  const juce::String extension = file.getFileExtension().toLowerCase();
+  for (const auto& type : kTypes)
+    if (extension == type.extension) return type.mime;
+  return "text/plain";
+}
+
 std::vector<Method> engineMethods(Services s) {
   AudioEngine& engine = s.engine;
   ProjectManager& projects = s.projects;
@@ -98,7 +150,8 @@ std::vector<Method> engineMethods(Services s) {
   return {
       valueMethod("ping", 0, [](const auto&) { return "pong"; }),
       // Transport
-      voidMethod("togglePlayback", 0, [e](const auto&) { e->togglePlayback(); }),
+      boolMethod("togglePlayback", 0,
+                 [e](const auto&) { return e->togglePlayback(); }),
       // Ruler scrub: a phase ADVANCE in samples (the view computes it
       // against the frame zero it seated, docs/frame.md), optionally
       // with the transport reading it was computed against. Answers
@@ -108,12 +161,9 @@ std::vector<Method> engineMethods(Services s) {
       valueMethod(
           "seekTransport", 1,
           [e](const auto& args) -> juce::var {
-            std::optional<int64_t> at_clock;
-            if (args.size() > 1 && !args[1].isVoid()) {
-              at_clock = (int64_t)(double)args[1];
-            }
             AudioEngine::SeekResult applied;
-            if (!e->seekTransport((double)args[0], at_clock, &applied)) {
+            if (!e->seekTransport((double)args[0], optSamples(args, 1),
+                                  &applied)) {
               return juce::var(false);
             }
             auto* o = new juce::DynamicObject();
@@ -123,10 +173,14 @@ std::vector<Method> engineMethods(Services s) {
           },
           juce::var(false)),
       // Recording
-      voidMethod("startRecordingInNode", 1,
-                 [e](const auto& args) { e->startRecordingInNode(args[0].toString()); }),
-      voidMethod("stopRecordingInNode", 1,
-                 [e](const auto& args) { e->stopRecordingInNode(args[0].toString()); }),
+      boolMethod("startRecordingInNode", 1,
+                 [e](const auto& args) {
+                   return e->startRecordingInNode(args[0].toString());
+                 }),
+      boolMethod("stopRecordingInNode", 1,
+                 [e](const auto& args) {
+                   return e->stopRecordingInNode(args[0].toString());
+                 }),
       // State
       valueMethod("getGraphState", 0, [e](const auto&) { return e->getGraphState(); }),
       valueMethod(
@@ -136,19 +190,24 @@ std::vector<Method> engineMethods(Services s) {
           },
           juce::var(juce::Array<juce::var>())),
       // Takes and comping (docs/takes.md).
-      voidMethod("newTake", 1, [e](const auto& args) { e->newTake(args[0].toString()); }),
-      voidMethod("selectTake", 2,
-                 [e](const auto& args) { e->selectTake(args[0].toString(), (int)args[1]); }),
-      voidMethod("deleteTake", 2,
-                 [e](const auto& args) { e->deleteTake(args[0].toString(), (int)args[1]); }),
-      voidMethod("setComp", 2,
+      boolMethod("newTake", 1,
+                 [e](const auto& args) { return e->newTake(args[0].toString()); }),
+      boolMethod("selectTake", 2,
+                 [e](const auto& args) {
+                   return e->selectTake(args[0].toString(), (int)args[1]);
+                 }),
+      boolMethod("deleteTake", 2,
+                 [e](const auto& args) {
+                   return e->deleteTake(args[0].toString(), (int)args[1]);
+                 }),
+      boolMethod("setComp", 2,
                  [e](const auto& args) {
                    // args[1] = [take index per Q cell]
                    std::vector<int> cells;
                    if (auto* arr = args[1].getArray()) {
                      for (const auto& c : *arr) cells.push_back((int)c);
                    }
-                   e->setComp(args[0].toString(), cells);
+                   return e->setComp(args[0].toString(), cells);
                  }),
       valueMethod(
           "getTakeWaveform", 3,
@@ -156,33 +215,40 @@ std::vector<Method> engineMethods(Services s) {
             return e->getTakeWaveform(args[0].toString(), (int)args[1], (int)args[2]);
           },
           juce::var(juce::Array<juce::var>())),
-      voidMethod("dumpStateToFile", 1,
+      boolMethod("dumpStateToFile", 1,
                  [](const auto& args) {
                    auto stateFile =
                        juce::File::getCurrentWorkingDirectory().getChildFile(
                            "celestrian_state.json");
-                   stateFile.replaceWithText(args[0].toString());
+                   const bool written =
+                       stateFile.replaceWithText(args[0].toString());
                    // Functional logging (kept in release): records where
                    // the state landed.
-                   juce::Logger::writeToLog("State dumped to: " +
-                                            stateFile.getFullPathName());
+                   juce::Logger::writeToLog(
+                       (written ? "State dumped to: " : "State NOT dumped to: ") +
+                       stateFile.getFullPathName());
+                   return written;
                  }),
-      // Graph structure
-      voidMethod("createNode", 1,
+      // Graph structure. The two verbs that make a node answer its uuid,
+      // "" when refused.
+      valueMethod(
+          "createNode", 1,
+          [e](const auto& args) {
+            juce::String created;
+            e->createNode(args[0].toString(), strArg(args, 1), &created);
+            return created;
+          },
+          juce::var(juce::String())),
+      boolMethod("deleteNode", 1,
+                 [e](const auto& args) { return e->deleteNode(args[0].toString()); }),
+      boolMethod("renameNode", 2,
                  [e](const auto& args) {
-                   if (args.size() > 1)
-                     e->createNode(args[0].toString(), args[1].toString());
-                   else
-                     e->createNode(args[0].toString());
+                   return e->renameNode(args[0].toString(), args[1].toString());
                  }),
-      voidMethod("deleteNode", 1, [e](const auto& args) { e->deleteNode(args[0].toString()); }),
-      voidMethod("renameNode", 2,
+      boolMethod("reorderNode", 3,
                  [e](const auto& args) {
-                   e->renameNode(args[0].toString(), args[1].toString());
-                 }),
-      voidMethod("reorderNode", 3,
-                 [e](const auto& args) {
-                   e->reorderNode(args[0].toString(), args[1].toString(), (int)args[2]);
+                   return e->reorderNode(args[0].toString(), args[1].toString(),
+                                         (int)args[2]);
                  }),
       valueMethod(
           "combineNodes", 2,
@@ -191,59 +257,47 @@ std::vector<Method> engineMethods(Services s) {
           },
           juce::var(juce::String())),
       // Undo / redo
-      voidMethod("undo", 0, [e](const auto&) { e->undo(); }),
-      voidMethod("redo", 0, [e](const auto&) { e->redo(); }),
+      boolMethod("undo", 0, [e](const auto&) { return e->undo(); }),
+      boolMethod("redo", 0, [e](const auto&) { return e->redo(); }),
       // A cancelled drag: (uuid) — the open gesture's step is applied
       // and dropped, and the redo branch it invalidated returns.
-      voidMethod("cancelGesture", 1,
+      boolMethod("cancelGesture", 1,
                  [e](const auto& args) {
-                   e->cancelGesture(args[0].toString());
+                   return e->cancelGesture(args[0].toString());
                  }),
       // Sessions: the PATH forms. An empty path is the app shell's
       // native chooser (main_component.cc overrides both names); here
       // it is simply refused.
-      valueMethod(
-          "saveSession", 0,
-          [e](const auto& args) {
-            const juce::String path = args.size() > 0 ? args[0].toString() : "";
-            return path.isNotEmpty() ? e->saveSession(path) : false;
-          },
-          juce::var(false)),
-      valueMethod(
-          "loadSession", 0,
-          [p](const auto& args) {
-            const juce::String path = args.size() > 0 ? args[0].toString() : "";
-            // Loads route through the ProjectManager so the opened
-            // bundle becomes the CURRENT project (identity, name, mirror
-            // target) — a raw engine load would leave the mirror
-            // pointed elsewhere.
-            return path.isNotEmpty() ? p->openProject(juce::File(path)) : false;
-          },
-          juce::var(false)),
+      boolMethod("saveSession", 0,
+                 [e](const auto& args) {
+                   const juce::String path = strArg(args, 0);
+                   return path.isNotEmpty() && e->saveSession(path);
+                 }),
+      // A load goes through the ProjectManager: the opened bundle
+      // becomes the CURRENT project. A raw engine load would leave the
+      // mirror writing the loaded session into the previous folder.
+      boolMethod("loadSession", 0,
+                 [p](const auto& args) {
+                   const juce::String path = strArg(args, 0);
+                   return path.isNotEmpty() && p->openProject(juce::File(path));
+                 }),
       // Bounce (Q19, docs/bounce.md): the direct verb takes a path and,
       // optionally, the render's start in absolute samples (the frame
       // zero the view seated, docs/frame.md); absent, the node's top.
-      valueMethod(
-          "bounce", 2,
-          [e](const auto& args) {
-            std::optional<int64_t> start;
-            if (args.size() > 2 && !args[2].isVoid()) {
-              start = (int64_t)(double)args[2];
-            }
-            return e->bounce(args[0].toString(), args[1].toString(), start);
-          },
-          false),
+      boolMethod("bounce", 2,
+                 [e](const auto& args) {
+                   return e->bounce(args[0].toString(), args[1].toString(),
+                                    optSamples(args, 2));
+                 }),
       // Import (docs/import.md): a path + the origin in absolute
       // samples (the view computes it from the frame zero it seated;
       // the engine snaps it to the Q grid, Q11).
-      valueMethod(
-          "importAudio", 3,
-          [e](const auto& args) {
-            return e->importAudio(args[0].toString(), args[1].toString(),
-                                  (int64_t)(double)args[2]);
-          },
-          false),
-      // MIDI lane rendering (docs/vst3.md §11): notes on demand.
+      boolMethod("importAudio", 3,
+                 [e](const auto& args) {
+                   return e->importAudio(args[0].toString(), args[1].toString(),
+                                         (int64_t)(double)args[2]);
+                 }),
+      // MIDI lane rendering (docs/vst3.md §8.5): notes on demand.
       valueMethod(
           "getMidiNotes", 1,
           [e](const auto& args) { return e->getMidiNotes(args[0].toString()); },
@@ -261,34 +315,31 @@ std::vector<Method> engineMethods(Services s) {
                                    p->projectsRoot().getFullPathName());
                     o->setProperty("trackTemplatesRoot",
                                    p->trackTemplatesRoot().getFullPathName());
-                    return juce::JSON::toString(juce::var(o), true);
+                    return juce::var(o);
                   }),
-      valueMethod(
-          "setProjectsRoot", 1,
-          [p](const auto& args) { return p->setBase(juce::File(args[0].toString())); },
-          false),
-      voidMethod("renameProject", 0,
+      boolMethod("setProjectsRoot", 1,
                  [p](const auto& args) {
-                   p->rename(args.size() > 0 ? args[0].toString() : "");
+                   return p->setBase(juce::File(args[0].toString()));
                  }),
-      valueMethod("saveProjectNow", 0, [p](const auto&) { return p->saveNow(); }),
+      voidMethod("renameProject", 0,
+                 [p](const auto& args) { p->rename(strArg(args, 0)); }),
+      boolMethod("saveProjectNow", 0, [p](const auto&) { return p->saveNow(); }),
       valueMethod("listTemplates", 0,
-                  [p](const auto&) { return projectInfosToJson(p->listTemplates()); }),
+                  [p](const auto&) { return projectInfosVar(p->listTemplates()); }),
       valueMethod("listRecentProjects", 0,
-                  [p](const auto&) { return projectInfosToJson(p->listRecents(10)); }),
-      valueMethod("newProjectFromTemplate", 0,
-                  [p](const auto& args) {
-                    return p->newFromTemplate(args.size() > 0 ? args[0].toString() : "");
-                  }),
-      valueMethod("openProjectPath", 0,
-                  [p](const auto& args) {
-                    return p->openProject(
-                        juce::File(args.size() > 0 ? args[0].toString() : ""));
-                  }),
-      valueMethod("saveAsTemplate", 0,
-                  [p](const auto& args) {
-                    return p->saveAsTemplate(args.size() > 0 ? args[0].toString() : "");
-                  }),
+                  [p](const auto&) { return projectInfosVar(p->listRecents(10)); }),
+      boolMethod("newProjectFromTemplate", 0,
+                 [p](const auto& args) {
+                   return p->newFromTemplate(strArg(args, 0));
+                 }),
+      boolMethod("openProjectPath", 0,
+                 [p](const auto& args) {
+                   return p->openProject(juce::File(strArg(args, 0)));
+                 }),
+      boolMethod("saveAsTemplate", 0,
+                 [p](const auto& args) {
+                   return p->saveAsTemplate(strArg(args, 0));
+                 }),
       valueMethod("duplicateProject", 0,
                   [p](const auto&) {
                     const auto dest = p->duplicateProject();
@@ -296,20 +347,19 @@ std::vector<Method> engineMethods(Services s) {
                   }),
       valueMethod("listTrackTemplates", 0,
                   [p](const auto&) {
-                    return trackTemplatesToJson(p->listTrackTemplates());
+                    return trackTemplatesVar(p->listTrackTemplates());
                   }),
-      valueMethod("saveTrackTemplate", 2,
-                  [p](const auto& args) {
-                    // (uuid, name) — Q17 save-from-selection
-                    return juce::var(
-                        p->saveTrackTemplate(args[1].toString(), args[0].toString()));
-                  }),
-      valueMethod("createFromTrackTemplate", 1,
-                  [p](const auto& args) {
-                    return juce::var(p->createFromTrackTemplate(
-                        args[0].toString(),
-                        args.size() > 1 ? args[1].toString() : juce::String()));
-                  }),
+      boolMethod("saveTrackTemplate", 2,
+                 [p](const auto& args) {
+                   // (uuid, name) — Q17 save-from-selection
+                   return p->saveTrackTemplate(args[1].toString(),
+                                               args[0].toString());
+                 }),
+      boolMethod("createFromTrackTemplate", 1,
+                 [p](const auto& args) {
+                   return p->createFromTrackTemplate(args[0].toString(),
+                                                     strArg(args, 1));
+                 }),
       // Inputs and devices
       valueMethod("getInputList", 0, [e](const auto&) { return e->getInputList(); }),
       valueMethod("getAudioDeviceState", 0,
@@ -319,29 +369,26 @@ std::vector<Method> engineMethods(Services s) {
                     // (type, device, sampleRate, bufferSize); trailing
                     // args are optional — 0 means "keep the device's
                     // preference".
-                    const auto type =
-                        args.size() > 0 ? args[0].toString() : juce::String();
-                    const auto device =
-                        args.size() > 1 ? args[1].toString() : juce::String();
                     const double sr = args.size() > 2 ? (double)args[2] : 0.0;
                     const int block = args.size() > 3 ? (int)args[3] : 0;
-                    return e->setAudioDevice(type, device, sr, block);
+                    return e->setAudioDevice(strArg(args, 0), strArg(args, 1),
+                                             sr, block);
                   }),
-      voidMethod("setNodeInput", 2,
+      boolMethod("setNodeInput", 2,
                  [e](const auto& args) {
-                   e->setNodeInput(args[0].toString(), (int)args[1]);
+                   return e->setNodeInput(args[0].toString(), (int)args[1]);
                  }),
-      voidMethod("setNodeInputRight", 2,
+      boolMethod("setNodeInputRight", 2,
                  [e](const auto& args) {
-                   e->setNodeInputRight(args[0].toString(), (int)args[1]);
+                   return e->setNodeInputRight(args[0].toString(), (int)args[1]);
                  }),
       voidMethod("setMidiArmed", 2,
                  [e](const auto& args) {
                    e->setMidiArmed(args[0].toString(), (bool)args[1]);
                  }),
-      voidMethod("setMonitor", 2,
+      boolMethod("setMonitor", 2,
                  [e](const auto& args) {
-                   e->setMonitor(args[0].toString(), (bool)args[1]);
+                   return e->setMonitor(args[0].toString(), (bool)args[1]);
                  }),
       valueMethod("getMidiInputs", 0, [e](const auto&) { return e->getMidiInputs(); }),
       // Mixer
@@ -354,46 +401,45 @@ std::vector<Method> engineMethods(Services s) {
                    e->setNodeGain(args[0].toString(), (double)args[1]);
                  }),
       voidMethod("toggleSolo", 1, [e](const auto& args) { e->toggleSolo(args[0].toString()); }),
-      voidMethod("toggleMute", 1,
+      boolMethod("toggleMute", 1,
+                 [e](const auto& args) { return e->toggleMute(args[0].toString()); }),
+      boolMethod("setPeriodSource", 2,
                  [e](const auto& args) {
-                   if (args[0].isString())
-                     e->toggleMute(args[0].toString());
-                   else if (auto* obj = args[0].getDynamicObject())
-                     e->toggleMute(obj->getProperty("uuid").toString());
-                 }),
-      voidMethod("setPeriodSource", 2,
-                 [e](const auto& args) {
-                   e->setPeriodSource(args[0].toString(),
-                                      args[1].toString() == "context"
-                                          ? PeriodSource::CONTEXT_CYCLE
-                                          : PeriodSource::OWN_LENGTH);
+                   return e->setPeriodSource(args[0].toString(),
+                                             args[1].toString() == "context"
+                                                 ? PeriodSource::CONTEXT_CYCLE
+                                                 : PeriodSource::OWN_LENGTH);
                  }),
       // Effects and plugins
-      voidMethod("setSlotEnabled", 3,
+      boolMethod("setSlotEnabled", 3,
                  [e](const auto& args) {
-                   e->setSlotEnabled(args[0].toString(), args[1].toString(),
-                                     (bool)args[2]);
+                   return e->setSlotEnabled(args[0].toString(),
+                                            args[1].toString(), (bool)args[2]);
                  }),
       voidMethod("setSlotParam", 4,
                  [e](const auto& args) {
                    e->setSlotParam(args[0].toString(), args[1].toString(),
                                    args[2].toString(), (double)args[3]);
                  }),
-      voidMethod("moveChainSlot", 3,
+      boolMethod("moveChainSlot", 3,
                  [e](const auto& args) {
-                   e->moveChainSlot(args[0].toString(), args[1].toString(),
-                                    (int)args[2]);
+                   return e->moveChainSlot(args[0].toString(),
+                                           args[1].toString(), (int)args[2]);
                  }),
-      voidMethod("addPluginToChain", 2,
-                 [s](const auto& args) {
+      // Answers when the plugin's instance has arrived, or could not.
+      boolMethod("addPluginToChain", 2,
+                 DeferredFn([s](const juce::Array<juce::var>& args,
+                                Answer answer) {
                    addPluginToChain(s, args[0].toString(), args[1].toString(),
-                                    args.size() > 2 ? (int)args[2] : -1);
-                 }),
+                                    args.size() > 2 ? (int)args[2] : -1,
+                                    std::move(answer));
+                 })),
       // The app shell overrides this one to close the slot's editor
       // window first.
-      voidMethod("removeChainSlot", 2,
+      boolMethod("removeChainSlot", 2,
                  [e](const auto& args) {
-                   e->removeChainSlot(args[0].toString(), args[1].toString());
+                   return e->removeChainSlot(args[0].toString(),
+                                             args[1].toString());
                  }),
       voidMethod("setEffectScope", 2,
                  [e](const auto& args) {
@@ -401,24 +447,22 @@ std::vector<Method> engineMethods(Services s) {
                  }),
       valueMethod("getKnownPlugins", 0, [h](const auto&) { return h->getKnownPluginsVar(); }),
       voidMethod("scanPlugins", 0,
-                 [h](const auto& args) {
-                   h->startScan(args.size() > 0 ? args[0].toString() : juce::String());
-                 }),
+                 [h](const auto& args) { h->startScan(strArg(args, 0)); }),
       valueMethod("getPluginScanStatus", 0,
                   [h](const auto&) { return h->getScanStatusVar(); }),
       // Time maps and the sequencer
       // Both map verbs take an optional trailing `live` (a mid-gesture
       // update that coalesces into the gesture's undo entry).
-      voidMethod("setLoopPoints", 3,
+      boolMethod("setLoopPoints", 3,
                  [e](const auto& args) {
-                   e->setLoopPoints(args[0].toString(), (juce::int64)args[1],
-                                    (juce::int64)args[2],
-                                    args.size() > 3 && (bool)args[3]);
+                   return e->setLoopPoints(args[0].toString(),
+                                           (juce::int64)args[1],
+                                           (juce::int64)args[2],
+                                           flagArg(args, 3));
                  }),
-      voidMethod("setSegments", 2,
+      boolMethod("setSegments", 2,
                  [e](const auto& args) {
-                   // args[1] = flat [s0, e0, s1, e1, ...] in samples
-                   // (time_maps.md phase 3).
+                   // args[1] = flat [s0, e0, s1, e1, ...] in samples.
                    timing::TimeMap m;
                    if (auto* flat = args[1].getArray()) {
                      for (int i = 0; i + 1 < flat->size() &&
@@ -428,20 +472,20 @@ std::vector<Method> engineMethods(Services s) {
                                         (int64_t)(double)(*flat)[i + 1]};
                      }
                    }
-                   e->setSegments(args[0].toString(), m,
-                                  args.size() > 2 && (bool)args[2]);
+                   return e->setSegments(args[0].toString(), m,
+                                         flagArg(args, 2));
                  }),
       // The re-time (loop_selection.md §9): (uuid, shiftSamples,
       // topSamples?, live?). A top that is not a finite number ≥ 0
       // (null, absent) means "no new top"; a non-finite shift is
       // refused. Samples round to the nearest.
-      voidMethod("setTiming", 2,
+      boolMethod("setTiming", 2,
                  [e](const auto& args) {
                    const double shift = (double)args[1];
                    if (!std::isfinite(shift)) {
                      juce::Logger::writeToLog(
                          "setTiming refused - the shift is not a number");
-                     return;
+                     return false;
                    }
                    std::optional<int64_t> top;
                    if (args.size() > 2 &&
@@ -450,38 +494,39 @@ std::vector<Method> engineMethods(Services s) {
                      const double t = (double)args[2];
                      if (std::isfinite(t) && t >= 0) top = std::llround(t);
                    }
-                   e->setTiming(args[0].toString(), std::llround(shift), top,
-                                args.size() > 3 && (bool)args[3]);
+                   return e->setTiming(args[0].toString(), std::llround(shift),
+                                       top, flagArg(args, 3));
                  }),
       // The Q hand-off (Q22): (uuid) — that node becomes the island's
       // Q-definer.
-      voidMethod("setDefiner", 1,
-                 [e](const auto& args) { e->setDefiner(args[0].toString()); }),
-      voidMethod("toggleLoopWindow", 1,
-                 [e](const auto& args) { e->toggleLoopWindow(args[0].toString()); }),
-      voidMethod("setSequence", 2,
+      boolMethod("setDefiner", 1,
+                 [e](const auto& args) { return e->setDefiner(args[0].toString()); }),
+      boolMethod("toggleLoopWindow", 1,
+                 [e](const auto& args) {
+                   return e->toggleLoopWindow(args[0].toString());
+                 }),
+      boolMethod("setSequence", 2,
                  [e](const auto& args) {
                    // args[1] = {steps: [{name, len}], gates: {uuid:
                    // [0/1...]}} (docs/sequencer.md); void/empty clears.
                    // args[2] (optional) = the frame zero the view has
                    // seated, absolute samples — the root anchors its
                    // song there (docs/frame.md §4).
-                   std::optional<int64_t> zero;
-                   if (args.size() > 2 && !args[2].isVoid()) {
-                     zero = (int64_t)(double)args[2];
-                   }
-                   e->setSequence(args[0].toString(), args[1], zero);
+                   return e->setSequence(args[0].toString(), args[1],
+                                         optSamples(args, 2));
                  }),
-      voidMethod("toggleSequence", 1,
-                 [e](const auto& args) { e->toggleSequence(args[0].toString()); }),
-      voidMethod("auditionStep", 2,
+      boolMethod("toggleSequence", 1,
+                 [e](const auto& args) {
+                   return e->toggleSequence(args[0].toString());
+                 }),
+      boolMethod("auditionStep", 2,
                  [e](const auto& args) {
                    // args[1] = step index, −1 = stop looping.
-                   e->auditionStep(args[0].toString(), (int)args[1]);
+                   return e->auditionStep(args[0].toString(), (int)args[1]);
                  }),
       // Latency
-      voidMethod("startLatencyCalibration", 0,
-                 [e](const auto&) { e->startLatencyCalibration(); }),
+      boolMethod("startLatencyCalibration", 0,
+                 [e](const auto&) { return e->startLatencyCalibration(); }),
       valueMethod("getLatencyCalibration", 0,
                   [e](const auto&) { return e->getLatencyCalibration(); }),
       // Logging — relaying the JS payload IS this function's job, so it

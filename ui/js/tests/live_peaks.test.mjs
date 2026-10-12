@@ -1,6 +1,6 @@
 /**
- * Live-peaks drift test (field report 2026-07-10: "the waveform kind of
- * migrates from left to right as I record").
+ * Live peaks never drift: the waveform must not migrate across the bar
+ * as a take records.
  *
  * The invariant: a peak's position in the array is a pure function of
  * WHEN it happened (duration at capture), never of how many polls the

@@ -1,19 +1,16 @@
 /**
- * THE RE-TIME AND THE TOP — mock parity (docs/loop_selection.md §9,
- * owner 2026-09-24; engine twins: tests/time_map_record_tests.cc
- * "setTiming" / "the top rides every map edit", scenario S41).
+ * THE RE-TIME AND THE TOP (docs/loop_selection.md §9).
  *
  * A swap (every map verb) changes WHAT plays and keeps the origin; a
- * shift (setTiming) changes WHEN: it moves the clip's origin by any
- * amount — sub-Q included, never re-folded — and counts the same into
- * `retime` (0 = as played); a new take plays as performed and resets
- * it. The loop's top (↺) is a raw take position
- * stored per clip — unset only on a take never edited, whose region
- * start stands in; every map edit reconciles it from the top it showed
- * and STORES the answer (kept while the new region plays it, else the
- * new region start), a bypass leaves it, and one undo step restores
- * origin, re-time and top together. The pure algebra is golden-pinned
- * against src/time_map.h.
+ * shift (setTiming) changes WHEN, counted into `retime` (0 = as played).
+ * The loop's top (↺) is a raw take position stored per clip; every map
+ * edit reconciles it from the top it showed and stores the answer.
+ *
+ * The algebra is golden-pinned against src/time_map.h (the two golden
+ * tests). The verbs themselves — a shift, a top, their undo, their
+ * refusals, a live drag, the session round trip — are held to the
+ * engine by the differential suite (ui/differential/ timing/*); what
+ * follows are the sequences no journey drives.
  *
  * (Undo restores the mock's graph from a snapshot — node objects are
  * replaced, so every read below re-finds its node.)
@@ -22,15 +19,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { advanceBy, callNative, getState, loadScenario, pauseTransport }
-    from '../mock_backend.js';
+import { advanceBy, callNative, getState, loadScenario } from '../mock_backend.js';
 import { findNode, state } from '../mock/state.js';
 import { effectiveTop, reconcileTop } from '../time_map.js';
-import { MOCK_Q, loadSharedJson, nodeById, recordTake } from './helpers.mjs';
+import { MOCK_Q as Q, loadSharedJson, recordTake } from './helpers.mjs';
+import { published as pub, recordIsland, holdStill } from './mock_scene.mjs';
 
 const golden = loadSharedJson('timing_golden.json');
-const Q = MOCK_Q;
-const pub = id => nodeById(id, getState().nodes);
 const origin = id => findNode(id).origin;
 
 test('golden: reconcileTop (engine timing::reconcileTop) — every edit of a ' +
@@ -61,18 +56,10 @@ test('golden: effectiveTop — the published loopTop (engine timing::effectiveTo
     }
 });
 
-/** The clock held still and stopped: map edits never re-anchor, so
- * every origin move below is the verb's own. */
-function holdStill() {
-    pauseTransport();
-    state.isPlaying = false;
-}
-
-/** 1Q, then an 8Q take. */
+/** 1Q, then an 8Q take, the clock held still: every origin move below
+ * is the verb's own. */
 async function island() {
-    loadScenario('empty');
-    const c1 = await recordTake('', Q, { stopEarly: 0, settle: 0 });
-    const b = await recordTake('', 8 * Q);
+    const [c1, b] = await recordIsland(Q, 8 * Q);
     holdStill();
     return { c1, b };
 }
@@ -84,106 +71,20 @@ async function armProbe(id) {
     assert.equal(getState().canRedo, true, 'the probe');
 }
 
-test('setTiming moves the origin by any amount and counts the re-time; ' +
-     'nothing else moves; undo/redo; "timing as played"', async () => {
-    const { c1, b } = await island();
-    const O = origin(b), O1 = origin(c1);
-    const zero = state.islandZero, q = state.islandQ;
-    assert.equal(pub(b).retime, 0, 'a fresh take is as played');
-    assert.equal(pub(b).loopTop, 0, 'no map, no top: the take start');
-    assert.equal('storedTop' in pub(b), false, 'the stored top stays private');
-
-    await callNative('setTiming', b, Q);
-    assert.equal(origin(b), O + Q, 'the origin moved by the shift');
-    assert.equal(pub(b).retime, Q, '…counted');
-    assert.equal(state.islandZero, zero, 'the zero stays');
-    assert.equal(state.islandQ, q, 'Q stays');
-    assert.equal(origin(c1), O1, 'the other take stays');
-    assert.equal(pub(c1).retime, 0, '…as played');
-    assert.equal(findNode(b).duration, 8 * Q, 'the length stays');
-
-    const free = Math.round(0.3 * Q);
-    await callNative('setTiming', b, free);  // ⌥: free, sub-Q
-    assert.equal(origin(b), O + Q + free, 'exact — never re-folded onto the grid');
-    assert.equal(pub(b).retime, Q + free);
-    await callNative('undo');
-    assert.equal(origin(b), O + Q, 'undo');
-    assert.equal(pub(b).retime, Q);
-    await callNative('redo');
-    assert.equal(origin(b), O + Q + free, 'redo');
-
-    await callNative('setTiming', b, -pub(b).retime);  // "timing as played"
-    assert.equal(origin(b), O, 'as played: the performed origin');
-    assert.equal(pub(b).retime, 0);
-});
-
-test("the panel's start marker: a top and its compensating shift in one " +
-     'step — undo restores origin, re-time and top together', async () => {
+test('an empty group has nothing to re-time: refused, nothing recorded', async () => {
     const { b } = await island();
-    const O = origin(b);
-    await callNative('setLoopPoints', b, Q, 3 * Q);
-    assert.equal(pub(b).loopTop, Q, 'the window stored its region start');
-    // [Q,3Q): the top sounds at O + Q; a top at 2Q is heard 1Q in, so
-    // the ↺ keeps its moment with a −1Q shift.
-    await callNative('setTiming', b, -Q, 2 * Q);
-    assert.equal(pub(b).loopTop, 2 * Q, 'the top is stored');
-    assert.equal(origin(b), O - Q, 'the origin compensates');
-    assert.equal(pub(b).retime, -Q);
-    const moment = n => n.origin + n.loopStart + (n.loopTop - n.loopStart);
-    assert.equal(moment(pub(b)), O + Q, 'the ↺ kept its moment');
-    const facts = () => [origin(b), pub(b).retime, pub(b).loopTop];
-    await callNative('undo');
-    assert.deepEqual(facts(), [O, 0, Q], 'undo: origin, re-time and top together');
-    await callNative('redo');
-    assert.deepEqual(facts(), [O - Q, -Q, 2 * Q], 'redo: all three');
-});
-
-test('refusals record nothing: the Q-definer, a stack, an empty clip, an ' +
-     'unknown node, a top outside the kept set (whole call), the identity, ' +
-     'and anything under a live take', async () => {
-    loadScenario('empty');
-    const c1 = await recordTake('', Q, { stopEarly: 0, settle: 0 });
-    const O1 = origin(c1);
-    assert.equal(getState().definerId, c1, 'the only take defines Q');
-    await callNative('setTiming', c1, Q / 2);
-    assert.equal(origin(c1), O1, "the Q-definer refuses (its origin is the island zero)");
-
-    const b = await recordTake('', 4 * Q);
-    holdStill();
-    await callNative('setLoopPoints', b, Q, 3 * Q);
     const g = await callNative('createNode', 'stack', '');
-    const e = await callNative('createNode', 'clip', '');
-    const O = origin(b);
     await armProbe(b);
-    await callNative('setTiming', b, Q, 0);        // before the window
-    await callNative('setTiming', b, Q, 3 * Q);    // the window's end (exclusive)
-    await callNative('setTiming', b, Q, 9 * Q);    // past the take
-    assert.equal(origin(b), O, 'a top outside the kept set refuses the whole call');
-    assert.equal(pub(b).retime, 0, '…no partial shift');
-    assert.equal(pub(b).loopTop, Q, '…no top');
     await callNative('setTiming', g, Q);
-    await callNative('setTiming', e, Q);
-    await callNative('setTiming', 'no-such-node', Q);
-    await callNative('setTiming', b, 0);           // the identity
-    assert.equal(getState().canRedo, true, 'none of them recorded');
-    assert.equal(pub(g).retime, 0, 'an EMPTY group has nothing to re-time');
-    assert.equal(pub(g).loopTop, 0, '…and its region start as its top');
-
-    await callNative('startRecordingInNode', e);   // a take armed
-    assert.equal(await callNative('setTiming', b, Q), false,
-        'refused under a live take');
-    assert.equal(origin(b), O, 'nothing moved');
-    await callNative('stopRecordingInNode', e);
-    advanceBy(4 * Q);                              // the take settles
-    assert.equal(findNode(e).isRecording, false, 'no take live');
-    await callNative('setTiming', b, Q);
-    assert.equal(origin(b), O + Q, 'the take settled: the re-time lands');
+    assert.equal(getState().canRedo, true, 'not recorded');
+    assert.equal(pub(g).retime, 0);
+    assert.equal(pub(g).loopTop, 0, 'its region start as its top');
 });
 
-test('a new take plays as performed and resets the re-time (owner, ' +
-     '2026-09-24): armed at the shifted slot top, it sounds where it was ' +
-     'played, so "timing as played" leaves it there; undo brings back the ' +
-     'old take with its shift, redo the 0', async () => {
+test('a new take plays as performed and resets the re-time: armed at the ' +
+     'shifted slot top, it sounds where it was played, so "timing as ' +
+     'played" leaves it there; undo brings back the old take with its ' +
+     'shift, redo the 0', async () => {
     // Engine twin: tests/time_map_record_tests.cc, the same sequence.
     loadScenario('empty');
     await recordTake('', Q, { stopEarly: 0, settle: 0 });
@@ -224,78 +125,14 @@ test('a new take plays as performed and resets the re-time (owner, ' +
     assert.equal(pub(b).retime, 0, '…as played');
 });
 
-test('a live re-time drag is one undo step; separate gestures are two; a ' +
-     're-time never joins a map edit\'s step', async () => {
+test("a re-time never joins a map edit's step", async () => {
     const { b } = await island();
     const O = origin(b);
-    const d = Math.round(Q / 10);
-    await callNative('setTiming', b, d);
-    await callNative('setTiming', b, d, null, true);
-    await callNative('setTiming', b, -d / 2, null, true);
-    assert.equal(origin(b), O + 1.5 * d, 'the streamed commits applied');
-    assert.equal(pub(b).retime, 1.5 * d);
-    await callNative('undo');
-    assert.equal(origin(b), O, 'one undo takes the drag back');
-    assert.equal(pub(b).retime, 0);
-    await callNative('setTiming', b, d);
-    await callNative('setTiming', b, d);
-    await callNative('undo');
-    assert.equal(origin(b), O + d, 'separate gestures: one step each');
-    await callNative('undo');
-    assert.equal(origin(b), O);
     await callNative('setLoopPoints', b, 2 * Q, 4 * Q);
-    await callNative('setTiming', b, d, null, true);
+    await callNative('setTiming', b, Math.round(Q / 10), null, true);
     await callNative('undo');
     assert.equal(origin(b), O, 'the re-time undid on its own');
     assert.equal(findNode(b).loopStart, 2 * Q, '…the slide stands');
-});
-
-test('the top rides every map edit — kept while the new region plays it, ' +
-     'else the region start; undo restores it exactly; a bypass leaves it; ' +
-     'a clear keeps it', async () => {
-    const { b } = await island();
-    const O = origin(b);
-    // A fresh take's top is its start (raw 0): the first window drops
-    // it, so the window's start is stored; a slide right drops that.
-    await callNative('setLoopPoints', b, 2 * Q, 4 * Q);
-    assert.equal(pub(b).loopTop, 2 * Q, 'the region start, stored');
-    assert.equal(findNode(b).storedTop, 2 * Q, '…a fact now, not a stand-in');
-    await callNative('setLoopPoints', b, 3 * Q, 5 * Q);
-    assert.equal(pub(b).loopTop, 3 * Q, 'a slide right past it: the new start');
-    await callNative('setLoopPoints', b, Q, 3 * Q);
-    await callNative('setTiming', b, 0, 2 * Q);  // a top alone
-    assert.equal(pub(b).loopTop, 2 * Q);
-    assert.equal(origin(b), O, 'a top alone moves nothing in time');
-    // setLoopPoints: a SWAP keeps the origin; the top survives while
-    // the region still plays it.
-    await callNative('setLoopPoints', b, 1.5 * Q, 3.5 * Q);
-    assert.equal(pub(b).loopTop, 2 * Q, 'a slide that still plays it keeps it');
-    await callNative('setLoopPoints', b, 3 * Q, 5 * Q);
-    assert.equal(pub(b).loopTop, 3 * Q, 'a slide past it: the region start');
-    await callNative('undo');
-    assert.equal(pub(b).loopTop, 2 * Q, 'undo restores it exactly');
-    await callNative('redo');
-    assert.equal(pub(b).loopTop, 3 * Q, 'redo: the region start again');
-    // setSegments: a CELL CUT under it drops it; a HEAL keeps it.
-    await callNative('setLoopPoints', b, Q, 5 * Q);
-    await callNative('setTiming', b, 0, 3.5 * Q);
-    await callNative('setSegments', b, [Q, 3 * Q, 4 * Q, 5 * Q]);
-    assert.equal(pub(b).loopTop, Q, 'the cut removed its cell');
-    await callNative('undo');
-    assert.equal(pub(b).loopTop, 3.5 * Q, 'undo: back');
-    await callNative('setSegments', b, [Q, 3 * Q, 4 * Q, 5 * Q]);
-    await callNative('setTiming', b, 0, 4.5 * Q);
-    assert.equal(pub(b).loopTop, 4.5 * Q, 'a top in the second segment');
-    await callNative('setSegments', b, [Q, 5 * Q]);  // heal (n = 1)
-    assert.equal(pub(b).loopTop, 4.5 * Q, 'the heal still plays it');
-    // A bypass leaves it; a clear keeps it (the whole take plays it).
-    await callNative('toggleLoopWindow', b);
-    assert.equal(pub(b).loopBypassed, true);
-    assert.equal(pub(b).loopTop, 4.5 * Q, 'a bypass leaves the top alone');
-    await callNative('toggleLoopWindow', b);
-    await callNative('setLoopPoints', b, 0, 0);
-    assert.equal(pub(b).loopTop, 4.5 * Q, 'a cleared map keeps it');
-    assert.equal(origin(b), O, 'no swap moved the take in time');
 });
 
 test("a live drag reconciles every commit against its gesture's own top: " +
@@ -313,48 +150,6 @@ test("a live drag reconciles every commit against its gesture's own top: " +
     await callNative('undo');
     assert.equal(pub(b).loopTop, 2 * Q, "one undo: the gesture's top");
     assert.equal(pub(b).loopStart, Q, '…and its region');
-});
-
-test('an UNSET top (a take never edited) is its region start until the ' +
-     'first map edit stores it: a left slide keeps the ↺ there, a right ' +
-     'slide past it takes the new start, a reset stays put when the region ' +
-     'slides back, and a live drag reconciles from where the ↺ showed', async () => {
-    const { b } = await island();
-    /** A window no edit has reconciled a top against — a fresh take's
-     * commit-time window, a session saved before tops. */
-    const fresh = (a, e) => {
-        const n = findNode(b);
-        Object.assign(n, { loopStart: a, loopEnd: e });
-        delete n.storedTop;
-        assert.equal(pub(b).loopTop, a, 'unset: the region start stands in');
-    };
-    fresh(2 * Q, 4 * Q);
-    await callNative('setLoopPoints', b, Q, 3 * Q);           // left 1Q
-    assert.equal(pub(b).loopTop, 2 * Q,
-        'a left slide keeps the ↺ where it showed: the splice comes apart');
-    await callNative('undo');
-    assert.equal(findNode(b).storedTop ?? null, null, 'undo: unset, exactly as found');
-    assert.equal(pub(b).loopTop, 2 * Q);
-    await callNative('setLoopPoints', b, 3 * Q, 5 * Q);       // right 1Q
-    assert.equal(pub(b).loopTop, 3 * Q, 'a right slide past it: the new start');
-    // THE RESET STAYS PUT (the owner's bars 1–4 → 3–6 → 2–5): stored at
-    // the reset, the ↺ holds bar 3 when the region slides back over it —
-    // left unset it would ride the start to bar 2 (the rejected v5).
-    fresh(0, 4 * Q);
-    await callNative('setLoopPoints', b, 2 * Q, 6 * Q);
-    assert.equal(pub(b).loopTop, 2 * Q, 'bars 3–6 drop bar 1: the ↺ resets to bar 3');
-    await callNative('setLoopPoints', b, Q, 5 * Q);
-    assert.equal(pub(b).loopTop, 2 * Q, 'back to bars 2–5: the ↺ stays on bar 3');
-    // A LIVE DRAG from an unset top: every commit reconciles from the
-    // top it showed when the drag began, not from the last commit's.
-    fresh(2 * Q, 4 * Q);
-    await callNative('setLoopPoints', b, 3 * Q, 5 * Q);       // the first commit
-    assert.equal(pub(b).loopTop, 3 * Q, 'mid-drag the region left the ↺');
-    await callNative('setLoopPoints', b, Q, 3 * Q, true);
-    assert.equal(pub(b).loopTop, 2 * Q, "…and back past it: the drag's own top");
-    await callNative('undo');
-    assert.equal(findNode(b).storedTop ?? null, null, 'one undo: unset, as found');
-    assert.equal(findNode(b).loopStart, 2 * Q, '…with its region');
 });
 
 test('a drag whose first commit records nothing (an identity — engaged, no ' +
@@ -451,9 +246,9 @@ test('a drag whose first commit records nothing (an identity — engaged, no ' +
     assert.equal(region(), '1-5', "drag 1's start, still one step away");
 });
 
-test('a GROUP has a top and a re-time exactly like a clip (fractal, ' +
-     '2026-09-29): the region start by default, reconciled by its region ' +
-     'edits, and a shift moves the group and its members as one', async () => {
+test('a GROUP has a top and a re-time exactly like a clip (fractal): the ' +
+     'region start by default, reconciled by its region edits, and a ' +
+     'shift moves the group and its members as one', async () => {
     const { b } = await island();
     const g = await callNative('createNode', 'stack', '');
     await callNative('reorderNode', b, g, 0);
@@ -512,17 +307,4 @@ test('the Q13 definer re-trim reconciles its top; the lock-collapse carries ' +
     assert.equal(pub(c).loopTop, 0, 'a re-trim past the top resets it');
     await callNative('undo');
     assert.equal(pub(c).loopTop, Q / 2, 'undo: the top with the trim');
-});
-
-test('a saved session carries the top and the re-time', async () => {
-    const { b } = await island();
-    await callNative('setLoopPoints', b, Q, 3 * Q);
-    await callNative('setTiming', b, -Math.round(Q / 4), 2 * Q);
-    const O = origin(b);
-    await callNative('saveSession', '/tmp/s');
-    loadScenario('empty');
-    assert.equal(await callNative('loadSession', '/tmp/s'), true);
-    assert.equal(origin(b), O, 'the re-timed origin');
-    assert.equal(pub(b).retime, -Math.round(Q / 4), 'the re-time');
-    assert.equal(pub(b).loopTop, 2 * Q, 'the top');
 });

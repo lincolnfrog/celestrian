@@ -1,46 +1,48 @@
 /**
- * Mock Backend for Celestrian UI Testing
+ * The mock backend: the engine's bridge, in memory, for developing and
+ * testing the UI without the C++ app. It implements exactly the methods
+ * of `ui/js/protocol.js` (pinned by tests/protocol_contract.test.mjs),
+ * and what it publishes is held to the real engine's by the differential
+ * suite (ui/differential/). Timing math is imported from the shared
+ * mirrors (timeline_model.js, time_map.js, period_law.js, qtime.js) —
+ * the mock adapts its node shape to them and restates none of it.
  *
- * Simulates the JUCE native bridge without requiring the C++ backend.
- * Maintains audio node state in memory and provides realistic responses.
- *
- * Contract: this backend must implement exactly the methods declared in
- * `ui/js/protocol.js` (the canonical bridge protocol, also implemented by
- * src/main_component.cc). Enforced by ui/js/tests/protocol_contract.test.mjs.
- *
- * Timing math (quantum snap, launch points, LCM) comes from
- * `ui/js/timeline_model.js` — the mock holds state and protocol, not math —
- * so its behavior cannot drift from the UI or the C++ engine.
- *
- * This file is the FACADE: it owns the protocol handler table and the
- * callNative dispatch (with its undo interception), and re-exports the
- * public test surface. The implementation lives in js/mock/:
- *   rate.js       — the mock's sample rate (one systemic variable)
- *   state.js      — the state singleton + pure graph queries
- *   undo.js       — undo/redo stacks behind accessors
- *   cycles.js     — committed/effective island cycle math
- *   graph_crud.js — structural edits, toggles, per-node knobs
- *   maps.js       — loop windows, multi-segment maps, bypass
- *   recording.js  — arm/stop/commit lifecycle + recView + newTake
- *   takes.js      — the take list, the comp, per-take peaks
- *   transport.js  — the simulated clock + published masterPos view
- *   publish.js    — getState/enrichNodes/VU + test clock hooks
- *   waveform.js   — deterministic peak synthesis
- *   devices.js    — audio device / input / latency-calibration mocks
- *   effects.js    — effect rack defaults and setters
- *   projects.js   — project model + in-memory session save/load
- *   scenarios.js  — test scenario loaders (boots 'empty', Q17 parity)
+ * This file is the facade: the handler table, the dispatch, and the
+ * public test surface. The implementation is js/mock/:
+ *   state.js        the state, the raw node, the graph queries, the definer
+ *   seq_query.js    reads of a stored sequence
+ *   cycles.js       the period law over the mock node
+ *   heard.js        which inner position sounds when (heard_index.h's twin)
+ *   undo.js         the undo / redo logs
+ *   graph_crud.js   create, delete, move, combine; switches and knobs
+ *   maps.js         windows, cell maps, bypass, the re-time
+ *   definer.js      the Q hand-off and the lock-collapse
+ *   sequence.js     the sequencer's verbs
+ *   recording.js    arm, stop, commit, settle
+ *   takes.js        the take list and the comp
+ *   import.js       audio file import
+ *   bounce.js       the bounce verbs
+ *   transport.js    the simulated clock, the seek, the published cursor
+ *   publish.js      getState
+ *   effects.js      the effect chain
+ *   plugins.js      the plugin registry and its scan
+ *   devices.js      audio devices, inputs, latency calibration
+ *   midi.js         the MIDI note readout
+ *   waveform.js     deterministic peaks
+ *   projects.js     the project model, session save / load
+ *   track_templates.js  the track-template library
+ *   scenarios.js    the test scenarios (boots 'empty')
+ *   rate.js         the mock's sample rate
  */
 
 import {
-    interceptUndoableCall, noteGestureCommit, mockUndo, mockRedo,
+    beginCall, endCall, isUndoable, noteGestureCommit, mockUndo, mockRedo,
     mockCancelGesture,
 } from './mock/undo.js';
-import { QUIET_POLLS } from './protocol.js';
+import { QUIET_POLLS, BOOL_METHODS, VOID_METHODS } from './protocol.js';
 import {
-    createNode, deleteNode, renameNode, reorderNode,
-    combineNodes, toggleSolo, toggleMute,
-    setNodeInput, setNodeInputRight, setNodePan, setNodeGain,
+    createNode, deleteNode, renameNode, reorderNode, combineNodes, toggleSolo,
+    toggleMute, setNodeInput, setNodeInputRight, setNodePan, setNodeGain,
     setPeriodSource, setMonitor,
 } from './mock/graph_crud.js';
 import {
@@ -48,7 +50,7 @@ import {
 } from './mock/track_templates.js';
 import { setLoopPoints, setSegments, setTiming, toggleLoopWindow } from './mock/maps.js';
 import { setDefiner } from './mock/definer.js';
-import { someNode, state } from './mock/state.js';
+import { takeLive, state } from './mock/state.js';
 import { setSequence, toggleSequence, auditionStep } from './mock/sequence.js';
 import { startRecordingInNode, stopRecordingInNode, newTake } from './mock/recording.js';
 import { selectTake, deleteTake, setComp, getTakeWaveform } from './mock/takes.js';
@@ -64,9 +66,7 @@ import {
     addPluginToChain, removeChainSlot, openPluginEditor,
     setMidiArmed, getMidiInputs,
 } from './mock/effects.js';
-import {
-    getKnownPlugins, scanPlugins, getPluginScanStatus,
-} from './mock/plugins.js';
+import { getKnownPlugins, scanPlugins, getPluginScanStatus } from './mock/plugins.js';
 import {
     saveSession, loadSession, getProjectInfo, renameProject, saveProjectNow,
     listTemplates, listRecentProjects, newProjectFromTemplate,
@@ -76,29 +76,20 @@ import {
 import { bounce, bounceWithDialog } from './mock/bounce.js';
 import { importAudio, importAudioWithDialog } from './mock/import.js';
 import { getMidiNotes } from './mock/midi.js';
-import './mock/scenarios.js';  // module load runs the launch-ritual boot
+import './mock/scenarios.js';  // loading it boots the empty session
 
-// The public test surface (index_test.html, backend.js, and the node
-// tests import exactly these — keep this list stable).
-export { getState, setMasterPos, setIsPlaying } from './mock/publish.js';
-export { startTransport, pauseTransport, advanceBy,
+// The public test surface (index_test.html, backend.js and the node
+// tests import exactly these).
+export { getState, readState, setMasterPos, setIsPlaying } from './mock/publish.js';
+export { startTransport, pauseTransport, advanceBy, stepClock,
          SIMULATED_SAMPLES_PER_SECOND } from './mock/transport.js';
 export { loadScenario } from './mock/scenarios.js';
-// The last accepted bounce request (Q19) — what the e2e reads after
-// the project menu's "Bounce song…".
 export { getLastBounce } from './mock/bounce.js';
-// The last accepted import request (docs/import.md) — what the e2e
-// reads after a menu import or a lane drop.
 export { getLastImport } from './mock/import.js';
-// The mock's sample rate — every rate-dependent value derives from it.
-// Set it BEFORE loadScenario (fixture lengths are read at load time);
-// ?rate= / CELESTRIAN_MOCK_RATE do this early enough automatically.
+// Set the rate BEFORE loadScenario: fixture lengths are read at load.
 export { getSampleRate, setSampleRate, quantumSamples } from './mock/rate.js';
 
-/**
- * Handler table for every protocol method. Keys must match
- * protocol.js BRIDGE_METHOD_NAMES exactly (see protocol_contract.test.mjs).
- */
+/** One handler per protocol method (protocol.js BRIDGE_METHOD_NAMES). */
 export const handlers = {
     getProjectInfo,
     renameProject,
@@ -111,15 +102,11 @@ export const handlers = {
     duplicateProject,
     ping: () => 'pong',
     togglePlayback,
-    // Ruler scrub — transport phase, engine parity; NOT undoable
-    // (a monitoring gesture, like auditionStep).
     seekTransport,
     startRecordingInNode,
     stopRecordingInNode,
     getGraphState: getState,
     getWaveform,
-    // Takes and comping (docs/takes.md): newTake arms like record (its
-    // commit rides the take's pending snapshot); the rest are undoable.
     newTake,
     selectTake,
     deleteTake,
@@ -129,20 +116,14 @@ export const handlers = {
     deleteNode,
     undo: mockUndo,
     redo: mockRedo,
-    // A cancelled drag: its step is dropped, redo returns (mock/undo.js).
     cancelGesture: mockCancelGesture,
     saveSession,
     loadSession,
-    // Bounce (Q19): records the request; refuses under a live take.
     bounce,
     bounceWithDialog,
-    // Audio file import (docs/import.md): synthesizes the take,
-    // records the request; UNDOABLE (the dispatch snapshot).
     importAudio,
     importAudioWithDialog,
-    // MIDI lane rendering (docs/vst3.md §11): paired notes on demand.
     getMidiNotes,
-    // Preferences: the base folder (projects root + template library).
     setProjectsRoot,
     chooseProjectsRoot,
     renameNode,
@@ -151,14 +132,10 @@ export const handlers = {
     getInputList,
     setNodeInput,
     setNodeInputRight,
-    // Software input monitoring (Q20): a monitoring gesture — NOT
-    // undoable (absent from UNDOABLE, like solo and the mixer knobs).
     setMonitor,
     setNodePan,
     setNodeGain,
     setPeriodSource,
-    // Hand Q to a track (Q22): engine parity, undoable, the live-take
-    // gate below.
     setDefiner,
     getAudioDeviceState,
     setAudioDevice,
@@ -173,103 +150,79 @@ export const handlers = {
     setEffectScope,
     startLatencyCalibration,
     getLatencyCalibration,
-    // Plugin hosting (docs/vst3.md phase 1): registry + simulated scan.
     getKnownPlugins,
     scanPlugins,
     getPluginScanStatus,
     setLoopPoints,
     setSegments,
-    // The re-time (loop_selection.md §9): engine parity, undoable, the
-    // live-take gate below.
     setTiming,
-    // The mock cannot move the OS cursor — returning false makes the
-    // expanded drag fall back to its eased-capture path.
+    // The mock cannot move the OS cursor: false sends an expanded drag
+    // down its eased-capture path.
     warpPointer: () => false,
     toggleLoopWindow,
-    // The SEQUENCER (docs/sequencer.md) — engine parity, undoable.
     setSequence,
     toggleSequence,
-    // The step audition (§11.2): a monitoring gesture — NOT undoable.
     auditionStep,
-    // Track templates (Q17): createFrom is UNDOABLE as one step (see
-    // mock/undo.js); save writes the LIBRARY, not the graph. There is
-    // no per-node togglePlay (Q16).
     listTrackTemplates,
     saveTrackTemplate,
     createFromTrackTemplate,
     toggleSolo,
     toggleMute,
     nativeLog: (msg) => { console.log('[JS]', msg); return true; },
-    dumpStateToFile: (json) => { console.log('[MockBackend] dumpStateToFile (no-op in mock)'); return true; }
+    dumpStateToFile: () => true,
 };
 
-// Polyfill for callNative - simulates the native C++ bridge
-/**
- * Dispatch a protocol method to its handler, mirroring the JUCE bridge.
- *
- * Undo interception (single point, mirrors AudioEngine::record): before
- * an UNDOABLE method's handler runs, a pre-edit snapshot is pushed —
- * except when a live map or re-time commit COALESCES into its drag's
- * logged step (live splice-preview drags = one undo step). A handler
- * that REFUSES calls popUndoForRefusal, so a refused edit records
- * nothing (see mock/undo.js).
- *
- * Unknown methods warn and resolve to null.
- */
-// The POLLS are exempt from the invocation trace (C++ bridge parity —
-// logCall): the 50ms graph poll and the 2s project poll are the
-// heartbeat, not events; tracing them buries every real call.
-// Event-shaped methods all trace. The list is protocol.js's (shared
-// with bridge.js).
-
-// THE LIVE-TAKE GATE (engine parity AudioEngine::refusedUnderLiveTake,
-// owner ruling 2026-09-09): while any take is armed or capturing, every
-// verb that changes what sounds when is refused — structure, geometry,
-// sequences, takes, period source, undo/redo, pause, a second arm.
-// Mixer/wiring knobs (mute, rename, input, fx slots, solo, gain, pan,
-// monitor) and creating an empty node stay live.
+/** THE LIVE-TAKE GATE (engine AudioEngine::refusedUnderLiveTake): while
+ * a take is armed or capturing, every verb that changes what sounds when
+ * is refused. Knobs, wiring, the fx chain and creating an empty node
+ * stay live; stopping is never gated, and a cancelled drag judges the
+ * take itself (mock/undo.js mockCancelGesture). */
 const REFUSED_UNDER_LIVE_TAKE = new Set([
     'deleteNode', 'reorderNode', 'combineNodes', 'setLoopPoints',
     'toggleLoopWindow', 'setSegments', 'setTiming', 'setPeriodSource',
-    'setDefiner',
-    'createFromTrackTemplate', 'setSequence', 'toggleSequence',
+    'setDefiner', 'setSequence', 'toggleSequence',
     'auditionStep', 'selectTake', 'deleteTake', 'setComp', 'importAudio',
-    'undo', 'redo', 'cancelGesture', 'togglePlayback', 'seekTransport',
+    'undo', 'redo', 'togglePlayback', 'seekTransport',
     'startRecordingInNode', 'newTake',
 ]);
-const takeIsLive = () => someNode(n => n.isRecording || n.isPendingStart);
 
+/**
+ * Dispatch a protocol method to its handler. An undoable verb is
+ * bracketed by the undo log (mock/undo.js beginCall / endCall): a
+ * snapshot before, dropped again when the handler left the graph as it
+ * found it — so a refusal, in any handler, records nothing. Unknown
+ * methods warn and answer null. The polls are not traced.
+ *
+ * THE ANSWER (protocol.js `returns`), as the bridge gives it:
+ *   - an UNDOABLE verb that answers whether it applied answers whether
+ *     it changed the graph — a refusal and an edit that changes nothing
+ *     are both `false`, whatever the handler returned;
+ *   - a verb nothing can refuse answers `true` once it ran;
+ *   - every other verb answers what its handler returns.
+ */
 export async function callNative(method, ...args) {
-    if (!QUIET_POLLS.has(method)) {
-        console.log(`[MockBackend] callNative: ${method}`, args);
-    }
-
+    if (!QUIET_POLLS.has(method)) console.log(`[MockBackend] callNative: ${method}`, args);
     const handler = handlers[method];
     if (!handler) {
         console.warn(`[MockBackend] Unknown method: ${method}`);
         return null;
     }
-    // (Stopping is the verb for a live take — never gated; and a
-    // togglePlayback while PAUSED is a resume, which the engine allows:
-    // only a PAUSE under a take is refused.)
-    const isResume = method === 'togglePlayback' && !state.isPlaying;
-    if (REFUSED_UNDER_LIVE_TAKE.has(method) && !isResume && takeIsLive()) {
+    // A togglePlayback while paused is a resume, which a take allows.
+    const resume = method === 'togglePlayback' && !state.isPlaying;
+    if (REFUSED_UNDER_LIVE_TAKE.has(method) && !resume && takeLive()) {
         console.log(`[MockBackend] ${method} refused - a take is armed or capturing`);
-        // A refused map or re-time commit still ARRIVES: a non-live one
-        // opens its gesture (engine parity — the verbs open it before
-        // any gate).
-        noteGestureCommit(method, args[0], args);
-        // Refusals answer like the engine's boolean verbs (seek, undo,
-        // redo, import: false); combine answers no uuid.
-        return method === 'combineNodes' ? null : false;
+        // A refused map or re-time commit still arrives: it opens its gesture.
+        noteGestureCommit(method, args);
+        return method === 'combineNodes' ? '' : false;
     }
-    // Snapshot BEFORE any undoable mutation so undo restores the pre-edit
-    // graph (see interceptUndoableCall for the coalescing rules).
-    interceptUndoableCall(method, args[0], args);
-    return handler(...args);
+    beginCall(method, args);
+    const answer = handler(...args);
+    const changed = endCall();
+    if (VOID_METHODS.has(method)) return true;
+    if (BOOL_METHODS.has(method) && isUndoable(method)) return changed;
+    return answer;
 }
 
-// Polyfill for log - just console.log in browser
 export function log(...args) {
     console.log('[App]', ...args);
 }

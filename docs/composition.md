@@ -101,9 +101,18 @@ inner(t)  = m.mapOffset((t − O − a0) mod P)          // an inner position in
 - **One-shot** (`periodSrc = context`, context cycle `C > P`): the fold
   runs on `C` instead of `P`:
   `h = (t − O − a0) mod C`; sound `inner = m.mapOffset(h)` while `h < P`,
-  silence otherwise. A one-shot stack renders no children in its rest
-  region (their state still advances; the group's fx rack keeps
-  running, so tails ring).
+  silence otherwise. The (map, fold) pair a stack reads is ONE function,
+  `timing::stackFold` (twin `ui/js/time_map.js`, golden
+  `stack_fold_cases`). **A one-shot stack's rest silences CONTENT, and
+  nothing else.** Its children still render through the rest, handed a
+  context that says their content is silent
+  (`ProcessContext::content_silent`): every member's rack keeps running
+  (an echo tail rings on after the shot), a member's monitored input is
+  still heard — live input answers to the gate alone — and the members'
+  cursors keep moving. For a MIDI member the rest is a DISCONTINUITY,
+  not a stop (`ProcessContext::resting`): the recorded notes release
+  once at the rest's top, no sound-off pair is sent, and the instrument
+  runs on (vst3.md §8.3).
 - **Sequence** (stacks): the step lookup runs at the SONG position,
   which is `inner(t)` measured from the stack's frame top — the map
   selects song positions (S9). A CUED step re-bases the child clock to
@@ -136,20 +145,23 @@ authority. The effective-period row is stated ONCE in code
 (`src/period_law.h`: `own` = map ▸ sequence ▸ content, `contribution` =
 0 for a one-shot or a DRIFTING node, `islandCycle` = lcm(Q, own(root))) and instantiated
 over two providers — the ownership tree on the message thread and the
-graph snapshot on the audio thread; `ui/js/timeline_model.js` carries
+graph snapshot on the audio thread; `ui/js/period_law.js` carries
 the JS twin and `period_law_cases` in `shared/timing_golden.json` pins
-all three on tree fixtures (audit D2-1, 2026-09-08). A one-shot stack's
+all three on tree fixtures (audit D2-1, 2026-09-08). **A clip's own
+period is its COMMITTED take**: a slot whose new take is being recorded
+keeps its period in every fold, and a first take has none until it
+commits (takes.md §2; the fixtures include a clip that is really
+capturing). A one-shot stack's
 shot is its OWN period. (A one-shot stack WITH a sequence is not a
 well-defined idea yet — owner, 2026-09-08; the law currently reads the
 song as the shot, provisionally, pending a design pass.)
 
 | Quantity | Definition | Who consumes it |
 |---|---|---|
-| **intrinsic** `D` | clip: committed length. stack: LCM of looping children's intrinsic. | inner-position domain of the map; the pre-take intrinsic cycle (`lcm_before_take_`); the Q15 fold frame |
+| **intrinsic** `D` | clip: committed length. stack: LCM of looping children's intrinsic. | inner-position domain of the map |
 | **effective** `P_eff` | active map ▸ active sequence length ▸ clip: `D` / stack: LCM of children's `P_eff` (one-shots excluded) | the parent's LCM; masterPos wrap; heard cycle at arm; the frame-health badge |
-| **context cycle** (`context_cycle`) | THE one scope cycle: the stack's own period (map period ▸ sequence length ▸ `lcm(Q, looping children's contributions)`) ▸ inherited when the scope has no looping content | one-shot playback fold (§2); one-shot echo display; arm targets (`armTarget`, min Q) and stop boundaries — the former `context_loop` (deleted, audit D2-4: a free-length song restarts the arm grid at its top at every depth, I5) |
-| **heard cycle** (`heard_cycle_at_arm_`) | `lcm(Q, P_eff(root))` at arm — E-C | the take's `contextCycle` (display fold, Q14); the Q15 audible-equivalence step |
-| **intrinsic cycle** (`lcm_before_take_`) | `lcm(Q, D(root))` at arm | the take's intrinsic pre-take cycle (`activeTakeIntrinsicCycle`); the Q15 fold frame |
+| **context cycle** (`context_cycle`) | THE one scope cycle (`period_law::scopeCycle`, twin `ui/js/period_law.js`, golden `scope_cycle_cases`): the stack's own period (map period ▸ sequence length ▸ `lcm(Q, looping children's contributions)`) ▸ inherited when the scope has no looping content | one-shot playback fold (§2); one-shot echo display; arm targets (`armTarget`, min Q) and stop boundaries — the former `context_loop` (deleted, audit D2-4: a free-length song restarts the arm grid at its top at every depth, I5) |
+| **heard cycle** (`heard_cycle_at_arm_`) | `lcm(Q, P_eff(root))` at arm — E-C | the take's `contextCycle` (display fold, Q14) |
 
 Rules:
 
@@ -166,7 +178,7 @@ Rules:
   exactly as recorded (its render folds on its own period from its own
   origin) and contributes nothing to any fold, so no cycle ever widens
   to `lcm(Q, P)`. A song holder is exempt (S10 owns a song's drift). The
-  clause is the same line in `period_law.h` and `timeline_model.js`
+  clause is the same line in `period_law.h` and `ui/js/period_law.js`
   (`periodDrifts`), pinned by `period_law_cases`.
 - **Stochastic successors** (S12) have no period: root only.
 
@@ -206,12 +218,12 @@ relies on it only for where to draw the brackets, not for what sounds.
 | Event | Effect on origins |
 |---|---|
 | First take under a stack commits | `stack.origin := take.origin` for every unanchored ancestor stack between the clip and the island root — **the root itself excluded**: content never anchors it; without a song its inner timeline is the island timeline and its zero is the zero (ruling 2026-09-09, design_language §5) (rides the take's undo entry; Untake un-anchors) |
-| A song is authored on the root (2026-09-17, frame.md §4) | `root.origin := the zero the view had seated` (snapped to the Q grid; the island zero when none is passed), anchored — Q18 at depth 0, so the song's top is where the picture already started. A root already anchored keeps its origin; clearing the song (or the island revert that clears every song) un-anchors. Rides the Sequence edit's inverse. |
+| A song is authored on the root (2026-09-17, frame.md §4) | `root.origin := the zero the view had seated` (snapped to the Q grid; the island zero when none is passed), anchored — Q18 at depth 0, so the song's top is where the picture already started. A root already anchored keeps its origin; clearing the song un-anchors, and so does the DELETE that empties the island — the one island revert that clears every song (its undo brings them back). Rides the Sequence edit's inverse. **A performance moves no song:** undoing the island's first take (or an import that established Q) reverts Q and the zero and keeps every song, and the root's anchor, exactly as the take found them. |
 | Combine (post-hoc group) | `new.origin := min(member origins)`, anchored |
 | Committed content inserted into an unanchored stack (Insert, Move, undo) | `stack.origin := child.origin` |
-| Definer re-trim (Q13, clip or stack) | while the definer holds ALL the island's content — phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`. Beside other tracks (a handed-Q definer, Q22) — nothing moves: `O' = O` (they play against it; nothing re-times unless the user does it, loop_selection.md §9). Then `zero := O' + start`; `Q := len`. **One implementation** for clips and stacks. |
+| Definer re-trim (Q13, clip or stack) | while the definer holds ALL the island's content — phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`. A re-trim that still plays the sounding sample keeps it sounding, by a window or by cells, over the whole take or over a map (which fold applies when the re-trim REMOVES the sounding sample is open for cells — tasks.md Tier G). Beside other tracks (a handed-Q definer, Q22) — nothing moves: `O' = O` (they play against it; nothing re-times unless the user does it, loop_selection.md §9). Then `zero := O' + start`; `Q := len`. **One implementation** for clips and stacks, one commit for both map verbs (`commitMap`, `src/engine/map_edits.cc`); a window is judged as CLAMPED to the take, so a drag past the end that lands on the stored window is an identity for a stack as for a clip. |
 | Q handed to a track (Q22, `setDefiner`) | no origin moves (a lock-collapsed target uncollapses first — audio-neutral); `Q := own period`, `zero := O + a0`; the designation is stored on the root and cleared by the next take that records new content |
-| Lock-collapse at the second arm (clip or stack definer) | leaves under the node: `base += s`, `D := len`; `shiftOrigins(node, s)`; node window consumed. Audio-neutral (§2). Re-open reverses it. |
+| Lock-collapse at the second arm (clip or stack definer) | leaves under the node: `base += s`, `D := len`; `shiftOrigins(node, s)`; the ancestors anchored ON the node (its subtree holds all of their committed content) follow, an ancestor that holds other content stays; node window consumed. Audio-neutral (§2). Re-open reverses it — unless a region was authored on the node or its leaves since the lock, which stands. A clip's CUT map collapses by a SPLICE: the kept cells become the take (every take of the slot, and a MIDI take's notes, are cut alike), `origin += a0`, and NO window is left — whole is no window; the un-splice restores takes, map and comp. **A bypassed map is not in use**: the arm collapses nothing and splices nothing, and a bypassed map is not geometry when the definer is judged. The collapse is one of the arm's own edits: applied to judge the arm, put back if the arm is refused, logged only when it proceeds (recording.md). |
 | Map edit while playing (the continuity rider) | `shiftOrigins(node, O' − O)` with `O'` = `originForHeard` reduced to the representative nearest `O` modulo the node's fold (`heard::continuityOriginFor`, time_maps.md §5 — a slide never re-anchors); the island zero stays (the view re-seats the frame, frame.md) |
 | Seek | `shiftOrigins(root, delta)`, `zero += delta`, history absolutes shifted |
 | Cycle growth at commit | nothing moves — the view seats the new take in the cycle it started in (frame.md) |
@@ -306,8 +318,9 @@ ghosts, mics drawn whole beneath. Trimming the drums' window to
 > Status 2026-09-08 (audit D6-1): this list is now TRUE in code. The
 > lock-collapse is `Edit::Kind::Collapse` over the definer node
 > (`AudioEngine::collapseNode` / `uncollapseNode`, the §5 row), with
-> `collapseDefinerAtArm` the one arm-time site; the definer predicate is
-> `engine_internal::definer(root)`; leaves are anchored by construction
+> `applyArmEdits` the one arm-time site; the definer predicate is
+> `engine_internal::definer(root)` (`src/engine/definer.cc`); leaves are
+> anchored by construction
 > and `frameOrigin` lives on `AudioNode`; the group equation is
 > `heard::nodeInner` composed through `heard::receivedAt`.
 
@@ -335,11 +348,17 @@ ghosts, mics drawn whole beneath. Trimming the drums' window to
   and cut bands on a group lane are INNER positions offset by that mark.
 - **Composite waveform** is unchanged: it already mixes each member's
   audible content at the member's own origin.
-- **One-shot groups** draw as one-shot clips do: dashed composite tile,
-  no ghost repetitions, members whole beneath.
-- **Mock parity**: `mock/maps.js` and `mock/recording.js` carry the
-  same anchoring events; `view_model.js` reads `origin` on stacks and
-  never derives it.
+- **One-shot groups** are drawn from the fold the engine reads
+  (`shotOf` / `fireReps`, `ui/js/vm/tiling.js`, over the mirrored
+  `stackFold`): the group's shot at every firing, empty in its rest.
+  The whole subtree — clips and groups, at any depth — is built in the
+  SHOT's frame and fired with it, so the members restart with every
+  firing and show nothing in the rest. The lane carries the cadence as
+  `shotEveryQ` (session_view.md §2).
+- **Mock parity**: `mock/maps.js`, `mock/definer.js` and
+  `mock/recording.js` carry the same anchoring events, held to the
+  engine by the differential (test_harness.md); the view model reads
+  `origin` on stacks and never derives it.
 
 ---
 
@@ -406,7 +425,10 @@ children — as the primary representation of its content.
 
 - **Generation:** mix all child waveforms at their relative positions,
   accounting for each clip's origin offset, looping clips repeated at
-  their correct positions.
+  their correct positions. The mix is the VIEW's
+  (`ui/js/composite_waveform.js`, from the clips' own peaks): the
+  engine answers peaks for clips only, and `getWaveform` on a stack is
+  empty.
 - **Caching:** keyed by peak count, window geometry, and the children's
   durations, with segments folded in for mapped nodes; invalidated when
   children change. Lives in `ui/js/session_view/lane_body.js` and

@@ -9,25 +9,16 @@
 namespace celestrian::dsp {
 
 /**
- * Built-in effect DSP (docs/session_view.md effects bar).
+ * The DSP of the four built-in effects (docs/session_view.md effects
+ * bar). Slot identity, order, the parameters' keys and RANGES, and the
+ * scope are the chain's (fx_chain.h); nothing here knows about slots.
  *
- * These four classes are the DSP truth for the built-in effects. Slot
- * identity, ordering, param clamps, and the scope live in the dynamic
- * slot CHAIN (fx_chain.h, docs/vst3.md phase 2); nothing in THIS file
- * knows about slots.
- *
- * Every effect has a mono path (process) and a stereo path
- * (processStereo): stereo clips and panned groups carry two channels
- * through the chain.
- * The two paths share the same atomic parameters but keep SEPARATE DSP
- * state per channel (biquads, echo lines) — interleaving one mono state
- * across channels would garble both. The compressor is stereo-LINKED:
- * one envelope from the channel maximum, the same gain applied to both
- * (per-channel envelopes would smear the stereo image). process() /
- * processStereo() run on the audio thread: no allocation, no locks.
- * prepare() runs on the MESSAGE thread (allocates the echo lines,
- * resets reverb) and MUST be called before the first enable at a given
- * sample rate.
+ * A parameter is a public atomic, read by a mono path (process) and a
+ * stereo path (processStereo) that keeps its own DSP state per channel.
+ * The DSP trusts it to be in range: every writer goes through the
+ * slot's parameter table (fx_chain.cc), which clamps. process /
+ * processStereo run on the audio thread (no allocation, no locks);
+ * prepare runs on the MESSAGE thread and must precede the first enable.
  */
 
 /** RBJ biquad (Audio EQ Cookbook), transposed direct form II. */
@@ -79,12 +70,10 @@ class FxEQ {
 class FxCompressor {
  public:
   std::atomic<float> threshold_db{-18.0f};
-  std::atomic<float> ratio{4.0f};         // 1..20
-  std::atomic<float> attack_ms{10.0f};    // 0.1..100
-  std::atomic<float> release_ms{100.0f};  // 10..1000
-  std::atomic<float> makeup_db{0.0f};     // −12..24 (output trim; makeup
-                                          // convention is raise-only, but
-                                          // cutting is harmless and useful)
+  std::atomic<float> ratio{4.0f};
+  std::atomic<float> attack_ms{10.0f};
+  std::atomic<float> release_ms{100.0f};
+  std::atomic<float> makeup_db{0.0f};
 
   void prepare(double sampleRate);
   void process(float* x, int n);
@@ -115,17 +104,20 @@ class FxCompressor {
 /** Echo: preallocated delay line; time/feedback/mix. */
 class FxEcho {
  public:
-  std::atomic<float> time_s{0.35f};    // 0.05..2.0
-  std::atomic<float> feedback{0.35f};  // 0..0.9
-  std::atomic<float> mix{0.35f};       // 0..1
+  /** The delay line's length: the longest `time_s` it can play. */
+  static constexpr double kLineSeconds = 2.0;
 
-  void prepare(double sampleRate);  // message thread: allocates 2s lines
+  std::atomic<float> time_s{0.35f};
+  std::atomic<float> feedback{0.35f};
+  std::atomic<float> mix{0.35f};
+
+  void prepare(double sampleRate);  // message thread: allocates the lines
   void process(float* x, int n);
   void processStereo(float* l, float* r, int n);
 
  private:
-  /** Per-block snapshot of the delay parameters (delay in samples,
-   * clamped to the line; feedback/wet clamped to their legal ranges). */
+  /** Per-block snapshot of the delay parameters (the delay in samples,
+   * held inside the line). */
   struct Parameters {
     int delay;
     float feedback, wet;
@@ -141,9 +133,9 @@ class FxEcho {
 /** Reverb: juce::Reverb (Freeverb — the canonical implementation). */
 class FxReverb {
  public:
-  std::atomic<float> size{0.5f};  // 0..1 room size
-  std::atomic<float> damp{0.5f};  // 0..1
-  std::atomic<float> mix{0.3f};   // 0..1 wet level
+  std::atomic<float> size{0.5f};  // room size
+  std::atomic<float> damp{0.5f};
+  std::atomic<float> mix{0.3f};  // dry/wet crossfade (applyParams)
 
   void prepare(double sampleRate);
   void process(float* x, int n);

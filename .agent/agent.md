@@ -31,9 +31,41 @@ trigger: always_on
 - The C++ test binary is under `build/CelestrianTests_artefacts/Debug/`
   — the non-Debug path is stale.
 
+## Tests: the layers, and when to run which
+
+`docs/test_harness.md` is the full write-up. All `npm` commands run in
+`ui/`. Beside the C++ suite there are four JS-side layers; the fourth,
+the differential, is the one that compares the mock with the engine.
+
+| Layer | Command | Run it when |
+|---|---|---|
+| C++ engine | `cmake --build build --target CelestrianTests -j6`, then `build/CelestrianTests_artefacts/Debug/CelestrianTests` (`--category=<name>` for one suite) | anything under `src/` or `tests/` changed |
+| JS unit | `npm test` (= `node --test js/tests/*.test.mjs`; one file: `node js/tests/<name>.test.mjs`) | anything under `ui/js/` changed |
+| Mock-page e2e | `npm run test:playwright` (serves `ui/` on 8080 itself, or reuses a running server) | the session view, the shell, the mock, or a spec changed |
+| Engine e2e | `npm run test:engine` (needs `CelestrianHeadless` built) | the engine's published state or the view's reading of it changed |
+| Differential | `npm run test:diff` (needs `CelestrianHeadless` built; exit 77 = skipped, engine not built) | the mock (`ui/js/mock/**`, `mock_backend.js`) or an engine verb's behaviour changed |
+
+`npm run test:all` runs the four JS-side layers in that order. Mock-page
+specs boot through `boot` in `ui/e2e/helpers.js` (the shared recipes;
+real input is the law; no `waitForTimeout`). Under test the mock's
+clock is STEPPED — a test moves time with `advanceBy`, never by
+polling.
+
+- **Mock-vs-engine parity is pinned by the differential, not by unit
+  tests.** `npm test` passing does not show the mock still matches the
+  engine; `npm run test:diff` does. Do not add a unit test that replays
+  an engine sequence on the mock — add a journey to
+  `ui/differential/journeys.mjs`.
+- **Deleting a test as redundant needs a named twin** that asserts the
+  same fact in the same situation, and the twin then stays: a case
+  deleted on a twin always leaves a kept twin.
+- C++ categories: `--category=Scenarios` (the catalog,
+  `docs/scenarios.md`), `--category=Golden` (the golden-fixture
+  readers).
+
 ## Debugging
 
-- **Bridge Logging**: Use `log()` from `bridge.js` to tunnel to C++ stdout
+- **Bridge Logging**: Use `log()` from `backend.js` to tunnel to C++ stdout
 - **Canvas Issues**: Check CSS layout; JUCE WebViews need explicit dimensions
 - **Log File**: Check `celestrian_debug.log` in **project root** (not build dir)
 
@@ -54,7 +86,7 @@ also what `playwright.config.js` serves):
 ```bash
 cd ui
 npx serve . -p 8080
-# Open http://localhost:8080/index_test.html
+# Open http://localhost:8080/?mock=true&harness=1
 ```
 
 **Usage**:
@@ -64,9 +96,9 @@ npx serve . -p 8080
 4. Use browser subagent to test interactions visually
 
 **Files**:
-- `ui/js/mock_backend.js` (+ `ui/js/mock/*.js`) - Simulates the JUCE bridge; state + protocol only, all timing math imported from `timeline_model.js`
-- `ui/js/backend.js` - The facade that selects mock vs JUCE bridge (`?mock=true` exposes `window.__celestrianTest`)
-- `ui/index_test.html` - Test harness page (dynamically imports `app.js`)
+- `ui/js/mock_backend.js` (+ `ui/js/mock/*.js`) - Simulates the JUCE bridge; state + protocol only, all timing math imported from the mirror modules (below)
+- `ui/js/backend.js` - The facade that selects the backend: `?mock=true` (the mock, with `window.__celestrianTest`), `?engine=true` (the headless engine server), else the JUCE bridge
+- `ui/js/harness_sidebar.js` - The scenario sidebar, mounted beside the app under `&harness=1` (`ui/index_test.html` only redirects to `/?mock=true&harness=1`)
 
 **Adding scenarios**: Edit `ui/js/mock/scenarios.js`
 
@@ -104,14 +136,14 @@ When testing JS changes, the browser may cache ES modules aggressively. If chang
 - ✅ Capture evidence of bugs
 
 **Required Task Structure for Browser Subagent**:
-1. **Specify exact URL first**: Always start with `Navigate to http://localhost:8080/index_test.html`
+1. **Specify exact URL first**: Always start with `Navigate to http://localhost:8080/?mock=true&harness=1`
 2. **Give explicit step-by-step actions**: List each click, wait, or inspection action clearly
 3. **Define clear return conditions**: Explicitly state what information to report and when to stop
 4. **Request screenshots**: Always ask for a screenshot at key points
 
 **Example Task (GOOD)**:
 ```text
-Navigate to http://localhost:8080/index_test.html. Wait for the page to fully load.
+Navigate to http://localhost:8080/?mock=true&harness=1. Wait for the page to fully load.
 Click the 'Stack with 3 Clips' button in the scenario sidebar.
 Wait 1 second for rendering. Take a screenshot.
 Inspect the DOM for elements matching '.rep.ghost'.
@@ -134,7 +166,13 @@ Debug the ghost clip rendering issue.
   - The fix works as intended
   - Edge cases are covered
   - The bug cannot regress
-- **Timing math lives in two mirrors** (`src/timing.h` ↔ `ui/js/timeline_model.js`), pinned by `shared/timing_golden.json`. A bridge method lives in three places (`protocol.js` ↔ `main_component.cc` ↔ `mock_backend.js`), pinned by the contract test.
+- **Timing math lives in two mirrors**, pinned to the same numbers by `shared/timing_golden.json`. Change one side, change its twin and add a golden case:
+  - `src/timing.h` ↔ `ui/js/time_map.js` (the node equation `innerAt`, `stackFold`, the top) and `ui/js/timeline_model.js` (`armTarget`, `nextStopBoundary`, `snapCommittedDuration`, `launchPointFor`)
+  - `src/period_law.h` ↔ `ui/js/period_law.js` (own period, contribution, drift, island cycle, scope cycle)
+  - `src/heard_index.h` ↔ `ui/js/mock/heard.js` (the heard-position walk and the continuity origin)
+  - `src/sequence.h` ↔ `ui/js/sequence_program.js`; `src/qtime.h` ↔ `ui/js/qtime.js`, `ui/js/math_utils.js` (`posMod`)
+- **A bridge method lives in three places** (`ui/js/protocol.js` ↔ `src/bridge_dispatch.cc` ↔ `ui/js/mock_backend.js`; a verb that needs a window is bound in `src/main_component.cc`), pinned by `ui/js/tests/protocol_contract.test.mjs`.
+- **`ui/js/view_model.js` and `ui/js/timeline_model.js` are facades**: the view model's parts live in `ui/js/vm/*`, the app shell's in `session_facts.js`, `shell_io.js`, `content_cache.js`, `edit_verdict.js`, `record_verbs.js`, `structure_verbs.js`, `project_menu.js`. Put new code in the part that owns it, not in the facade.
 
 ## Reference
 

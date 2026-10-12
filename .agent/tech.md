@@ -35,12 +35,12 @@ Architecture and timing canon live in `docs/` (start at
 JUCE 8's `withNativeFunction` uses an event-based handshake, not direct
 `window` exposure — see `callNative` in `ui/js/bridge.js`
 (`__juce__invoke` / `__juce__complete`). Adding a bridge method touches
-three places (`protocol.js`, `main_component.cc`, `mock_backend.js`) or
-the contract test fails — see `style.md`.
+three places (`protocol.js`, `src/bridge_dispatch.cc`,
+`mock_backend.js`) or the contract test fails — see `style.md`.
 
 ### Logging
 
--   Use `log()` (imported from `bridge.js`), **not** `console.log()`.
+-   Use `log()` (imported from `backend.js`), **not** `console.log()`.
     Route: JS `log` → `callNative('nativeLog')` → `juce::Logger` →
     `celestrian_debug.log` in the project root (`src/main.cc`).
     `console.log` only reaches the invisible WebView console.

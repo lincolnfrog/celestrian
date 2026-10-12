@@ -290,12 +290,43 @@ in the doc that owns its feature, but each has a pointer here.
   supersedes the per-node "hot node" refusals and the "ordinary window
   edit under a live take" branch, and answers audit §7 items 1, 2 and 4
   (pause, second arm, delete-the-definer under a take — all refused).
+  The gate is stated ONCE in the engine: the edit log asks it before it
+  applies an edit, and which kinds wait for a take is a column of the
+  kind table (`src/engine/edit_log.cc`). **An arm validates before it
+  changes anything** — a refused arm leaves the graph, the transport
+  and the undo log exactly as they were (recording.md).
+- **THE STATUS LINE DOES NOT LIE (owner, 2026-10-11):** a verb the
+  engine can refuse answers whether it applied, end to end — engine,
+  bridge, protocol, mock — and the status line is chosen from that
+  answer, never said ahead of it. An edit that would change nothing is
+  not applied: no undo step, the redo branch kept. **ui.md "The answer
+  law".**
+- **THE MOCK IS HELD TO THE ENGINE BY A DIFFERENTIAL, NOT BY REPLAY
+  TESTS (owner, 2026-10-11):** one verb sequence is driven against the
+  real engine and the mock and every published fact and every answer
+  compared (`npm run test:diff`). **test_harness.md.**
+- **SELECTION AND HANDLES (owner, 2026-10-11):** a handle press selects
+  its track alone, at the press; one-shots keep live edit chrome (trim
+  grips, seam handles). **loop_selection.md §15, time_maps.md §6.**
+- **ALWAYS BOOT EMPTY (owner, 2026-10-11):** no remembered last
+  template; **projects.md.** Import onto a stack is ONE undo step;
+  **import.md.**
 - **"WHOLE" DROPS A STALE BYPASS (2026-09-10, scenario S34):** clearing
   a node's loop region (loop points (0, 0), D4-7's "whole") also clears
   its bypass flag — nothing is left to bypass, and a window drawn later
   on a still-bypassed node was silently inert (the lane showed the
   region, the engine played the whole take). The inverse restores the
   flag with the geometry (`Edit::restoresBypass`); the mock mirrors it.
+  The flag rides EVERY map edit, not only a clear: any map edit's
+  inverse puts back the bypass it found, so a live drag that clears and
+  re-windows is one undo step that restores it (time_maps.md §7).
+- **A BYPASSED MAP IS NOT IN USE (owner, 2026-10-11 — "least surprise:
+  a bypassed map means record without it"):** at the second arm a
+  bypassed definer map is neither collapsed nor spliced — the take
+  stays whole and the map stays stored, bypassed — and a bypassed map
+  is not geometry when the definer is judged. A map edit on a bypassed,
+  playing node re-anchors nothing (it plays whole before and after).
+  time_maps.md §5.
 - **EDITING ONE LANE NEVER MOVES THE OTHERS (owner, 2026-09-10):**
   a live map edit keeps the edited lane's audio continuous (origin
   re-anchor), and no other lane's picture moves. *The mechanism ruled
@@ -331,10 +362,10 @@ in the doc that owns its feature, but each has a pointer here.
   when you played it, that is paramount" — the anchoring law is
   untouched; only the picture's zero moved out of the kernel.
   frame.md is the spec, with the pictures; pinned by
-  `ui/js/tests/under_map_slice.test.mjs`, `trim_drag.test.mjs`,
-  `mock_zero.test.mjs`, `tests/regression_tests.cc` ("MAP EDITS MOVE
-  NO ISLAND FACT") and the engine e2e journeys in `rebase.spec.js` and
-  `loop_edits.spec.js`.
+  `ui/js/tests/under_map_slice.test.mjs`, `frame_seat.test.mjs`,
+  `map_record.test.mjs`, scenarios S2 / S32 / S34 / S41 (no commit and
+  no map edit moves an island fact, playing or stopped) and the engine
+  e2e journeys in `rebase.spec.js` and `loop_edits.spec.js`.
 - **LOOP-REGION PHASE 1 (owner, 2026-09-23):** (a) a lane's top seats
   on its NEAREST Q grid line, not the one below (frame.md §1), so an
   ⌥-slide within ±½Q releases with the picture the drag pin showed —
@@ -430,10 +461,14 @@ in the doc that owns its feature, but each has a pointer here.
   gestures on the same lane, however close in time, are two undo
   steps. Mechanism: `setSegments` / `setLoopPoints` take an optional
   trailing `live`; the UI sends it on every commit after a gesture's
-  first (map_bands.js `gestureLive`), the engine coalesces only live
-  commits (`Edit::live`, edit_log.cc `editsCoalesce`), the mock
-  mirrors it (mock/undo.js). Before this, consecutive segment edits
-  on one node merged unconditionally.
+  first (map_core.js `gestureLive`), the engine coalesces only live
+  commits (`Edit::live`; `AudioEngine::record`, `src/engine/edit_log.cc`
+  — which kinds are gestures is a column of the kind table there), the
+  mock mirrors it (mock/undo.js). The one step restores what the
+  gesture FOUND — its first origin, island facts, window riders and
+  bypass, whichever commit of the drag moved them — and a cancelled
+  drag leaves no step at all (`cancelGesture`). Before this,
+  consecutive segment edits on one node merged unconditionally.
 - **THE GRID YOU SEE IS THE GRID YOU HEAR (owner, 2026-09-09; field
   bug: a 4-section root song sounded the full band over the guitar-only
   section, the guilty section wandering with every take):** a song's
@@ -748,7 +783,8 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   the field: "I started with drums" and a first take recorded as a
   group could not be trimmed at all):** a stack whose direct clip
   children are the island's ONLY committed content and were recorded
-  as ONE take (identical origin and duration — N mics, ≥ 2 of them; a
+  as ONE take (identical origin and duration, at the group's own
+  origin — N mics, ≥ 2 of them; a
   single clip keeps the clip path wherever it lives) is the island's
   **definer stack**, and its window re-establishes (Q, zero) exactly
   as a sole clip's does (`AudioEngine definerStack`; mock
@@ -769,7 +805,8 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   D6-1, 2026-09-08):** at the second arm the definer — clip or stack —
   collapses to its window exactly as composition.md §5's row says
   (`Edit::Kind::Collapse`: the leaves keep the window's material, the
-  node's subtree moves by the window start, ancestors follow, the
+  node's subtree moves by the window start, the ancestors anchored on
+  it follow (one that holds other content stays), the
   window is consumed; re-open reverses it). Without it the raw inner
   cycle survived the lock incommensurate with Q and poisoned every LCM
   the arm math snapshots. There is no group twin any more — see
@@ -784,7 +821,9 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   re-establishment moves the grid under every OTHER authored window or
   map in the island, stranding it permanently incoherent, so BOTH
   definer paths engage only while the definer's geometry is the
-  island's only geometry (`hasActiveGeometryOutside`; a committed
+  island's only geometry (`hasActiveGeometryOutside`,
+  `src/engine/definer.cc`; a BYPASSED window or cell map is not in use
+  and is not geometry; a committed
   clip's full-span [0, D) restricts nothing and is not geometry; since
   audit D4-7, 2026-09-08, commit writes NO window — a take is its whole
   content unless trimmed, the only commit-time window being the
@@ -804,8 +843,9 @@ Once you start recording new tracks, Q becomes locked."* Canon:
     the sub-region `[0, floor(L/Q)·Q)` — or `[0, Q/2)` — on each
     clip) is LIFTED at settle: the members' common commit-time region
     becomes the stack's window and the members go whole
-    (`reconcileTakes → liftGroupWindow`, riding the take's undo entry
-    as `Edit::windows`). A definer re-trim carries the same rider for
+    (`reconcileTakes → settleCommittedTake → liftGroupWindow`, riding
+    the take's undo entry as `Edit::windows`; an imported take settles
+    through the same function). A definer re-trim carries the same rider for
     members that still hold a window (pre-lift states). The trim view
     draws the RAW mixdown (composite `raw` mode: whole takes from 0,
     no window/zero tiling) — the picture under the selection is
@@ -965,8 +1005,9 @@ source of each take's `contextCycle`).
 not divide the take: the folded take restarts mid-phrase right after
 it ends. The origin is the capture boundary; the 2026-07-16 field
 complaint ("started recording at 1Q instead of 0Q") is a DISPLAY fact
-that Q14's contextCycle marking already handles. Both cycle snapshots
-stay: heard for `contextCycle`, intrinsic for the take's pre-take cycle.
+that Q14's contextCycle marking already handles. The heard snapshot
+stays (`heard_cycle_at_arm_`, the source of each take's `contextCycle`);
+the intrinsic one lost its last reader with the fold and is gone.
 
 ### Fourth review round (2026-08-13)
 

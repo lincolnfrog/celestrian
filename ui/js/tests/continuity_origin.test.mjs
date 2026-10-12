@@ -1,14 +1,13 @@
 /**
- * THE CONTINUITY RE-ANCHOR PICKS THE NEAREST REPRESENTATIVE (seam-model
- * SM-4 / release-jump F4, 2026-09-23; docs/time_maps.md §5).
+ * THE CONTINUITY RE-ANCHOR PICKS THE NEAREST REPRESENTATIVE
+ * (docs/time_maps.md §5).
  *
  * A map edit while playing re-anchors the origin so the sounding sample
  * keeps sounding. The solve (originForHeard) answers the MOST RECENT
- * pass: for a pure slide that was O + m·P — audibly the same, but the
- * view seats the frame from absolute tops, so the seat flipped with the
- * parity of m (the "sometimes it jumps on release" field report), a
- * group's composite re-keyed (a 240 ms cross-fade), and bypass played
- * the take away from where it was performed. The origin is now the
+ * pass — for a pure slide O + m·P, audibly the same; but the view seats
+ * the frame from absolute tops, so the seat would flip with the parity
+ * of m, a group's composite would re-key, and bypass would play the
+ * take away from where it was performed. So the origin is the
  * representative nearest the old one modulo the fold: a slide keeps O.
  *
  * The algebra is golden-pinned against the engine
@@ -22,13 +21,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { advanceBy, callNative, getState, loadScenario, pauseTransport }
-    from '../mock_backend.js';
+import { advanceBy, callNative, getState } from '../mock_backend.js';
 import { state, findNode } from '../mock/state.js';
 import { continuityOriginFor, nearestRepresentative } from '../mock/maps.js';
 import { innerAt, heardOffsetOf } from '../time_map.js';
+import { posMod } from '../math_utils.js';
 import { deriveViewModel } from '../view_model.js';
-import { loadSharedJson, recordTake } from './helpers.mjs';
+import { loadSharedJson } from './helpers.mjs';
+import { recordIsland, holdStill } from './mock_scene.mjs';
 
 const golden = loadSharedJson('timing_golden.json');
 
@@ -54,20 +54,15 @@ test('golden: continuityOriginFor (engine heard::continuityOriginFor)', () => {
     }
 });
 
-/** The F4 layout: 1Q, a 2Q loop, then a 10Q take windowed to 5Q — the
- * earlier lanes' cycle (2Q) does not divide the edited loop's 5Q, so a
- * whole-pass origin shift of odd m would re-seat the frame. Parked
- * `passes` whole 5Q passes of the window past its first, `hQ` into the
- * pass; transport held still (isPlaying, no auto-advance) so every
- * read is exact. */
+/** 1Q, a 2Q loop, then a 10Q take windowed to 5Q — the earlier lanes'
+ * cycle (2Q) does not divide the edited loop's 5Q, so a whole-pass
+ * origin shift of odd m would re-seat the frame. Parked `passes` whole
+ * 5Q passes of the window past its first, `hQ` into the pass; transport
+ * held still (isPlaying, no auto-advance) so every read is exact. */
 async function f4Layout(passes, hQ) {
-    loadScenario('empty');
     const Q = 1000;
-    await recordTake('', Q, { stopEarly: 0, settle: 0 });
-    await recordTake('', 2 * Q);
-    const c3 = await recordTake('', 10 * Q);
-    pauseTransport();
-    state.isPlaying = true;
+    const c3 = (await recordIsland(Q, 2 * Q, 10 * Q))[2];
+    holdStill({ playing: true });
     await callNative('setLoopPoints', c3, 0, 5 * Q);
     const node = findNode(c3);
     const O = node.origin;
@@ -83,7 +78,7 @@ test('a playing slide keeps the origin — whatever the pass count', async () =>
     const seats = [];
     for (const passes of [7, 8]) {
         const { Q, c3, O, node } = await f4Layout(passes, 2.5);
-        // Before the fix: the solve came back O + (passes')·5Q.
+        // (The solve alone answers O + (passes')·5Q.)
         await callNative('setLoopPoints', c3, Q, 6 * Q);  // slide +1Q
         assert.equal(node.origin, O,
             `a whole-Q slide after ${passes} passes keeps the origin`);
@@ -95,7 +90,7 @@ test('a playing slide keeps the origin — whatever the pass count', async () =>
         const t0 = state.masterPos;
         const p = innerAt(t0, node.origin, { segs: [[Q + 300, 6 * Q + 300]] }, 5 * Q);
         assert.equal(p.inner, 2.5 * Q, 'the sounding sample is kept');
-        // THE SEAT: read off the lanes, it no longer depends on parity.
+        // THE SEAT: read off the lanes, it does not depend on parity.
         seats.push(deriveViewModel(getState()).frameZero);
         // THE DEGRADATION CONTRACT: bypassed, the take plays where it
         // was performed — its origin is still the capture boundary.
@@ -114,10 +109,31 @@ test('a trim before the playing point moves the origin by the least ' +
     // representative modulo the new 4Q period is within ±2Q of O.
     await callNative('setLoopPoints', c3, Q, 5 * Q);
     const d = node.origin - O;
-    assert.equal(((d % Q) + Q) % Q, 0, 'a whole number of Qs (I4)');
+    assert.equal(posMod(d, Q), 0, 'a whole number of Qs (I4)');
     assert.ok(Math.abs(d) <= 2 * Q, `the least move (got ${d / Q}Q)`);
     const p = innerAt(state.masterPos, node.origin, { segs: [[Q, 5 * Q]] }, 4 * Q);
     assert.equal(p.inner, 3.5 * Q, 'the sounding sample is kept');
+});
+
+test('a cut that keeps the sounding position keeps it sounding, and so does ' +
+     'its heal: setSegments rides the same rider; the zero never moves', async () => {
+    const { Q, c3, O, node } = await f4Layout(8, 2.5);
+    const t0 = state.masterPos;
+    const zero = state.islandZero;
+    // Cut [1Q, 2Q) out of the 5Q window: the sounding 2.5Q is kept.
+    const cut = { segs: [[0, Q], [2 * Q, 5 * Q]] };
+    await callNative('setSegments', c3, cut.segs.flat());
+    assert.notEqual(innerAt(t0, O, cut, 4 * Q).inner, 2.5 * Q,
+        'the fixture: left where it was, the origin would sound another sample');
+    assert.equal(posMod(node.origin - O, Q), 0, 'the origin moves by whole Qs');
+    assert.equal(innerAt(t0, node.origin, cut, 4 * Q).inner, 2.5 * Q,
+        'the sounding sample keeps sounding across the cut');
+    // Healing is a map edit too.
+    await callNative('setSegments', c3, [0, 5 * Q]);
+    assert.equal(posMod(node.origin - O, Q), 0, 'heal: whole Qs or not at all');
+    assert.equal(innerAt(t0, node.origin, { segs: [[0, 5 * Q]] }, 5 * Q).inner,
+        2.5 * Q, 'heal: the sounding sample is kept');
+    assert.equal(state.islandZero, zero, 'neither edit moves the zero');
 });
 
 test('a sub-Q loop slide keeps the origin (mod its own period, not Q)', async () => {

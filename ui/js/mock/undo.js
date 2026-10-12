@@ -1,184 +1,120 @@
 /**
- * mock/undo.js — undo/redo stacks and the per-call snapshot protocol.
+ * mock/undo.js — the undo and redo logs (engine twin: edit_log.cc).
  *
- * The stacks are private to this module: callers reach them only through
- * the accessors below (push/pop-for-refusal/clear/can/note/was), so the
- * refusal convention — "a refused edit records nothing" — has exactly
- * one implementation (popUndoForRefusal) instead of scattered
- * `undoStack.pop()` sites.
+ * The engine logs inverse EDITS; the mock logs whole-graph SNAPSHOTS
+ * (state.js serializeGraph), taken by the dispatch before an undoable
+ * verb runs. Three rules make a snapshot behave as the engine's entry:
+ *   - a call that leaves the graph as it found it logs nothing, and one
+ *     that changed it APPLIED — the answer of an undoable verb (endCall);
+ *   - a restore keeps the knobs the engine never logs (restoreStep);
+ *   - a take's step is built when it settles, from the graph as it is
+ *     then (pushTakeStep), so edits made under the take stay.
  */
 
-// --- Undo / redo (mirrors AudioEngine's edits-as-events observably) ---
-// The C++ engine records inverse EDITS; the mock takes the simpler
-// equivalent for e2e — a snapshot of the mutable graph taken before every
-// undoable mutation. Same observable contract: canUndo/canRedo on
-// getState, undo() restores the pre-edit graph, a fresh edit clears redo.
+import {
+    state, serializeGraph, restoreGraph, eachNode, shiftIsland, takeLive,
+} from './state.js';
 
-import { serializeGraph, restoreGraph } from './state.js';
+const UNDOABLE = new Set([
+    'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
+    'toggleMute', 'setLoopPoints', 'toggleLoopWindow', 'setSegments', 'setTiming',
+    'setNodeInput', 'setNodeInputRight', 'setPeriodSource', 'setDefiner',
+    'moveChainSlot', 'addPluginToChain', 'removeChainSlot',
+    'createFromTrackTemplate', 'setSequence', 'toggleSequence',
+    'selectTake', 'deleteTake', 'setComp', 'importAudio', 'importAudioWithDialog',
+]);
+const MAX_STEPS = 128;
+
+/** Node facts the engine keeps out of its log: mixer and monitoring. */
+const KNOBS = ['pan', 'gain', 'isSoloed', 'monitor', 'midiArmed', '_scopeOn'];
+/** What an edit made under a live take may change on a node that was
+ * there at the arm: the tree, the wiring, the knobs. */
+const LIVE_UNDER_TAKE = new Set([...KNOBS, 'id', 'type', 'nodes', 'name', 'isMuted',
+    'inputChannel', 'inputChannelR', 'channels', 'effects', 'auditionStep']);
 
 let undoStack = [];
 let redoStack = [];
-const UNDOABLE = new Set([
-    'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
-    'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
-    'setSegments', 'setNodeInput', 'setNodeInputRight', 'setPeriodSource',
-    // Q22: handing Q to a track is one undo step (island facts ride it).
-    'setDefiner',
-    // Chain STRUCTURE is undoable (docs/vst3.md §6); slot enable/params
-    // stay non-undoable knobs like pan/gain.
-    'moveChainSlot', 'addPluginToChain', 'removeChainSlot',
-    // Q17: a template insert is ONE undoable step — a 5-track group
-    // arrives and departs the undo log whole (engine: single Insert
-    // edit). saveTrackTemplate is a LIBRARY write, deliberately absent.
-    'createFromTrackTemplate',
-    // The SEQUENCER (docs/sequencer.md): both verbs are musical facts
-    // (engine parity: Edit::Sequence / Edit::SequenceBypass).
-    'setSequence', 'toggleSequence',
-    // Takes (docs/takes.md): selection, deletion and the comp are
-    // musical facts (engine parity: Edit::SelectTake / DeleteTake /
-    // Comp). newTake rides the take's pending snapshot like record.
-    'selectTake', 'deleteTake', 'setComp',
-    // Audio file import (docs/import.md): a committed take arrives
-    // whole in one call (engine parity: the Untake entry is logged in
-    // the same message-thread call), so the dispatch snapshot IS the
-    // take's undo entry.
-    'importAudio', 'importAudioWithDialog',
-    // The re-time (loop_selection.md §9, engine parity Edit::Timing):
-    // origin, re-time and top in one step.
-    'setTiming',
-]);
+/** The open gesture (engine AudioEngine::gesture_): { family, arg0,
+ * logged, redo } — a drag's live commits coalesce into the step its
+ * first applied commit logged. */
+let gesture = null;
+/** The dispatch in flight: the graph an undoable verb found (`before`,
+ * null for any other verb), what it pushed, and what a call that logs
+ * nothing must leave behind. */
+let call = { before: null, pushed: false, coalesced: false, redo: null, gesture: null };
 
-let undoPushedForCall = false;
-let coalescedForCall = false;  // this dispatch joined its gesture's step
-let redoSavedForCall = null;  // the redo branch, restorable on refusal
-// THE OPEN GESTURE (see the live-drag notes below).
-let gesture = null;           // { family, arg0, logged } — null: none open
-let gestureOnArrival = null;  // what a call that logs nothing leaves
-
-/** Push a pre-edit snapshot (a fresh action invalidates the redo branch). */
-export function pushUndo() {
-    pushUndoSnapshot(serializeGraph());
+/** Is `method` a verb the log brackets? */
+export function isUndoable(method) {
+    return UNDOABLE.has(method);
 }
 
-/** Push a snapshot taken EARLIER (takes: captured at arm, logged at
- * commit — engine parity, reconcileTakes). */
-export function pushUndoSnapshot(snap) {
-    undoStack.push(snap);
-    if (undoStack.length > 128) undoStack.shift();
-    redoStack = [];  // a fresh action invalidates the redo branch
-    gesture = null;  // any step logged ends the open gesture
-}
-
-/**
- * LIVE map-edit drags stream commits (audible splice preview): a commit
- * carrying the trailing `live` flag COALESCES into its gesture's undo
- * step (the oldest snapshot restores furthest). Owner ruling
- * 2026-09-10: only live commits merge — separate gestures are separate
- * undo steps. A gesture's map commits may switch verb (setSegments ↔
- * setLoopPoints); a re-time drag (setTiming's trailing `live`) coalesces
- * the same way, but only into a re-time: swap and shift are different
- * gestures (engine sameGesture).
- *
- * THE OPEN GESTURE (engine parity AudioEngine::gesture_, edit_log.cc) is
- * TRACKED, never read off the last call: a whole-Q drag's first commit
- * is usually an IDENTITY (the pointer engaged, no whole Q crossed yet)
- * that records nothing, so the step on top may be the PREVIOUS
- * gesture's on the same lane. A non-live commit opens its gesture
- * whatever it records (noteGestureCommit); the gesture's first live
- * commit to apply logs its step; the live commits after it coalesce. A
- * live commit that records nothing (an identity, a refusal) keeps the
- * gesture — a drag that dwells, or returns to its start, is one step —
- * and so does any call that logs nothing. Any other step logged
- * (another node or family, a take), an undo and a redo end it, so a
- * stray live commit logs its own step instead of joining an unrelated
- * one.
- */
-const GESTURE_FAMILY = {
-    setSegments: 'map', setLoopPoints: 'map', setTiming: 'timing',
-};
+const GESTURE_FAMILY = { setSegments: 'map', setLoopPoints: 'map', setTiming: 'timing' };
 const LIVE_ARG = { setSegments: 2, setLoopPoints: 3, setTiming: 3 };
 
-/** A gesture verb's commit ARRIVES (engine parity: setLoopPoints,
- * setSegments and setTiming open the gesture before any gate — the
- * dispatch's live-take gate included): a non-live one opens its
- * gesture, whatever it goes on to record. */
-export function noteGestureCommit(method, arg0, args = []) {
-    if (!(method in GESTURE_FAMILY) || args[LIVE_ARG[method]] === true) return;
-    gesture = { family: GESTURE_FAMILY[method], arg0, logged: false };
+function push(snap) {
+    undoStack.push(snap);
+    if (undoStack.length > MAX_STEPS) undoStack.shift();
+    redoStack = [];
+    gesture = null;
 }
 
-/**
- * The dispatch-side undo interception (called by callNative before the
- * handler runs). Snapshot BEFORE any undoable mutation so undo restores
- * the pre-edit graph (single interception point, mirrors
- * AudioEngine::record) — unless the call is a live commit of the open
- * gesture, which coalesces into the step that gesture logged.
- */
-export function interceptUndoableCall(method, arg0, args = []) {
-    undoPushedForCall = false;
-    coalescedForCall = false;
-    noteGestureCommit(method, arg0, args);
-    gestureOnArrival = gesture;
+/** Log a snapshot taken earlier (an arm's own edits, logged once the arm
+ * is certain). */
+export function pushUndoSnapshot(snap) {
+    push(snap);
+}
+
+/** A gesture verb's commit arrives (engine openGesture: before any
+ * gate): a non-live one opens its gesture, whatever it goes on to log. */
+export function noteGestureCommit(method, args) {
+    if (!(method in GESTURE_FAMILY) || args[LIVE_ARG[method]] === true) return;
+    gesture = { family: GESTURE_FAMILY[method], arg0: args[0], logged: false };
+}
+
+/** Before an undoable verb's handler: snapshot — unless the call is a
+ * live commit of the open gesture, which joins that gesture's step. */
+export function beginCall(method, args) {
+    noteGestureCommit(method, args);
+    call = { before: null, pushed: false, coalesced: false, redo: null, gesture };
     if (!UNDOABLE.has(method)) return;
+    call.before = serializeGraph();
     const family = GESTURE_FAMILY[method];
     const live = family !== undefined && args[LIVE_ARG[method]] === true;
-    const coalesce = live && gesture !== null && gesture.logged &&
-        gesture.family === family && gesture.arg0 === arg0;
-    coalescedForCall = coalesce;
-    if (coalesce) return;
-    // Save the redo branch BEFORE the push clears it: a REFUSED edit
-    // mutates nothing, so it must not destroy the user's redo either —
-    // engine parity (AudioEngine::record clears redo only for edits that
-    // actually apply). pushUndoSnapshot replaces the array, so the saved
-    // reference survives intact.
-    redoSavedForCall = redoStack;
-    pushUndo();
-    undoPushedForCall = true;
-    // A map or re-time step is its gesture's FIRST (engine parity
-    // record) — the one a non-live commit opened, or a stray live
-    // commit's own. A refusal takes it back (popUndoForRefusal). The
-    // redo branch it invalidated rides the gesture for as long as it
-    // can be cancelled (cancelGesture puts it back).
+    call.coalesced = live && gesture !== null && gesture.logged &&
+        gesture.family === family && gesture.arg0 === args[0];
+    if (call.coalesced) return;
+    call.redo = redoStack;
+    push(call.before);
+    call.pushed = true;
     if (family !== undefined) {
-        gesture = { family, arg0, logged: true, redo: redoSavedForCall };
+        gesture = { family, arg0: args[0], logged: true, redo: call.redo };
     }
 }
 
-/** Did the current dispatch push a snapshot? (Coalesced calls didn't.) */
-function wasPushedThisCall() {
-    return undoPushedForCall;
-}
-
-/** Did the current dispatch COALESCE into its gesture's logged step (a
- * live commit of the same gesture)? A live map commit then reconciles
- * the top against the gesture's first state (mock/maps.js topBaseFor). */
-export function coalescedThisCall() {
-    return coalescedForCall;
-}
-
-/**
- * The refusal convention (engine parity): a REFUSED edit — or an
- * identity — records nothing: the dispatch snapshotted before the
- * handler could refuse, so every such path calls this to drop that
- * snapshot (only if the dispatch pushed one for THIS call — coalesced
- * calls didn't). The gesture stands as the call's ARRIVAL left it: a
- * non-live commit's gesture open with no step logged, anything else's
- * untouched — a live commit that records nothing never breaks its
- * gesture's chain.
- */
-export function popUndoForRefusal() {
-    if (undoPushedForCall) {
+/** After the handler: AN UNCHANGED GRAPH RECORDS NOTHING (engine: a Nop
+ * is not logged) — the step goes, the redo branch it cleared returns and
+ * the gesture stands as the call found it. Answers whether an undoable
+ * verb changed the graph: the engine's "the edit was applied". */
+export function endCall() {
+    if (call.before === null) return false;
+    const changed = call.before !== serializeGraph();
+    if (call.pushed && !changed) {
         undoStack.pop();
-        // Restore the redo branch the dispatch's push cleared — a
-        // refusal is a no-op, and no-ops keep redo.
-        if (redoSavedForCall) redoStack = redoSavedForCall;
-        undoPushedForCall = false;
+        redoStack = call.redo;
+        gesture = call.gesture;
     }
-    redoSavedForCall = null;
-    gesture = gestureOnArrival;
+    call.pushed = false;
+    return changed;
 }
 
-/** Drop all history (fresh session / scenario load / session load). */
+/** Did this dispatch join its gesture's logged step? */
+export function coalescedThisCall() {
+    return call.coalesced;
+}
+
+const historyClearedHooks = [];
+export function onHistoryCleared(fn) { historyClearedHooks.push(fn); }
+
 export function clearUndoHistory() {
     undoStack = [];
     redoStack = [];
@@ -186,44 +122,95 @@ export function clearUndoHistory() {
     historyClearedHooks.forEach(fn => fn());
 }
 
-// Modules holding history-adjacent state (recording.js' pending takes)
-// register here; no import cycle (recording imports undo).
-const historyClearedHooks = [];
-export function onHistoryCleared(fn) { historyClearedHooks.push(fn); }
-
 export function canUndo() { return undoStack.length > 0; }
 export function canRedo() { return redoStack.length > 0; }
 
+const sameSteps = (a, b) => !!a && !!b && a.steps.length === b.steps.length;
+
+/** Restore a logged snapshot, keeping what the engine does not log: each
+ * surviving node's knobs and slot settings, and a step audition while
+ * its song keeps its shape. */
+function restoreStep(snap) {
+    const live = new Map();
+    eachNode(n => live.set(n.id, n));
+    restoreGraph(snap);
+    eachNode(n => {
+        const was = live.get(n.id);
+        if (!was) return;
+        for (const k of KNOBS) {
+            if (k in was) n[k] = was[k];
+            else delete n[k];
+        }
+        if (n.type === 'stack') {
+            n.auditionStep = sameSteps(was.sequence, n.sequence) ? (was.auditionStep ?? -1) : -1;
+        }
+        const slots = new Map(((was.effects && was.effects.chain) || []).map(s => [s.slot, s]));
+        if (n.effects) {
+            n.effects.chain = n.effects.chain.map(s => (slots.has(s.slot) ? { ...slots.get(s.slot) } : s));
+        }
+    });
+}
+
 export function mockUndo() {
     if (!undoStack.length) return false;
-    gesture = null;  // a later live commit logs its own step
+    gesture = null;
     redoStack.push(serializeGraph());
-    restoreGraph(undoStack.pop());
+    restoreStep(undoStack.pop());
     return true;
 }
 
 export function mockRedo() {
     if (!redoStack.length) return false;
-    gesture = null;  // a later live commit logs its own step
+    gesture = null;
     undoStack.push(serializeGraph());
-    restoreGraph(redoStack.pop());
+    restoreStep(redoStack.pop());
     return true;
 }
 
-/**
- * CANCEL THE OPEN GESTURE (engine parity AudioEngine::cancelGesture): a
- * cancelled drag puts node `arg0` back exactly where its gesture found
- * it and leaves no trace — the step its live commits coalesced into is
- * restored and DROPPED (never pushed to redo), and the redo branch that
- * step invalidated returns. A no-op (false) with no gesture open on
- * `arg0`, or one that logged nothing: it changed nothing.
- */
+/** Engine cancelGesture: the open gesture's step is restored and
+ * dropped, and the redo branch it cleared returns. True when the node is
+ * as the drag found it — its step taken back, or none logged. False when
+ * what the drag did stands: no gesture is open on `arg0`, or a take is
+ * live (the step is kept, like undo's). */
 export function mockCancelGesture(arg0) {
     const g = gesture;
     if (!g || g.arg0 !== arg0) return false;
+    if (!g.logged || !undoStack.length) {
+        gesture = null;
+        return true;
+    }
+    if (takeLive()) return false;
     gesture = null;
-    if (!g.logged || !undoStack.length) return false;
-    restoreGraph(undoStack.pop());
+    restoreStep(undoStack.pop());
     redoStack = g.redo || [];
     return true;
+}
+
+/** A settled take's step (engine Untake): the graph as it is now, with
+ * every node that was there at the arm put back to its arm-time facts —
+ * content, geometry, anchors, songs — and the island facts with them. */
+export function pushTakeStep(armSnap) {
+    const then = JSON.parse(armSnap);
+    const now = JSON.parse(serializeGraph());
+    const before = new Map();
+    eachNode(n => before.set(n.id, n), then.root);
+    eachNode(n => {
+        const was = before.get(n.id);
+        if (!was) return;
+        for (const k of Object.keys(n)) if (!LIVE_UNDER_TAKE.has(k)) delete n[k];
+        for (const [k, v] of Object.entries(was)) if (!LIVE_UNDER_TAKE.has(k)) n[k] = v;
+    }, now.root);
+    push(JSON.stringify({ ...then, root: now.root }));
+}
+
+/** A seek re-frames what the logs hold (engine shiftHistoryAbsolutes). */
+export function reframeHistory(delta) {
+    const shifted = snap => {
+        const o = JSON.parse(snap);
+        shiftIsland(o, delta);
+        return JSON.stringify(o);
+    };
+    undoStack = undoStack.map(shifted);
+    redoStack = redoStack.map(shifted);
+    if (gesture && gesture.redo) gesture.redo = gesture.redo.map(shifted);
 }

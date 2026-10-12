@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <string_view>
 
 namespace celestrian::dsp {
 
@@ -13,92 +15,113 @@ constexpr double kSpectrumMaxHz = 16000.0;
 constexpr double kNyquistFraction = 0.45;
 constexpr double kSpectrumFloor = 1.0e-9;
 constexpr double kSpectrumRangeDb = 60.0;
+
+// ===== THE BUILT-IN PARAMETERS =====
+//
+// One row per parameter, and the only place one is declared: the key the
+// bridge, the save format and the UI schema (ui/js/effect_schema.js)
+// name it by, the atomic it lives in, and the range setParam clamps to.
+// fillParams publishes a slot's rows in table order. The UI's schema
+// mirrors the keys and ranges, and ui/js/tests/effect_contract.test.mjs
+// parses these rows to hold it to them: keep a row on one line, its
+// range as literals.
+template <typename Fx>
+struct Param {
+  const char* key;
+  std::atomic<float> Fx::*value;
+  float min, max;
+};
+
+constexpr Param<FxEQ> kEqParams[] = {
+    {"low", &FxEQ::low_db, -12.0f, 12.0f},
+    {"mid", &FxEQ::mid_db, -12.0f, 12.0f},
+    {"high", &FxEQ::high_db, -12.0f, 12.0f},
+};
+
+// `makeup` is an output trim: it may cut as well as raise.
+constexpr Param<FxCompressor> kCompressorParams[] = {
+    {"threshold", &FxCompressor::threshold_db, -60.0f, 0.0f},
+    {"ratio", &FxCompressor::ratio, 1.0f, 20.0f},
+    {"attack", &FxCompressor::attack_ms, 0.1f, 100.0f},
+    {"release", &FxCompressor::release_ms, 10.0f, 1000.0f},
+    {"makeup", &FxCompressor::makeup_db, -12.0f, 24.0f},
+};
+
+constexpr Param<FxEcho> kEchoParams[] = {
+    {"time", &FxEcho::time_s, 0.05f, 2.0f},
+    {"feedback", &FxEcho::feedback, 0.0f, 0.9f},
+    {"mix", &FxEcho::mix, 0.0f, 1.0f},
+};
+
+constexpr Param<FxReverb> kReverbParams[] = {
+    {"size", &FxReverb::size, 0.0f, 1.0f},
+    {"damp", &FxReverb::damp, 0.0f, 1.0f},
+    {"mix", &FxReverb::mix, 0.0f, 1.0f},
+};
+
+template <typename Fx, std::size_t N>
+constexpr float maxOf(const Param<Fx> (&table)[N], std::string_view key) {
+  for (const auto& p : table)
+    if (key == p.key) return p.max;
+  return 0.0f;
+}
+// A `time` past the echo's delay line would be cut to the line unheard.
+static_assert(maxOf(kEchoParams, "time") <= FxEcho::kLineSeconds);
+
+/** Stores `value`, clamped to its row's range, in the parameter `key`
+ * names; false when the table has no such key. */
+template <typename Fx, std::size_t N>
+bool setFromTable(const Param<Fx> (&table)[N], Fx& fx, const juce::String& key,
+                  double value) {
+  for (const auto& p : table) {
+    if (key != p.key) continue;
+    (fx.*p.value).store(juce::jlimit(p.min, p.max, (float)value));
+    return true;
+  }
+  return false;
+}
+
+template <typename Fx, std::size_t N>
+void fillFromTable(const Param<Fx> (&table)[N], const Fx& fx,
+                   juce::DynamicObject& out) {
+  for (const auto& p : table) out.setProperty(p.key, (fx.*p.value).load());
+}
 }  // namespace
 
-// ===== Built-in slot params =====
-
 bool EqSlot::setParam(const juce::String& key, double value) {
-  const float f = (float)value;
-  if (key == "low")
-    eq.low_db.store(juce::jlimit(-12.0f, 12.0f, f));
-  else if (key == "mid")
-    eq.mid_db.store(juce::jlimit(-12.0f, 12.0f, f));
-  else if (key == "high")
-    eq.high_db.store(juce::jlimit(-12.0f, 12.0f, f));
-  else
-    return false;
+  if (!setFromTable(kEqParams, eq, key, value)) return false;
   eq.markDirty();
   return true;
 }
 
 void EqSlot::fillParams(juce::DynamicObject& out) const {
-  out.setProperty("low", eq.low_db.load());
-  out.setProperty("mid", eq.mid_db.load());
-  out.setProperty("high", eq.high_db.load());
+  fillFromTable(kEqParams, eq, out);
 }
 
 bool CompressorSlot::setParam(const juce::String& key, double value) {
-  const float f = (float)value;
-  if (key == "threshold")
-    compressor.threshold_db.store(juce::jlimit(-60.0f, 0.0f, f));
-  else if (key == "ratio")
-    compressor.ratio.store(juce::jlimit(1.0f, 20.0f, f));
-  else if (key == "attack")
-    compressor.attack_ms.store(juce::jlimit(0.1f, 100.0f, f));
-  else if (key == "release")
-    compressor.release_ms.store(juce::jlimit(10.0f, 1000.0f, f));
-  else if (key == "makeup")
-    compressor.makeup_db.store(juce::jlimit(-12.0f, 24.0f, f));
-  else
-    return false;
-  return true;
+  return setFromTable(kCompressorParams, compressor, key, value);
 }
 
 void CompressorSlot::fillParams(juce::DynamicObject& out) const {
-  out.setProperty("threshold", compressor.threshold_db.load());
-  out.setProperty("ratio", compressor.ratio.load());
-  out.setProperty("attack", compressor.attack_ms.load());
-  out.setProperty("release", compressor.release_ms.load());
-  out.setProperty("makeup", compressor.makeup_db.load());
+  fillFromTable(kCompressorParams, compressor, out);
 }
 
 bool EchoSlot::setParam(const juce::String& key, double value) {
-  const float f = (float)value;
-  if (key == "time")
-    echo.time_s.store(juce::jlimit(0.05f, 2.0f, f));
-  else if (key == "feedback")
-    echo.feedback.store(juce::jlimit(0.0f, 0.9f, f));
-  else if (key == "mix")
-    echo.mix.store(juce::jlimit(0.0f, 1.0f, f));
-  else
-    return false;
-  return true;
+  return setFromTable(kEchoParams, echo, key, value);
 }
 
 void EchoSlot::fillParams(juce::DynamicObject& out) const {
-  out.setProperty("time", echo.time_s.load());
-  out.setProperty("feedback", echo.feedback.load());
-  out.setProperty("mix", echo.mix.load());
+  fillFromTable(kEchoParams, echo, out);
 }
 
 bool ReverbSlot::setParam(const juce::String& key, double value) {
-  const float f = (float)value;
-  if (key == "size")
-    reverb.size.store(juce::jlimit(0.0f, 1.0f, f));
-  else if (key == "damp")
-    reverb.damp.store(juce::jlimit(0.0f, 1.0f, f));
-  else if (key == "mix")
-    reverb.mix.store(juce::jlimit(0.0f, 1.0f, f));
-  else
-    return false;
+  if (!setFromTable(kReverbParams, reverb, key, value)) return false;
   reverb.markDirty();
   return true;
 }
 
 void ReverbSlot::fillParams(juce::DynamicObject& out) const {
-  out.setProperty("size", reverb.size.load());
-  out.setProperty("damp", reverb.damp.load());
-  out.setProperty("mix", reverb.mix.load());
+  fillFromTable(kReverbParams, reverb, out);
 }
 
 // ===== Chain =====
@@ -112,12 +135,9 @@ std::unique_ptr<FxChain> FxChain::makeDefault() {
 
 std::unique_ptr<FxChain> FxChain::makeFromSlots(
     std::vector<std::shared_ptr<FxSlot>> slots) {
-  // Instruments GENERATE (processBlock overwrites the buffer), so any
-  // slot upstream of one processes silence and is then discarded — a
-  // MIDI track's whole rack would be inert. Every chain is built here
-  // (add, move, undo, load, revive), so this is where the chain-head
-  // rule holds: instruments first, everything else after, each group
-  // in its given order.
+  // Every chain is built here, so this is where the chain-head rule
+  // holds: a slot upstream of an instrument would process silence and
+  // be overwritten.
   std::stable_partition(slots.begin(), slots.end(),
                         [](const auto& s) { return s->isInstrument(); });
   return std::unique_ptr<FxChain>(new FxChain(std::move(slots)));
@@ -143,20 +163,24 @@ int FxChain::indexOfSlot(const juce::String& slot_uuid) const {
   return -1;
 }
 
-namespace {
-// The promotion scratch ceiling — matches the engine's mix_buffer
-// ceiling (blocks are never larger in practice; a larger one skips
-// promotion-needing slots, fail-silent).
-constexpr int kMaxPromotionBlock = 8192;
-}  // namespace
+FxChain::FxChain(std::vector<std::shared_ptr<FxSlot>> slots)
+    : slots_(std::move(slots)) {
+  // Before publication: the audio thread reads the scratch's size and
+  // data, so both are final by the time a chain can be run. Sized for
+  // the block ceiling; a larger block skips the slots that need it
+  // (run, fail-silent).
+  if (std::any_of(slots_.begin(), slots_.end(),
+                  [](const auto& s) { return s->wantsStereo(); })) {
+    promotion_scratch_.assign((size_t)kMaxBlockSamples, 0.0f);
+  }
+}
 
 void FxChain::prepare(double sample_rate) {
   for (const auto& slot : slots_) slot->prepare(sample_rate);
-  if (promotion_scratch_.empty() &&
-      std::any_of(slots_.begin(), slots_.end(),
-                  [](const auto& s) { return s->wantsStereo(); })) {
-    promotion_scratch_.assign((size_t)kMaxPromotionBlock, 0.0f);
-  }
+}
+
+void FxChain::followRate(double sample_rate) {
+  for (const auto& slot : slots_) slot->followRate(sample_rate);
 }
 
 bool FxChain::run(float* l, float* r, int sample_count, bool stereo_in,
@@ -260,10 +284,14 @@ int FxChain::totalLatencySamples() const {
 // ===== Scope =====
 
 void FxScope::prepare(double sample_rate) {
-  if (prepared_sample_rate_ == sample_rate) return;
   prepared_sample_rate_ = sample_rate;
-  ring_.assign((size_t)kScopeSize, 0.0f);  // message thread only
+  if (!ring_.empty()) return;  // sized once: the audio thread writes it
+  ring_.assign((size_t)kScopeSize, 0.0f);
   write_.store(0);
+}
+
+void FxScope::followRate(double sample_rate) {
+  if (!ring_.empty()) prepared_sample_rate_ = sample_rate;
 }
 
 void FxScope::capture(const float* left, const float* right,

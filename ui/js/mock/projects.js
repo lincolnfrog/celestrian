@@ -1,152 +1,132 @@
 /**
- * mock/projects.js — the project model (docs/projects.md) mirrored in
- * memory, plus session save/load (the in-memory stand-in for
- * session_io's session.json + audio/ bundle). All the handlers'
- * project-shaped bodies live here as named functions.
+ * mock/projects.js — the project model (docs/projects.md; engine
+ * ProjectManager) and session save / load, in memory: a saved session is
+ * the serialized graph kept under its path, and the projects "disk" is a
+ * handful of lists.
  */
 
-import { committedClipCount, anyNodeRecording,
-         serializeGraph, restoreGraph, settleAnchors } from './state.js';
+import { committedClipCount, takeLive, serializeGraph, restoreGraph, settleAnchors }
+    from './state.js';
 import { clearUndoHistory } from './undo.js';
 import { loadScenario } from './scenarios.js';
 
-// Save/Load (mirrors AudioEngine's session_io observably). The mock keeps
-// the bundle in memory instead of a session.json + audio/ directory, so
-// e2e can round-trip without a filesystem. Load clears undo history.
-let mockSavedSession = null;
+const savedSessions = new Map();  // path → serialized graph
 
-export function saveSession(_path) {
-    mockSavedSession = serializeGraph();
+export function saveSession(path) {
+    savedSessions.set(String(path), serializeGraph());
     return true;
 }
 
-export function loadSession(_path) {
-    if (!mockSavedSession) return false;
-    restoreGraph(mockSavedSession);
-    // Q18 (engine parity loadSession → settleAnchors): a session that
-    // predates stack origins anchors its stacks from content on load.
+/** False for a path that holds no session. A load drops the history. */
+export function loadSession(path) {
+    const saved = savedSessions.get(String(path));
+    if (!saved) return false;
+    restoreGraph(saved);
     settleAnchors();
     clearUndoHistory();
     return true;
 }
 
-// --- The project model (docs/projects.md), mirrored in memory ---
-// The mock keeps a fake projects "disk" so the UI's birth/rename/template
-// flows are drivable in the browser and by e2e. Birth parity: first
-// committed take (checked on getProjectInfo polls — the mock's tick).
-const mockProjects = {
+const projects = {
     current: { id: '', name: '', born: false },
-    recents: [],                  // [{id, name, path}]
+    recents: [],  // [{ id, name, path }]
     templates: [{ id: 'My Rig', name: 'My Rig', path: '/templates/My Rig' }],
     serial: 0,
-    // The base folder (engine parity ProjectManager::baseFolder): the
-    // projects root and the track-template library live under it.
     base: '/Users/mock/Music/Celestrian',
 };
 
-/** The path the dialog verb picks in place of a chosen folder. */
+/** The folder the dialog verb "picks". */
 export const CHOSEN_ROOT = '/Volumes/Studio/Celestrian';
-
-/** The library folders the info publishes (engine parity: the
- * projects root and the track-template library under the base). */
-function libraryFolders() {
-    return {
-        projectsRoot: mockProjects.base + '/Projects',
-        trackTemplatesRoot: mockProjects.base + '/TrackTemplates',
-    };
-}
 
 function projectDateId() {
     const d = new Date();
     const ymd = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-    mockProjects.serial += 1;
-    return `${ymd}-${String(mockProjects.serial).padStart(2, '0')}`;
+    projects.serial += 1;
+    return `${ymd}-${String(projects.serial).padStart(2, '0')}`;
 }
 
+function birth(name = null) {
+    const id = projectDateId();
+    projects.current = { id, name: name || id, born: true };
+    projects.recents.unshift({ id, name: projects.current.name, path: '/projects/' + id });
+    return id;
+}
+
+/** A project is born at its first committed take, checked on this poll. */
 export function getProjectInfo() {
-    // Birth at first committed take (ProjectManager::tick parity).
-    if (!mockProjects.current.born && committedClipCount() > 0 &&
-        !anyNodeRecording()) {
-        const id = projectDateId();
-        mockProjects.current = { id, name: id, born: true };
-        mockProjects.recents.unshift({ id, name: id, path: '/projects/' + id });
-        console.log('[MockBackend] Project born:', id);
-    }
-    return JSON.stringify({ ...mockProjects.current, ...libraryFolders() });
+    if (!projects.current.born && committedClipCount() > 0 && !takeLive()) birth();
+    return {
+        ...projects.current,
+        projectsRoot: projects.base + '/Projects',
+        trackTemplatesRoot: projects.base + '/TrackTemplates',
+    };
 }
 
-/** Preferences: choose the base folder (engine parity
- * ProjectManager::setBase — persisted there; in memory here). An empty
- * path is refused. */
 export function setProjectsRoot(path) {
     const p = String(path || '').trim();
     if (!p) return false;
-    mockProjects.base = p.replace(/\/+$/, '');
-    console.log('[MockBackend] projects root →', mockProjects.base);
+    projects.base = p.replace(/\/+$/, '');
     return true;
 }
 
-/** The dialog twin: "picks" CHOSEN_ROOT and answers it. */
 export function chooseProjectsRoot() {
     setProjectsRoot(CHOSEN_ROOT);
     return CHOSEN_ROOT;
 }
 
+/** The display name only: the id (the folder) never changes. */
 export function renameProject(name) {
-    // Display name only — the id (folder) never changes.
-    if (name && name.trim()) mockProjects.current.name = name.trim();
-    const r = mockProjects.recents.find(x => x.id === mockProjects.current.id);
-    if (r) r.name = mockProjects.current.name;
+    if (name && name.trim()) projects.current.name = name.trim();
+    const recent = projects.recents.find(x => x.id === projects.current.id);
+    if (recent) recent.name = projects.current.name;
     return true;
 }
 
-// An explicit save births an unborn project immediately (no tick wait).
+/** An explicit save births an unborn project at once. */
 export function saveProjectNow() {
-    if (!mockProjects.current.born) {
-        const id = projectDateId();
-        mockProjects.current = { id, name: id, born: true };
-        mockProjects.recents.unshift({ id, name: id, path: '/projects/' + id });
-    }
+    if (!projects.current.born) birth();
     return true;
 }
 
+/** [{ id, name, path }] — a copy: the caller's list is its own. */
 export function listTemplates() {
-    return JSON.stringify(mockProjects.templates);
+    return projects.templates.map(t => ({ ...t }));
 }
 
 export function listRecentProjects() {
-    return JSON.stringify(mockProjects.recents);
+    return projects.recents.map(r => ({ ...r }));
 }
 
-export function newProjectFromTemplate(_name) {
-    // Template = structure only, pre-Q: the mock resets to an empty
-    // session (scenario graphs stand in for template structure).
+/** A template is structure only: the mock resets to an empty session.
+ * False for an id the library does not hold. */
+export function newProjectFromTemplate(id) {
+    if (!projects.templates.some(t => t.id === id)) return false;
     loadScenario('empty');
-    mockProjects.current = { id: '', name: '', born: false };
+    projects.current = { id: '', name: '', born: false };
     return true;
 }
 
 export function openProjectPath(path) {
-    const r = mockProjects.recents.find(x => x.path === path);
-    if (!r) return false;
-    mockProjects.current = { id: r.id, name: r.name, born: true };
+    const recent = projects.recents.find(x => x.path === path);
+    if (!recent) return false;
+    projects.current = { id: recent.id, name: recent.name, born: true };
     return true;
 }
 
+/** The template's folder is the name's legal-file-name form (engine:
+ * juce::File::createLegalFileName); a name with nothing legal in it, or
+ * one that is only dots, names no folder and is refused. */
 export function saveAsTemplate(name) {
-    if (!name || !name.trim()) return false;
-    const n = name.trim();
-    if (!mockProjects.templates.some(t => t.id === n)) {
-        mockProjects.templates.push({ id: n, name: n, path: '/templates/' + n });
+    const typed = String(name || '').trim();
+    const id = typed.replace(/["#@,;:<>*^|?\\/]/g, '').trim();
+    if (!id || /^\.+$/.test(id)) return false;
+    if (!projects.templates.some(t => t.id === id)) {
+        projects.templates.push({ id, name: typed, path: '/templates/' + id });
     }
     return true;
 }
 
 export function duplicateProject() {
-    if (!mockProjects.current.born) return '';
-    const id = projectDateId();
-    const name = mockProjects.current.name;
-    mockProjects.current = { id, name, born: true };
-    mockProjects.recents.unshift({ id, name, path: '/projects/' + id });
-    return id;
+    if (!projects.current.born) return '';
+    return birth(projects.current.name);
 }

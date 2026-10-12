@@ -51,8 +51,8 @@ The audio engine handles low-latency recording and playback.
 
 The UI will be hosted in a native WebView component provided by JUCE (WebBrowserComponent).
 
-- Communication between C++ and JS is handled via JUCE 8's `withNativeFunction` and `evaluateJavascript`.
-- JS triggers recording and playback, while C++ feeds waveform data back to JS.
+- Communication between C++ and JS is the bridge: every method the UI may call is one entry of a table (`src/bridge_dispatch.cc`), registered on the WebView as JUCE 8 native functions by the app shell and served over HTTP by the headless engine server; `ui/js/protocol.js` is the canonical list (ui.md).
+- JS triggers recording and playback and polls the engine's state; C++ feeds waveform peaks back to JS on request.
 
 ## Performance
 
@@ -122,7 +122,7 @@ Longer-horizon direction (not yet tracked as tasks):
     - **Branch-with-Chance**: Non-deterministic flow for procedural music.
     - **Smoothing Transitions**: Automated crossfades between boxes and ranges.
 - **Stacking Logic**: Boxes and clips can be stacked in parallel, creating vertical "stacks" that can then be collapsed into a single box.
-- **Editing**: When a user zooms out of the inside of a box to see the box as a single unit, that box displays an **Aggregate Waveform** (a recursive mixdown of all child nodes).
+- **Editing**: When a user zooms out of the inside of a box to see the box as a single unit, that box displays an **Aggregate Waveform** (a recursive mixdown of all child nodes). *(As built: the view composites it from the clips' own peaks, `ui/js/composite_waveform.js`; the engine answers peaks for clips only.)*
     - **Unitized Editing**: Loop ranges and cuts applied to a Box affect the timing of all internal clips simultaneously as a single logical block.
     - **Hierarchical Automation**: Automation envelopes applied to a Box act as a global "VCA" or offset for all internal child automation/parameters.
 

@@ -1,10 +1,10 @@
 /**
- * findNodeInTree — the ONE tree walker app.js's post-commit verification
- * (scheduleVerify) and the view model's definer lookup share. Pins the
- * bug that motivated sharing it: the published tree carries children
- * under `nodes` (src/stack_node.cc getMetadata, mock/publish.js), and
- * an earlier inline walker read `children` — so a clip inside a group
- * was never found and grouped edits got no success/refusal verdict.
+ * findNodeInTree — the ONE tree walker the post-commit verdict
+ * (edit_verdict.js), the structure verbs and the view model's definer
+ * lookup share. The published tree carries children under `nodes`
+ * (src/stack_node.cc getMetadata, mock/publish.js): a clip inside a
+ * group must be found, or a grouped edit gets no success/refusal
+ * verdict.
  */
 
 import test from 'node:test';
@@ -32,27 +32,20 @@ const state = {
     ],
 };
 
-test('finds a top-level node', () => {
-    assert.equal(findNodeInTree(state.nodes, 'top-clip').duration, Q);
-    assert.equal(findNodeInTree(state.nodes, 'group').type, 'stack');
-});
-
-test('finds a clip nested inside a stack (children ride `nodes`)', () => {
-    assert.equal(findNodeInTree(state.nodes, 'inner-clip').duration, 2 * Q);
-});
-
-test('finds a clip two stacks deep', () => {
-    assert.equal(findNodeInTree(state.nodes, 'deep-clip').duration, 3 * Q);
-});
-
-test('a missing id is null (node gone: no verdict, never a throw)', () => {
+test('finds a node at any depth (children ride `nodes`); a missing id is null', () => {
+    for (const [id, field, want] of [
+        ['top-clip', 'duration', Q], ['group', 'type', 'stack'],
+        ['inner-clip', 'duration', 2 * Q],   // inside a stack
+        ['deep-clip', 'duration', 3 * Q],    // two stacks deep
+    ]) assert.equal(findNodeInTree(state.nodes, id)[field], want, id);
+    // Node gone: no verdict, never a throw.
     assert.equal(findNodeInTree(state.nodes, 'nope'), null);
     assert.equal(findNodeInTree(undefined, 'top-clip'), null);
 });
 
 test('the published mock tree: a grouped clip is reachable by id', async () => {
-    // The shape scheduleVerify reads: getState() after a window edit
-    // on a clip that lives INSIDE a group.
+    // The shape the verdict reads: getState() after a window edit on a
+    // clip that lives INSIDE a group.
     loadScenario('stack-with-clips');
     const q = getState().quantum;
     await callNative('setLoopPoints', 'clip-2', 0, q);

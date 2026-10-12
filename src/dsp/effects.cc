@@ -12,9 +12,8 @@ constexpr double kMidQ = 0.7;
 constexpr double kHighShelfHz = 6000.0;
 constexpr double kShelfSlope = 0.9;
 
-// Echo delay line: sized for the maximum time_s plus a little slack so
-// the read head can never catch the write head at the extreme setting.
-constexpr double kMaxEchoSeconds = 2.0;
+// Slack past FxEcho::kLineSeconds, so the read head never catches the
+// write head at the longest delay.
 constexpr int kEchoLineSlackSamples = 64;
 
 // Below this the compressor envelope is treated as silence — log10 of a
@@ -117,11 +116,9 @@ void FxCompressor::prepare(double sampleRate) {
 FxCompressor::Coefficients FxCompressor::loadCoefficients() const {
   return {
       threshold_db.load(),
-      juce::jmax(1.0f, ratio.load()),
-      std::exp(-1.0f /
-               (juce::jmax(0.1f, attack_ms.load()) * 0.001f * (float)sr_)),
-      std::exp(-1.0f /
-               (juce::jmax(1.0f, release_ms.load()) * 0.001f * (float)sr_)),
+      ratio.load(),
+      std::exp(-1.0f / (attack_ms.load() * 0.001f * (float)sr_)),
+      std::exp(-1.0f / (release_ms.load() * 0.001f * (float)sr_)),
       std::pow(10.0f, makeup_db.load() / 20.0f),
   };
 }
@@ -169,17 +166,19 @@ void FxCompressor::processStereo(float* l, float* r, int n) {
 void FxEcho::prepare(double sampleRate) {
   sr_ = sampleRate;
   const int line_length =
-      (int)(kMaxEchoSeconds * sampleRate) + kEchoLineSlackSamples;
+      (int)(kLineSeconds * sampleRate) + kEchoLineSlackSamples;
   line_.assign((size_t)line_length, 0.0f);  // message thread only
   line_r_.assign((size_t)line_length, 0.0f);
   write_ = 0;
 }
 
 FxEcho::Parameters FxEcho::loadParameters(int line_length) const {
+  // The one bound the DSP keeps for itself: the read head stays inside
+  // the line whatever rate the line was sized at.
   return {
       juce::jlimit(1, line_length - 1, (int)(time_s.load() * (float)sr_)),
-      juce::jlimit(0.0f, 0.9f, feedback.load()),
-      juce::jlimit(0.0f, 1.0f, mix.load()),
+      feedback.load(),
+      mix.load(),
   };
 }
 
@@ -230,17 +229,15 @@ void FxReverb::prepare(double sampleRate) {
 
 void FxReverb::applyParams() {
   juce::Reverb::Parameters p;
-  p.roomSize = juce::jlimit(0.0f, 1.0f, size.load());
-  p.damping = juce::jlimit(0.0f, 1.0f, damp.load());
+  p.roomSize = size.load();
+  p.damping = damp.load();
   // MIX LAW: an equal-power crossfade, unity-preserving — dry cos(θ),
   // wet sin(θ) with θ = mix·π/2 (mix 0 = bit-exact dry, mix 1 = fully
   // wet, mix 0.5 = both at −3 dB). juce::Reverb SCALES its levels
-  // internally (dry ×2, wet ×3 — Freeverb's convention, where the
-  // defaults are 0.4/0.33); passing dry = 1.0 would boost the dry
-  // signal +6 dB the moment the slot enables. Divide the scales back
-  // out here.
-  const float m = juce::jlimit(0.0f, 1.0f, mix.load());
-  const float theta = m * juce::MathConstants<float>::halfPi;
+  // internally (dry ×2, wet ×3 — Freeverb's convention); passing
+  // dry = 1.0 would boost the dry signal +6 dB the moment the slot
+  // enables, so the scales are divided back out here.
+  const float theta = mix.load() * juce::MathConstants<float>::halfPi;
   p.wetLevel = std::sin(theta) / 3.0f;
   p.dryLevel = std::cos(theta) / 2.0f;
   p.width = 1.0f;

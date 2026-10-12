@@ -139,6 +139,62 @@ test('a handler returning false passes the key on; same-scope order is registrat
     assert.deepEqual(order, ['first', 'second']);
 });
 
+test('auto-repeat: a held key is one press unless the binding opts in', t => {
+    const toggle = bind(t, { code: 'Space', ignore: ANY_MODIFIERS });
+    const zoom = bind(t, { key: '+', ignore: ['shift'], repeat: true });
+    const press = dispatchKey(ev(' ', { code: 'Space' }));
+    const held = ev(' ', { code: 'Space', repeat: true });
+    assert.equal(press, true);
+    assert.equal(dispatchKey(held), true, 'the repeat is consumed');
+    assert.equal(dispatchKey(ev(' ', { code: 'Space', repeat: true })), true);
+    assert.equal(toggle.length, 1, 'the handler ran for the press only');
+    assert.equal(held.prevented, true, 'the browser default does not run either');
+
+    assert.equal(dispatchKey(ev('+')), true);
+    const zoomHeld = ev('+', { repeat: true });
+    assert.equal(dispatchKey(zoomHeld), true);
+    assert.equal(zoom.length, 2, 'an opted-in binding fires on every repeat');
+    assert.notEqual(zoomHeld.prevented, true, 'and its handler owns preventDefault');
+});
+
+test('auto-repeat: a repeat never falls through to a lower scope, and typing still repeats', t => {
+    let panelOpen = true;
+    const panel = bind(t, { key: 'Escape', scope: SCOPE.PANEL, whileTyping: true,
+                            ignore: ANY_MODIFIERS, when: () => panelOpen });
+    const view = bind(t, { key: 'Escape', scope: SCOPE.VIEW, whileTyping: true,
+                           ignore: ANY_MODIFIERS });
+    assert.equal(dispatchKey(ev('Escape')), true);
+    panelOpen = false;  // the press closed the panel; the key is still down
+    assert.equal(dispatchKey(ev('Escape', { repeat: true })), true);
+    assert.deepEqual([panel.length, view.length], [1, 0],
+        'the held Escape does not go on to clear the view');
+
+    const hotkey = bind(t, { key: 'r' });
+    assert.equal(dispatchKey(ev('r', { target: typing('INPUT') })), false);
+    const typed = ev('r', { repeat: true, target: typing('INPUT') });
+    assert.equal(dispatchKey(typed), false, 'a held key in a text field is typing');
+    assert.notEqual(typed.prevented, true);
+    assert.equal(hotkey.length, 0);
+});
+
+test('auto-repeat: a press no binding took keeps its browser default while held', t => {
+    let calls = 0;
+    const off = registerKey({ key: 'ArrowRight', handler: () => { calls++; return false; } });
+    t.after(off);
+    assert.equal(dispatchKey(ev('ArrowRight')), false, 'the handler declined the press');
+    const held = ev('ArrowRight', { repeat: true });
+    assert.equal(dispatchKey(held), false, 'so its repeats are the browser\'s (a scroll)');
+    assert.notEqual(held.prevented, true);
+    assert.equal(calls, 1, 'and the handler is not asked again');
+
+    // A repeat with no press on record (focus arrived with the key down).
+    const hits = bind(t, { key: 'q' });
+    const stray = ev('q', { repeat: true });
+    assert.equal(dispatchKey(stray), false);
+    assert.notEqual(stray.prevented, true);
+    assert.equal(hits.length, 0);
+});
+
 test('installKeyDispatcher attaches one keydown listener and uninstalls', t => {
     const listeners = new Map();
     const target = {

@@ -1,5 +1,5 @@
 /**
- * MIDI notes for the lane (docs/vst3.md §11): the pure functions
+ * MIDI notes for the lane (docs/vst3.md §8.5): the pure functions
  * between the bridge's `getMidiNotes` rows and the piano-roll tile —
  * event pairing (the mock's twin of AudioEngine::getMidiNotes), the
  * bridge-row decode, the compact pitch-range fit, and the slice of a
@@ -13,6 +13,9 @@ import { posMod } from './math_utils.js';
 /** The smallest pitch span a tile fits (semitones): one note still
  * reads as a bar, not a line. */
 export const MIN_PITCH_SPAN = 12;
+
+/** The range an empty tile fits: the middle octave. */
+export const MIDDLE_OCTAVE = Object.freeze({ lo: 54, hi: 66 });
 
 /**
  * Pair raw content events into notes. `events` are [pos, status, data1,
@@ -66,10 +69,10 @@ export function notesFromRows(rows) {
  * The COMPACT pitch range a tile draws: the notes' [lowest, highest]
  * widened to at least MIN_PITCH_SPAN semitones (centered) and padded
  * by one semitone each side, clamped to MIDI pitch. An empty list
- * fits the middle octave. Returns {lo, hi} (inclusive).
+ * fits MIDDLE_OCTAVE. Returns {lo, hi} (inclusive).
  */
 export function fitPitchRange(notes) {
-    if (!notes || !notes.length) return { lo: 54, hi: 66 };
+    if (!notes || !notes.length) return { ...MIDDLE_OCTAVE };
     let lo = Infinity, hi = -Infinity;
     for (const n of notes) {
         if (n.note < lo) lo = n.note;

@@ -8,8 +8,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { programOf, visitBounds, mix32, draw, MAX_VISITS }
-    from '../sequence_program.js';
+import { programOf, successorOf, visitBounds, publishedSequence, sequenceProgram, sequenceVisits,
+         sequenceTotalSamples, activeSequenceSamples, auditionStepOf,
+         isAuditionWindow } from '../sequence_program.js';
 import { loadSharedJson } from './helpers.mjs';
 
 const golden = loadSharedJson('timing_golden.json');
@@ -26,21 +27,6 @@ test('golden: sequence program (successor graphs + the seed)', () => {
     }
 });
 
-test('the walk is pure: the same (steps, seed) unrolls identically', () => {
-    const steps = [{ len: 10, next: [{ to: 1, w: 1 }, { to: 2, w: 2 }] },
-                   { len: 10, next: [{ to: 0, w: 1 }] },
-                   { len: 10, next: [{ to: 0, w: 1 }] }];
-    const a = programOf(steps, 42), b = programOf(steps, 42);
-    assert.deepEqual(a.visits, b.visits);
-    assert.equal(a.visits.length, MAX_VISITS, 'a radio fills the horizon');
-    const other = programOf(steps, 43);
-    assert.notDeepEqual(other.visits, a.visits, 'another seed, another run');
-    // Weights bias the draw: the 2:1 branch lands on step 2 more often.
-    const twos = a.visits.filter(v => v === 2).length;
-    const ones = a.visits.filter(v => v === 1).length;
-    assert.ok(twos > ones, `2:1 weighting: ${twos} vs ${ones}`);
-});
-
 test('reachability and first visits follow the program', () => {
     const p = programOf([{ len: 1, next: [{ to: 2, w: 1 }] }, { len: 1 },
                          { len: 1, next: [{ to: 0, w: 1 }] }], 0);
@@ -54,9 +40,65 @@ test('reachability and first visits follow the program', () => {
     assert.deepEqual(intro.firstVisit, [0, 1, 2]);
 });
 
-test('mix32 / draw are uint32 and stable', () => {
-    assert.equal(mix32(0), 0);
-    assert.equal(mix32(1) >>> 0, mix32(1));
-    assert.notEqual(draw(0, 0), draw(0, 1));
-    assert.notEqual(draw(0, 0), draw(1, 0));
+test('a weight is a whole number: a fraction truncates, and below 1 it is no successor', () => {
+    // src/sequence.h reads `w` as an int and drops a non-positive one,
+    // so 0.5 names nothing and the step falls back to the loop successor.
+    const half = [{ len: 1, next: [{ to: 2, w: 0.5 }] }, { len: 1 }, { len: 1 }];
+    assert.deepEqual(successorOf(half, 0, 0, 0), { to: 1, branched: false });
+    assert.deepEqual(programOf(half, 0).visits, [0, 1, 2]);
+    // Two fractional candidates: neither stands, so no draw is made.
+    const both = [{ len: 1, next: [{ to: 1, w: 0.4 }, { to: 2, w: 0.3 }] },
+                  { len: 1 }, { len: 1 }];
+    assert.deepEqual(successorOf(both, 7, 0, 0), { to: 1, branched: false });
+    assert.equal(programOf(both, 7).radio, false, 'a plain loop, not a radio');
+    // One whole weight beside a fraction: the whole one is the only
+    // candidate — a fixed successor, not a branch.
+    const mixed = [{ len: 1, next: [{ to: 2, w: 2.7 }, { to: 1, w: 0.9 }] },
+                   { len: 1 }, { len: 1 }];
+    assert.deepEqual(successorOf(mixed, 7, 0, 0), { to: 2, branched: false });
+});
+
+test('a published sequence: its program is the published one, else the ' +
+     'unroll; the visits alone agree with it', () => {
+    for (const c of golden.sequence_program_cases) {
+        const s = { steps: c.steps, seed: c.seed };
+        assert.deepEqual(sequenceProgram(s), programOf(c.steps, c.seed), c.name);
+        assert.deepEqual(sequenceVisits(s), sequenceProgram(s).visits, c.name);
+        assert.equal(sequenceTotalSamples(s), c.total, c.name + ' - total');
+    }
+    // A published `program` wins over the walk; entries naming no step
+    // are dropped.
+    const steps = [{ len: 10 }, { len: 20 }, { len: 40 }];
+    const s = { steps, seed: 0, program: [0, 2, 7, -1, 0.5, 2], radio: true };
+    assert.deepEqual(sequenceVisits(s), [0, 2, 2]);
+    assert.deepEqual(sequenceProgram(s), { visits: [0, 2, 2], radio: true,
+        reachable: [true, false, true], firstVisit: [0, -1, 1] });
+    assert.equal(sequenceTotalSamples(s), 90, 'visits concatenate');
+    // No steps: no sequence, no program, no length.
+    for (const none of [null, {}, { steps: [] }]) {
+        assert.deepEqual(sequenceVisits(none), []);
+        assert.deepEqual(sequenceProgram(none).visits, []);
+        assert.equal(publishedSequence({ sequence: none }), null);
+        assert.equal(activeSequenceSamples({ sequence: none }), 0);
+    }
+    assert.equal(publishedSequence({ sequence: s }), s);
+    assert.equal(activeSequenceSamples({ sequence: s }), 90);
+    assert.equal(activeSequenceSamples({ sequence: { ...s, bypassed: true } }), 0,
+        'a bypassed song is no part length');
+});
+
+test('the audition step is a step of the sequence; an audition window ' +
+     'needs the song on', () => {
+    const steps = [{ len: 10 }, { len: 20 }];
+    assert.equal(auditionStepOf({ steps, auditionStep: 1 }), 1);
+    for (const bad of [2, -1, 0.5, undefined, '1']) {
+        assert.equal(auditionStepOf({ steps, auditionStep: bad }), -1, String(bad));
+    }
+    assert.equal(auditionStepOf(null), -1);
+    assert.equal(isAuditionWindow({ sequence: { steps, auditionStep: 1 } }), true);
+    assert.equal(isAuditionWindow({ sequence: { steps, auditionStep: 1,
+                                                bypassed: true } }), false);
+    assert.equal(isAuditionWindow({ sequence: { steps, auditionStep: -1 } }), false);
+    assert.equal(isAuditionWindow({}), false);
+    assert.equal(isAuditionWindow(null), false);
 });

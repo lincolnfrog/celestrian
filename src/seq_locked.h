@@ -21,9 +21,9 @@ namespace celestrian {
  * one — always the copy no write is touching. A writer descheduled
  * mid-write (the OS preempts the message thread whenever it likes)
  * therefore never stalls or tears a reader: the copy it reads is whole,
- * one write old at most. (The single-copy form tore exactly there: a
- * preempted writer held the mark odd while a reader spun through its
- * retry bound in under a microsecond and took a mixed record.)
+ * one write old at most. (With a single copy, a preempted writer holds
+ * the mark odd while a reader spins through its retry bound in under a
+ * microsecond and takes a mixed record.)
  * Single-field readers read the primary directly — each field is its
  * own atomic; only multi-field reads need the protocol.
  *

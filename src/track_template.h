@@ -12,15 +12,14 @@
 namespace celestrian::track_templates {
 
 /** A step length in Q as the session format's EXACT rational ({num,
- * den} through the one QTime serializer — audit D7-4; templates once
- * stored a lossy double Q count). */
+ * den}, through the one QTime serializer). */
 inline juce::var qcountVar(int64_t samples, int64_t q_samples) {
   return AudioNode::qtimeVar(timing::fromSamples(samples, q_samples));
 }
 
-/** The inverse, materialized against `q_samples`. Accepts both shapes:
- * a {num, den} object (current) and a bare double Q count (templates
- * written before 2026-09-10). */
+/** The inverse, materialized against `q_samples`. Reads both shapes a
+ * template file may hold: a {num, den} object (what capture writes) and
+ * a bare Q count. */
 inline int64_t qcountSamples(const juce::var& v, int64_t q_samples) {
   if (auto* o = v.getDynamicObject()) {
     return timing::toSamples(
@@ -65,7 +64,7 @@ inline int64_t qcountSamples(const juce::var& v, int64_t q_samples) {
  *
  *  SEQUENCES are the exception (S14, docs/sequencer.md §9): a song's
  *  shape is a saved decision, not saved music. Step lengths are
- *  stored as Q COUNTS (`lenQ`, double — device- and tempo-portable)
+ *  stored as Q COUNTS (`lenQ`, qcountVar — device- and tempo-portable)
  *  and gates are keyed by CHILD INDEX (build stamps new uuids, so
  *  uuid keys would dangle). Pass the
  *  capturing island's `q_samples`; with no Q established the sequence
@@ -81,10 +80,8 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
   } else if (auto* stack = dynamic_cast<const StackNode*>(&node)) {
     o->setProperty("type", "stack");
     juce::Array<juce::var> kids;
-    // getChild is non-const; capture walks a const tree — go through
-    // the const child list accessor instead.
-    for (int i = 0; i < stack->getNumChildren(); ++i) {
-      kids.add(capture(*const_cast<StackNode*>(stack)->getChild(i), q_samples));
+    for (const auto& child : stack->ownedChildren()) {
+      kids.add(capture(*child, q_samples));
     }
     o->setProperty("children", kids);
     if (const Sequence* s = stack->sequencePtr(); s != nullptr && q_samples > 0) {
@@ -108,9 +105,8 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
       if (s->seed != 0) so->setProperty("seed", (double)s->seed);
       // Gates by child INDEX: [{child: i, bits: [0/1...]}].
       juce::Array<juce::var> gates;
-      auto* mutableStack = const_cast<StackNode*>(stack);
       for (int i = 0; i < stack->getNumChildren(); ++i) {
-        const juce::String uuid = mutableStack->getChild(i)->getUuid();
+        const juce::String uuid = stack->ownedChildren()[(size_t)i]->getUuid();
         bool has_row = false;
         for (const auto& row : s->gates) {
           if (row.uuid == uuid) has_row = true;
@@ -162,44 +158,33 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
     // Q, re-keying index gates onto the freshly stamped child uuids.
     // With no Q established yet the sequence is skipped (logged) — its
     // lengths have no exchange rate to land on.
-    if (auto* so = v.getProperty("sequence", juce::var()).getDynamicObject()) {
+    const juce::var block = v.getProperty("sequence", juce::var());
+    if (auto* so = block.getDynamicObject()) {
       if (q_samples > 0) {
-        auto seq = std::make_unique<Sequence>();
-        if (auto* steps = so->getProperty("steps").getArray()) {
-          for (const auto& sv : *steps) {
-            if ((int)seq->steps.size() >= Sequence::kMaxSteps) break;
-            Sequence::Step st;
-            st.len = qcountSamples(sv.getProperty("lenQ", juce::var()),
-                                   q_samples);
-            st.name = sv.getProperty("name", juce::var()).toString();
-            st.cue = (bool)sv.getProperty("cue", false);
-            Sequence::readSuccessors(sv, st);
-            st.fade_in = qcountSamples(sv.getProperty("fadeInQ", juce::var()),
-                                       q_samples);
-            st.fade_out = qcountSamples(
-                sv.getProperty("fadeOutQ", juce::var()), q_samples);
-            if (st.len > 0) seq->steps.push_back(std::move(st));
-          }
+        // A LENIENT read (Sequence::fromVar): what the template spells
+        // wrong is left out and the rest builds.
+        Sequence::Dropped dropped;
+        auto seq = Sequence::fromVar(
+            block, Sequence::kQKeys,
+            [q_samples](const juce::var& length) {
+              return qcountSamples(length, q_samples);
+            },
+            dropped);
+        if (dropped.any()) {
+          juce::Logger::writeToLog(
+              "track_templates::build - the sequence built in part - " +
+              dropped.what());
         }
-        seq->seed = (uint32_t)(int64_t)(double)so->getProperty("seed");
-        if (auto* gates = so->getProperty("gates").getArray()) {
-          for (const auto& gv : *gates) {
-            const int child = (int)gv.getProperty("child", -1);
-            if (child < 0 || child >= stack->getNumChildren()) continue;
-            Sequence::GateRow row;
-            row.uuid = stack->getChild(child)->getUuid();
-            row.mask = 0;
-            if (auto* bits = gv.getProperty("bits", juce::var()).getArray()) {
-              for (int i = 0; i < bits->size() && i < Sequence::kMaxSteps;
-                   ++i) {
-                if ((bool)(*bits)[i]) row.mask |= (1ull << i);
-              }
+        if (seq != nullptr) {
+          if (auto* gates = so->getProperty("gates").getArray()) {
+            for (const auto& gv : *gates) {
+              const int child = (int)gv.getProperty("child", -1);
+              if (child < 0 || child >= stack->getNumChildren()) continue;
+              const juce::var bits = gv.getProperty("bits", juce::var());
+              seq->gates.push_back({stack->getChild(child)->getUuid(),
+                                    Sequence::maskFromBits(bits)});
             }
-            seq->gates.push_back(std::move(row));
           }
-        }
-        if (!seq->steps.empty()) {
-          seq->finalize();
           // A template always builds a NESTED stack: a radio is root-
           // only (S12), so its successor graph is dropped here.
           if (seq->radio) {

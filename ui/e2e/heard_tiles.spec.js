@@ -1,72 +1,24 @@
 /**
- * HEARD TILES DON'T LURCH, BREATHE OR DOUBLE (loop-region phase 1,
- * 2026-09-23 — field video: "every live commit makes the whole lane
- * lurch sideways and breathe").
+ * HEARD TILES DON'T LURCH, BREATHE OR DOUBLE (session_view/lane_body.js;
+ * the browser half of heard_tile_sampler.test.mjs: the real canvases,
+ * the real reconcile).
  *
- * The browser half of heard_tile_sampler.test.mjs: the real canvases,
- * the real reconcile. (1) A map SLIDE repaints only the strip its seam
- * sweeps — measured on the heard tile's pixels. (2) A panel TRIM drag
- * re-lays tiles in place: no surplus tile fading over the new layout,
- * no old canvas cross-fading over a regenerated composite. Real mouse
- * input for the drag (synthetic dispatch bypasses hit-testing).
+ * (1) A map SLIDE repaints only the strip its seam sweeps — measured on
+ * the heard tile's pixels. (2) A panel TRIM drag re-lays tiles in
+ * place: no surplus tile fading over the new layout, no old canvas
+ * cross-fading over a regenerated composite.
  */
 
 import { test, expect } from '@playwright/test';
-import { boot, quantum, laneOf, panelOf } from './region_panel_helpers.js';
-
-/** Record takes of the given lengths (Q) in order, each waiting out its
- * pending start and its awaiting-stop; the first take sets Q. */
-async function recordTakes(page, Q, lengths) {
-    return page.evaluate(async ({ Q, lengths }) => {
-        const c = window.__celestrianTest.callNative;
-        const adv = window.__celestrianTest.advanceBy;
-        const find = async id =>
-            (await c('getGraphState')).nodes.find(n => n.id === id);
-        const ids = [];
-        for (const lenQ of lengths) {
-            const id = await c('createNode', 'clip', '');
-            await c('startRecordingInNode', id);
-            for (let i = 0; i < 40; i++) {
-                const n = await find(id);
-                if (n.isRecording && !n.isPendingStart) break;
-                adv(Q / 10);
-            }
-            adv(lenQ * Q - (ids.length ? Q / 4 : 0));
-            await c('stopRecordingInNode', id);
-            for (let i = 0; i < 40; i++) {
-                if (!(await find(id)).isRecording) break;
-                adv(Q / 10);
-            }
-            ids.push(id);
-        }
-        return ids;
-    }, { Q, lengths });
-}
-
-/** The heard take tile's envelope: per backing column, the height
- * (px) of the filled shape above the centre line. */
-const tileProfile = (page, id) => page.evaluate(id => {
-    const rep = document.querySelector(
-        `.lane[data-id="${id}"] .reps-layer .rep:not(.ghost)`);
-    const cv = rep && rep.querySelector('canvas');
-    if (!cv || !cv.width) return null;
-    const { width: W, height: H } = cv;
-    const px = cv.getContext('2d').getImageData(0, 0, W, H).data;
-    const mid = Math.floor(H / 2);
-    const out = [];
-    for (let x = 0; x < W; x++) {
-        let y = 0;
-        while (y < mid && px[(y * W + x) * 4 + 3] < 128) y++;
-        out.push(mid - y);
-    }
-    return out;
-}, id);
+import { boot, quantum, node, recordTake, setLoop, loopedTake, laneOf, panelOf,
+         selectLane, centre, dragBy, jiggleUntil, release, watchFrames, settled,
+         tileProfile, tileAtRest, changedCols }
+    from './helpers.js';
 
 /** The shortest circular band (columns) holding every changed column. */
-function changedBand(a, b, tolPx = 1) {
+function changedBand(a, b) {
     const W = a.length;
-    const changed = [];
-    for (let x = 0; x < W; x++) if (Math.abs(a[x] - b[x]) > tolPx) changed.push(x);
+    const changed = changedCols(a, b).map(f => Math.round(f * W));
     if (!changed.length) return { count: 0, width: 0 };
     // The band is the circle minus its largest unchanged gap.
     let maxGap = W - changed[changed.length - 1] + changed[0];
@@ -78,33 +30,26 @@ function changedBand(a, b, tolPx = 1) {
 
 test.describe('Heard tiles', () => {
     test('a map SLIDE repaints only the swept strip of the heard lane', async ({ page }) => {
-        await boot(page);
-        const Q = await quantum(page);
         // A 1Q definer, a 4Q loop (it seats the frame: 4Q), then a 12Q
         // take windowed to [6Q, 10Q) — a lane that does NOT seat the
         // frame, so the slide cannot re-seat anything but by whole
         // 4Q cycles (invisible).
-        const [, , b] = await recordTakes(page, Q, [1, 4, 12]);
-        await page.evaluate(({ b, Q }) =>
-            window.__celestrianTest.callNative('setLoopPoints', b, 6 * Q, 10 * Q),
-        { b, Q });
+        const { Q } = await loopedTake(page, { lenQ: 4, loop: null, select: false });
+        const b = await recordTake(page, Q, 12);
+        await setLoop(page, b, 6 * Q, 10 * Q);
         await expect(laneOf(page, b).locator('.win-heard-chip')).toHaveText(/4Q/);
-        await expect.poll(async () => (await tileProfile(page, b)) !== null).toBe(true);
-        await page.waitForTimeout(200);  // settle any first-draw swap
-        const before = await tileProfile(page, b);
+        const before = await tileAtRest(page, b);
 
         // SLIDE +0.37Q, length held (what the panel box's ⌥-drag and a
         // single splice drag commit): a non-whole number of peaks.
         const d = 0.37;
-        await page.evaluate(({ b, Q, d }) => window.__celestrianTest.callNative(
-            'setLoopPoints', b, Math.round((6 + d) * Q), Math.round((6 + d) * Q) + 4 * Q),
-        { b, Q, d });
+        const start = Math.round((6 + d) * Q);
+        await setLoop(page, b, start, start + 4 * Q);
         await expect.poll(async () => {
             const now = await tileProfile(page, b);
-            return now && changedBand(before, now).count > 0;
+            return !!now && changedCols(before, now).length > 0;
         }).toBe(true);
-        await page.waitForTimeout(200);
-        const after = await tileProfile(page, b);
+        const after = await tileAtRest(page, b);
         expect(after.length).toBe(before.length);
 
         // One heard tile spans the 4Q frame: the seam sweeps d·W/4
@@ -118,76 +63,69 @@ test.describe('Heard tiles', () => {
 
     test('a panel TRIM drag re-lays tiles in place: no fading surplus, no cross-fading composite', async ({ page }) => {
         await boot(page, { scenario: 'stack-with-clips' });
-        const lane = laneOf(page, 'clip-2');   // 3Q, inside a 6Q group
-        const panel = panelOf(page, 'clip-2');
-        await lane.locator('.rail-name').click();
-        const strip = panel.locator('.region-strip');
-        await expect(strip).toBeVisible();
+        const Q = await quantum(page);
+        const panel = panelOf(page, 'clip-2');    // 3Q, inside a 6Q group
+        await selectLane(page, 'clip-2');
         // Let the load settle: the composite's first regenerations (as
         // the members' peaks arrive) legitimately cross-fade.
-        await page.waitForTimeout(500);
+        await tileAtRest(page, 'stack-1');
         await expect.poll(() => page.evaluate(() =>
             document.querySelectorAll('.reps-layer .rep canvas + canvas').length)).toBe(0);
 
-        // Watch every reps layer each frame from here to after release.
-        await page.evaluate(() => {
-            const s = window.__ws3 = { exiting: 0, canvases: 0, run: true,
-                                       counts: new Set(), groupRefs: new Set(),
-                                       t0: performance.now(), where: '' };
-            const tick = () => {
-                if (!s.run) return;
-                document.querySelectorAll('.lane-body .reps-layer').forEach(layer => {
-                    const kids = [...layer.children];
-                    s.exiting = Math.max(s.exiting,
-                        kids.filter(k => k._exiting || k.style.opacity === '0').length);
-                    for (const k of kids) {
-                        const n = k.querySelectorAll('canvas').length;
-                        if (n > s.canvases) {
-                            s.canvases = n;
-                            s.where = layer.closest('.lane').dataset.id + ' @' +
-                                Math.round(performance.now() - s.t0);
-                        }
+        // Every reps layer, each frame from here to after the release.
+        const watch = await watchFrames(page, () => {
+            const row = { exiting: 0, canvases: 0, where: '', tiles: 0, groupRef: 0 };
+            document.querySelectorAll('.lane-body .reps-layer').forEach(layer => {
+                const kids = [...layer.children];
+                row.exiting = Math.max(row.exiting,
+                    kids.filter(k => k._exiting || k.style.opacity === '0').length);
+                for (const k of kids) {
+                    const n = k.querySelectorAll('canvas').length;
+                    if (n > row.canvases) {
+                        row.canvases = n;
+                        row.where = layer.closest('.lane').dataset.id;
                     }
-                });
-                const c2 = document.querySelector('.lane[data-id="clip-2"] .reps-layer');
-                if (c2) s.counts.add(c2.children.length);
-                const g = document.querySelector('.lane[data-id="stack-1"] .reps-layer .rep');
-                if (g && g._peaksRef) s.groupRefs.add(g._peaksRef);
-                requestAnimationFrame(tick);
-            };
-            requestAnimationFrame(tick);
+                }
+            });
+            const member = document.querySelector('.lane[data-id="clip-2"] .reps-layer');
+            if (member) row.tiles = member.children.length;
+            // The group composite's peaks, numbered by identity.
+            const g = document.querySelector('.lane[data-id="stack-1"] .reps-layer .rep');
+            if (g && g._peaksRef) {
+                const seen = window.__peakRefs || (window.__peakRefs = []);
+                if (!seen.includes(g._peaksRef)) seen.push(g._peaksRef);
+                row.groupRef = seen.indexOf(g._peaksRef) + 1;
+            }
+            return row;
         });
+        const tiles = async () => (await watch.rows()).at(-1).tiles;
 
         // Px per Q from the kept box (the whole 3Q take): robust to any
         // panel zoom.
         const kept = await panel.locator('.region-kept').boundingBox();
         const pxQ = kept.width / 3;
-        const eb = await panel.locator('.region-bracket.end').boundingBox();
-        const x0 = eb.x + eb.width / 2;
-        const y = eb.y + eb.height / 2;
-        await page.mouse.move(x0, y);
-        await page.mouse.down();
-        // In to a 2Q loop (three 2Q tiles in the pinned 6Q frame) …
-        await page.mouse.move(x0 - 1.2 * pxQ, y, { steps: 12 });
-        await page.waitForTimeout(250);
+        const end = centre(await panel.locator('.region-bracket.end').boundingBox());
+        // In to a 2Q loop (three 2Q tiles in the pinned 6Q frame), a
+        // live commit carrying it …
+        await dragBy(page, end, -1.2 * pxQ, { steps: 12, hold: true });
+        await jiggleUntil(page, { x: end.x - 1.2 * pxQ, y: end.y },
+            async () => (await node(page, 'clip-2')).loopEnd / Q, 2);
+        await expect.poll(tiles).toBe(3);
         // … and back out to the whole 3Q take (two tiles: one retired).
-        await page.mouse.move(x0 + 0.3 * pxQ, y, { steps: 12 });
-        await page.waitForTimeout(250);
-        await page.mouse.up();
-        await page.waitForTimeout(600);
-        const s = await page.evaluate(() => {
-            const s = window.__ws3;
-            s.run = false;
-            return { exiting: s.exiting, canvases: s.canvases, where: s.where,
-                     counts: [...s.counts].sort(), groupRefs: s.groupRefs.size };
-        });
+        await page.mouse.move(end.x + 0.3 * pxQ, end.y, { steps: 12 });
+        await expect.poll(tiles).toBe(2);
+        await release(page);
+        await settled(page);
+        const rows = await watch.stop();
         // Non-vacuous: the trim really re-laid the member's tiles, and
         // its live commits really regenerated the group's composite.
-        expect(s.counts).toEqual(expect.arrayContaining([2, 3]));
-        expect(s.groupRefs).toBeGreaterThan(1);
+        expect([...new Set(rows.map(r => r.tiles))]).toEqual(expect.arrayContaining([2, 3]));
+        expect(new Set(rows.map(r => r.groupRef).filter(Boolean)).size).toBeGreaterThan(1);
         // The law: no surplus tile ever faded over a re-lay, and no old
         // canvas ever cross-faded over a regenerated one.
-        expect(s.exiting, 'a surplus tile faded over the re-lay').toBe(0);
-        expect(s.canvases, `a cross-fade on ${s.where} (lane @ms)`).toBeLessThanOrEqual(1);
+        expect(Math.max(...rows.map(r => r.exiting)), 'a surplus tile faded over the re-lay')
+            .toBe(0);
+        const worst = rows.reduce((a, r) => (r.canvases > a.canvases ? r : a));
+        expect(worst.canvases, `a cross-fade on ${worst.where}`).toBeLessThanOrEqual(1);
     });
 });

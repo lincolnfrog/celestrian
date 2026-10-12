@@ -5,9 +5,10 @@
  *  - a STACK stores an origin and is ANCHORED once committed content
  *    exists in its subtree (origin := the earliest committed descendant's
  *    origin, set once, never re-derived); the last content leaving
- *    un-anchors it; undo restores the exact stored values;
- *  - combine anchors the new stack at min(member origins);
- *  - re-anchoring a node re-anchors its SUBTREE (seek, the definer trim,
+ *    un-anchors it; undo restores the exact stored values (a move, a
+ *    combine and a seek are held to the engine by ui/differential/
+ *    graph/moves-and-anchors, graph/combine-explode, seek/over-a-song);
+ *  - re-anchoring a node re-anchors its SUBTREE (the definer trim,
  *    lock-collapse) — no per-member origin riders;
  *  - the definer-stack trim is the sole-clip path applied to the stack:
  *    origin' = t0 − pT, zero := origin' + start, Q := len;
@@ -28,27 +29,12 @@ import {
 import { deriveViewModel } from '../view_model.js';
 import { armTarget } from '../timeline_model.js';
 import { mapOffset } from '../time_map.js';
+import { posMod as mod } from '../math_utils.js';
 import {
-    MOCK_Q as Q, nodeById, recordTake, clip, stack, state as scene, SCENE_Q,
+    MOCK_Q as Q, recordTake, clip, stack, state as scene, SCENE_Q,
 } from './helpers.mjs';
-
-const find = id => nodeById(id, getState().nodes);
-const mod = (a, m) => ((a % m) + m) % m;
-
-/** A group take: N mics under one stack, one performance of lenQ.
- * With a Q already established, stop just short and settle across the
- * boundary (the awaiting-stop pad — helpers.recordTake's shape). */
-async function recordGroupTake(n, lenQ, parentId = '',
-                               { stopEarly = 0, settle = 0 } = {}) {
-    const stackId = await callNative('createNode', 'stack', parentId);
-    const ids = [];
-    for (let i = 0; i < n; ++i) ids.push(await callNative('createNode', 'clip', stackId));
-    await callNative('startRecordingInNode', stackId);
-    advanceBy(lenQ * Q - stopEarly);
-    await callNative('stopRecordingInNode', stackId);
-    if (settle > 0) advanceBy(settle);
-    return { stackId, ids };
-}
+import { published as find, recordGroupTake } from './mock_scene.mjs';
+import { findNode as rawNode } from '../mock/state.js';
 
 /* ------------------------------------------------------------------ */
 /* Anchoring events (composition.md §5)                                */
@@ -87,19 +73,6 @@ test('a stack is unanchored until its first take, then anchored at the take orig
     assert.equal(find(stackId).origin, takeOrigin, 'at the exact stored origin');
 });
 
-test('the origin is set ONCE: later content never re-derives it', async () => {
-    loadScenario('empty');
-    const { stackId } = await recordGroupTake(2, 1);
-    const O = find(stackId).origin;
-    // A later take in the same group (a new mic, one cycle later):
-    // committed content ARRIVES, the stack is already anchored — its
-    // origin holds at the first take's moment.
-    advanceBy(Q);
-    await recordTake(stackId, Q);
-    assert.equal(find(stackId).anchored, true);
-    assert.equal(find(stackId).origin, O, 'anchored origin never re-derived');
-});
-
 test('the last content leaving un-anchors; undo restores the stored origin', async () => {
     loadScenario('empty');
     const { stackId, ids } = await recordGroupTake(2, 2);
@@ -119,40 +92,6 @@ test('the last content leaving un-anchors; undo restores the stored origin', asy
     assert.equal(find(stackId).origin, O);
 });
 
-test('a MOVE anchors the receiving stack and un-anchors the emptied one', async () => {
-    loadScenario('empty');
-    const { stackId, ids } = await recordGroupTake(2, 1);
-    const O = find(stackId).origin;
-    const other = await callNative('createNode', 'stack', '');
-    assert.equal(find(other).anchored, false);
-    await callNative('reorderNode', ids[0], other, 0);
-    assert.equal(find(other).anchored, true, 'content entered: anchored');
-    assert.equal(find(other).origin, O, 'at the child\'s origin');
-    await callNative('reorderNode', ids[1], other, 1);
-    assert.equal(find(stackId).anchored, false, 'emptied: un-anchored');
-    assert.equal(find(other).origin, O, 'still the first content\'s origin');
-});
-
-test('combine anchors the new stack at the EARLIEST member origin', async () => {
-    loadScenario('empty');
-    const a = await recordTake('', Q, { stopEarly: 0, settle: 0 });  // origin 0
-    advanceBy(3 * Q);
-    const b = await recordTake('', Q);                                 // later
-    const oa = find(a).origin, ob = find(b).origin;
-    assert.ok(ob > oa, 'b was performed after a');
-
-    const g = await callNative('combineNodes', b, a);  // drag b onto a
-    assert.equal(find(g).anchored, true, 'a post-hoc group is anchored');
-    assert.equal(find(g).origin, Math.min(oa, ob), 'min(member origins)');
-    assert.equal(find(g).origin, oa);
-
-    // Two EMPTY clips make an unanchored group.
-    const e1 = await callNative('createNode', 'clip', '');
-    const e2 = await callNative('createNode', 'clip', '');
-    const g2 = await callNative('combineNodes', e1, e2);
-    assert.equal(find(g2).anchored, false, 'no content: unanchored');
-});
-
 test('scenario fixtures anchor their stacks from content on load (session-load parity)', () => {
     loadScenario('clip-3-anchor-at-2q');
     const s = getState().nodes.find(n => n.type === 'stack');
@@ -166,29 +105,6 @@ test('scenario fixtures anchor their stacks from content on load (session-load p
 /* ------------------------------------------------------------------ */
 /* Subtree re-anchoring (I11)                                          */
 /* ------------------------------------------------------------------ */
-
-test('seek shifts stack origins with the zero (placement invariant)', async () => {
-    loadScenario('empty');
-    const { stackId, ids } = await recordGroupTake(2, 2);
-    advanceBy(Q / 3);
-    const before = getState();
-    const O = find(stackId).origin;
-    const placement = O - before.islandZero;
-
-    // The engine takes a phase ADVANCE (docs/frame.md): to 1.5Q from here.
-    const target = Math.round(1.5 * Q);
-    assert.ok(await callNative('seekTransport', target - before.masterPos));
-    const after = getState();
-    const delta = after.islandZero - before.islandZero;
-    assert.notEqual(delta, 0, 'the seek moved the zero');
-    assert.equal(find(stackId).origin, O + delta, 'stack origin rode the delta');
-    assert.equal(find(stackId).origin - after.islandZero, placement,
-        'placement (origin − zero) invariant');
-    for (const id of ids) {
-        assert.equal(find(id).origin, O + delta, 'members rode too (one shift)');
-    }
-    assert.equal(after.masterPos, target, 'landed at the requested phase');
-});
 
 test('definer-stack trim: ONE shift for the subtree, zero = origin\' + start, phase-preserving', async () => {
     loadScenario('empty');
@@ -212,12 +128,16 @@ test('definer-stack trim: ONE shift for the subtree, zero = origin\' + start, ph
         assert.equal(find(id).origin, s.origin,
             'members moved WITH the stack — no per-member riders');
     }
+    assert.equal(s.anchored, true, 'the definer stack stays anchored');
     assert.equal(getState().quantum, len, 'Q := len');
     assert.equal(getState().islandZero, s.origin + start, 'zero := origin\' + start');
     // Render check (composition.md G-1): the sample that was sounding
-    // keeps sounding — inner(t0) under the new window equals pT.
+    // keeps sounding — inner(t0) under the new window equals pT, and
+    // the published playhead reads that same position.
     const innerNow = start + mod(t0 - s.origin - start, len);
     assert.equal(innerNow, pT, 'phase preserved through the trim');
+    assert.equal(start + mod(getState().masterPos, len), pT,
+        'the published position is continuous (folded into the new window)');
 
     // Undo restores every origin exactly (the snapshot = the riders).
     await callNative('undo');
@@ -225,10 +145,18 @@ test('definer-stack trim: ONE shift for the subtree, zero = origin\' + start, ph
     for (const id of ids) assert.equal(find(id).origin, O0);
     assert.equal(find(stackId).anchored, true);
 
-    // The multi-segment twin: zero := origin' + mapOffset(0).
-    await callNative('setSegments', stackId, [D / 8, 3 * D / 8, D / 2, 3 * D / 4]);
+    // The multi-segment twin: Q := the map period, zero := origin' +
+    // mapOffset(0); the map lives on the stack, the members stay whole.
+    const cells = [D / 8, 3 * D / 8, D / 2, 3 * D / 4];
+    await callNative('setSegments', stackId, cells);
     const s2 = find(stackId);
-    for (const id of ids) assert.equal(find(id).origin, s2.origin, 'subtree shift');
+    assert.equal(getState().quantum, D / 2, 'Q := the map period (D/4 + D/4)');
+    assert.deepEqual(s2.segments, cells, 'map on the stack');
+    for (const id of ids) {
+        assert.equal(find(id).origin, s2.origin, 'subtree shift');
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, 0],
+            'members whole: no window of their own');
+    }
     assert.equal(getState().islandZero, s2.origin + D / 8, 'zero = origin\' + a0');
 });
 
@@ -266,6 +194,8 @@ test('group lock-collapse shifts the stack + members by the window start; re-ope
     for (const id of ids) {
         assert.equal(find(id).origin, O1 + start, 'members shifted with it (one delta)');
         assert.equal(find(id).duration, D / 2, 'collapsed to the window');
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, 0],
+            'member whole (no window)');
     }
     assert.equal(find(stackId).origin, zero1,
         'the collapsed take sits at the zero — an ordinary whole-Q looper (G-1)');
@@ -274,6 +204,7 @@ test('group lock-collapse shifts the stack + members by the window start; re-ope
     await callNative('stopRecordingInNode', t2);
     advanceBy(D / 2);
     assert.equal(find(t2).isRecording, false, 'take 2 committed');
+    assert.equal(getState().quantum, D / 2, 'Q locked at the trimmed length');
 
     // RE-OPEN ⟹ UNCOLLAPSE: origins unwind by the same shift.
     await callNative('deleteNode', t2);
@@ -306,9 +237,9 @@ test('through-map arm: heard anchor = stack origin + a0; inner origin = stack or
     const heardAnchor = find(stackId).origin + Q / 2;   // origin + a0
     const tRel = armTarget(raw - heardAnchor, Q, Q / 2);
     assert.equal(find(c).isPendingStart, true);
-    assert.equal(find(c).pendingStartAt, heardAnchor + tRel,
+    assert.equal(rawNode(c).pendingStartAt, heardAnchor + tRel,
         'the arm grid runs from the stack\'s origin + a0, not the zero');
-    advanceBy(find(c).pendingStartAt - raw);
+    advanceBy(rawNode(c).pendingStartAt - raw);
     advanceBy(Q / 2);   // one full map pass: the cap commits
     assert.equal(find(c).isRecording, false);
     assert.equal(find(c).origin, find(stackId).origin + mapOffset(map, tRel),
@@ -316,33 +247,8 @@ test('through-map arm: heard anchor = stack origin + a0; inner origin = stack or
 });
 
 /* ------------------------------------------------------------------ */
-/* One-shot stacks (Q5 generalized)                                    */
-/* ------------------------------------------------------------------ */
-
-test('a one-shot stack contributes nothing to any fold and publishes periodSource', async () => {
-    loadScenario('multiple-stacks');   // Stack 1: 2Q beat; Stack 2: 3Q melody
-    const s1 = getState().nodes[0];
-    assert.equal(s1.anchored, true, 'fixture stacks anchor on load');
-    assert.equal(s1.periodSource, 'own');
-    let vm = deriveViewModel(getState());
-    assert.equal(vm.lcmQ, 6, 'looping: lcm(2, 3)');
-
-    await callNative('setPeriodSource', s1.id, 'context');
-    assert.equal(getState().nodes[0].periodSource, 'context', 'published');
-    assert.equal(getState().canUndo, true, 'a musical fact — undoable');
-    vm = deriveViewModel(getState());
-    assert.equal(vm.lcmQ, 3, 'the one-shot group adopts the cycle, never extends it');
-    // The mock's transport wraps on the same fold.
-    setMasterPos(4 * Q);
-    assert.equal(getState().masterPos, Q, 'view wraps on 3Q');
-
-    await callNative('undo');
-    assert.equal(getState().nodes[0].periodSource, 'own');
-    assert.equal(deriveViewModel(getState()).lcmQ, 6);
-});
-
-/* ------------------------------------------------------------------ */
-/* Display twins (composition.md §9)                                   */
+/* Display twins (composition.md §9). A one-shot stack's place outside  */
+/* every fold is pinned with the clip's in one_shot.test.mjs.           */
 /* ------------------------------------------------------------------ */
 
 const PERF = { sampleRate: SCENE_Q };

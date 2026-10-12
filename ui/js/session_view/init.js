@@ -12,40 +12,44 @@ import { registerKey, SCOPE, ANY_MODIFIERS } from '../keys.js';
 import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle } from './teleport.js';
-import { wireRegionDock, nudgeRegion, fitSelectedPanel, zoomSelectedPanel }
-    from './region_panel.js';
-import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
-import { closeTakeMenus, wireTakeMenuDismiss } from './take_menu.js';
-import { openCreationMenu, closeCreationMenu, wireCreationMenuDismiss }
-    from './creation_menu.js';
+import { wireRegionDock } from './region_dock.js';
+import { nudgeRegion } from './region_nudge.js';
+import { fitSelectedPanel, zoomSelectedPanel } from './region_nav.js';
+import { openCreationMenu } from './creation_menu.js';
 import { wireRulerSeek } from './ruler_seek.js';
 import { dragHasFiles } from '../import_drop.js';
+
+/* What in the transport bar is NOT its empty space: its controls and
+ * readouts, and the panels that drop from it (the Project menu, the
+ * preferences panel). */
+const TRANSPORT_NOT_EMPTY = 'button, input, select, a, #odometer, ' +
+    '#master-monitor, .brand, #project-menu, .audio-panel';
+
+/* The create row's label at rest, and while a lane is dragged over it. */
+const CREATE_LABEL = '＋ Track';
+const MOVE_TO_TOP_LABEL = '⤒ Move to top level';
 
 export function initSessionView(callbacks) {
     initCtx(callbacks);
     ctx.els.playBtn.addEventListener('click', () => ctx.cb.onTogglePlay());
-    // Creation lives in the CANVAS: the persistent row under the lanes
-    // makes tracks; the transport is transport. The + opens the
-    // TEMPLATE PICKER (Q17; default "Track" row under the cursor —
-    // click-click is still one verb).
+    // Creation lives in the canvas: the persistent row under the lanes
+    // makes tracks, through the creation menu.
     document.getElementById('create-track-btn')
         .addEventListener('click', e => openCreationMenu(e, ''));
 
-    // Selection: Escape or a click on empty canvas clears; the floating
-    // bar groups the selection in place.
+    // Selection clears on Escape or a click on empty canvas — or on the
+    // transport's empty space, so it needs no clear patch of canvas.
+    // The transport's controls keep their own verbs, and a panel that
+    // hangs from it is not the bar: a click inside one clears nothing.
+    // The floating bar groups the selection in place.
     ctx.els.session.addEventListener('click', e => {
         if (e.target.id === 'session' || e.target.id === 'grid-area' ||
             e.target.id === 'lanes') clearSelection();
     });
-    // DESELECT ALL from the top bar (owner request 2026-09-11): a click
-    // on the transport's empty space clears the selection — and with it
-    // the region panel — without needing a clear patch of canvas.
-    // Controls keep their own verbs.
     const transport = document.getElementById('transport');
     if (transport) {
         transport.addEventListener('click', e => {
-            if (e.target.closest('button, input, select, a, #odometer, ' +
-                                 '#master-monitor, .brand')) return;
+            if (e.target.closest(TRANSPORT_NOT_EMPTY)) return;
             clearSelection();
         });
     }
@@ -69,16 +73,16 @@ export function initSessionView(callbacks) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
         createRow.classList.add('drop-target');
-        trackBtn.textContent = '⤒ Move to top level';
+        trackBtn.textContent = MOVE_TO_TOP_LABEL;
     });
     createRow.addEventListener('dragleave', () => {
         createRow.classList.remove('drop-target');
-        trackBtn.textContent = '＋ Track';
+        trackBtn.textContent = CREATE_LABEL;
     });
     createRow.addEventListener('drop', e => {
         e.preventDefault();
         createRow.classList.remove('drop-target');
-        trackBtn.textContent = '＋ Track';
+        trackBtn.textContent = CREATE_LABEL;
         const ids = parseDropIds(e);
         if (!ids) return;
         if (ids.length) { clearSelection(); ctx.cb.onMoveToTop(ids); }
@@ -95,68 +99,61 @@ export function initSessionView(callbacks) {
     });
 
     wireZoom();
-    // Ruler scrub: click/drag the ruler to seek — the callback is
-    // onSeek (app.js → seekTransport).
     wireRulerSeek();
     wireRegionDock();
-    wireMenuDismiss();
-    wireCreationMenuDismiss();
-    wireTakeMenuDismiss();
     wireKeyboard();
 }
 
 /** The view-scope bindings (keys.js). Escape fires under any modifier
- * and while typing (clear selection, leave comp mode, drop the
- * audition, dismiss menus) unless a higher scope — an open status-strip
- * panel — consumes it first; the hotkeys are no-modifier (Shift
- * ignored: '+' and '{' carry it) and not-typing. */
+ * and while typing, unless a higher scope consumes it first — an open
+ * popover (popover.js) or status-strip panel. The hotkeys take no
+ * modifier (Shift ignored: '+' and '{' carry it) and never fire while
+ * typing. */
 function wireKeyboard() {
     const view = spec => registerKey({ scope: SCOPE.VIEW, ...spec });
     view({ key: 'Escape', ignore: ANY_MODIFIERS, whileTyping: true, handler: () => {
-        // A live drag owns Escape (gesture.js cancels it in the
-        // capture phase and stops propagation; this guard is the
-        // belt to that suspender).
+        // A live drag owns Escape: gesture.js cancels it in the capture
+        // phase and stops propagation. This guard backs that up.
         if (isGestureLive()) return;
         clearSelection();
-        // Esc leaves comp mode on every lane (the comp itself stays).
+        // Leave comp mode on every lane (the comp itself stays) and drop
+        // any step audition (docs/sequencer.md §11.3).
         if (ctx.cb.onCompMode) ctx.cb.onCompMode(null, false);
-        // Esc drops any step audition (§11.3: "esc exits the loop").
         if (ctx.cb.onEscapeAudition) ctx.cb.onEscapeAudition();
-        closeInputMenus();
-        closeTakeMenus();
-        closeCreationMenu();
     } });
     const hotkey = (key, handler) => view({ key, ignore: ['shift'], handler });
-    // '=' is the unshifted '+' on ANSI layouts — accept both so the
-    // zoom hotkey works without holding Shift. With a track selected
-    // and its region panel up, +/− zoom the PANEL about the playhead
-    // (owner 2026-09-29); the song view only with no panel shown.
-    hotkey(['+', '='], () => { if (!zoomSelectedPanel(1)) zoomIn(); });
-    hotkey(['-', '_'], () => { if (!zoomSelectedPanel(-1)) zoomOut(); });
-    // [ / ] walk the selected track's handles; { / } jump to the
-    // outer loop bounds (see teleport.js).
-    hotkey('[', () => teleportToHandle(-1, false));
-    hotkey(']', () => teleportToHandle(1, false));
+    // A STEPPING key repeats while held (keys.js `repeat`): each
+    // auto-repeat is one more step. Toggles and jumps are plain hotkeys
+    // — a held key is one press.
+    const stepKey = (key, handler) =>
+        view({ key, ignore: ['shift'], repeat: true, handler });
+    // '=' is the unshifted '+' on ANSI layouts: both zoom in. With a
+    // region panel shown, +/− zoom the PANEL about the playhead; the
+    // song view only with none.
+    stepKey(['+', '='], () => { if (!zoomSelectedPanel(1)) zoomIn(); });
+    stepKey(['-', '_'], () => { if (!zoomSelectedPanel(-1)) zoomOut(); });
+    // [ / ] walk the selected track's handles; { / } jump to the outer
+    // loop bounds (teleport.js).
+    stepKey('[', () => teleportToHandle(-1, false));
+    stepKey(']', () => teleportToHandle(1, false));
     hotkey('{', () => teleportToHandle(-1, true));
     hotkey('}', () => teleportToHandle(1, true));
-    // ← / → NUDGE the selected track's loop region by 1Q (length held —
-    // the region panel's slide as a keystroke); ⇧ = 4Q. Long takes get
-    // a deterministic, drag-free way to walk the region. No ⌥ ⅛Q step
-    // (owner 2026-10-08: no sub-Q grid; fine moves are the ⌥ drag's).
+    // ← / → NUDGE the selected track's loop region by 1Q, length held
+    // (the region panel's slide as a keystroke); ⇧ = 4Q. No sub-Q step:
+    // fine moves are the ⌥ drag's.
     const nudge = (dir, step, mods) => view({
         key: dir < 0 ? 'ArrowLeft' : 'ArrowRight',
         modifiers: mods,
+        repeat: true,
         handler: e => {
             if (!nudgeRegion(dir * step)) return false;
             e.preventDefault();
         } });
     nudge(-1, 1, []);          nudge(1, 1, []);
     nudge(-1, 4, ['shift']);   nudge(1, 4, ['shift']);
-    // Z / ⇧Z fit the selected track's REGION PANEL to its loop / to
-    // the whole take (Ableton's zoom-to-selection; loop-region phase 1,
-    // 2026-09-23). Only while a panel is shown — otherwise the key
-    // falls through and plain z stays unbound (undo is ⌘/Ctrl+Z, which
-    // these never match). +/− zoom the panel too (above).
+    // Z / ⇧Z fit the selected track's REGION PANEL to its loop / to the
+    // whole take. Only while a panel is shown — otherwise the key falls
+    // through (undo is ⌘/Ctrl+Z, which these never match).
     const fit = (mods, kind) => view({
         key: 'z',
         modifiers: mods,
@@ -166,10 +163,9 @@ function wireKeyboard() {
         } });
     fit([], 'region');
     fit(['shift'], 'take');
-    // R = the record key: press the selected track's (or group's) ●
-    // — a group cascades per Q7 (arm every empty member). While
-    // anything records, R stops it regardless of selection (the
-    // handler owns that logic; see app.js onRecordKey).
+    // R = the record key: press the selected track's (or group's) ●.
+    // What it does is record_verbs.js onRecordKey's — while anything records, it
+    // stops that, whatever is selected.
     hotkey('r', () => {
         if (ctx.cb.onRecordKey) ctx.cb.onRecordKey(activeSelectedId());
     });

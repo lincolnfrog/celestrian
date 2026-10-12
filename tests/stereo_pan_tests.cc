@@ -4,8 +4,6 @@
 #include <vector>
 
 #include "../src/clip_node.h"
-#include "../src/qtime.h"
-#include "../src/session_io.h"
 #include "../src/stack_node.h"
 #include "test_utils.h"
 
@@ -15,11 +13,12 @@ using test_utils::contextFor;
 using test_utils::NodeContext;
 
 /**
- * Pan + stereo coverage (2026-07 mixing work):
+ * Pan + stereo coverage:
  *  - the balance-law gain function itself,
- *  - a mono clip panned in the render mix,
- *  - two-input stereo capture → per-channel content → stereo render,
- *  - lcm saturation (the composite-fold "reset to 0" overflow hazard).
+ *  - two-input stereo capture → per-channel content → stereo render.
+ * Pan in the render mix of a mono clip and of a group is
+ * output_stage_tests.cc's; the persistence of pan, the stereo wiring
+ * and the stereo audio is session_io_tests.cc's.
  */
 class StereoPanTests : public juce::UnitTest {
  public:
@@ -48,40 +47,13 @@ class StereoPanTests : public juce::UnitTest {
       expectEquals(gr, 0.0f);
     }
 
-    beginTest("Mono clip panned hard left: right output silent");
+    beginTest("Stereo capture: two inputs land on two content channels; "
+              "with no right input the take is mono");
     {
-      ClipNode clip("PanClip", sr);
-      std::vector<float> in(4410, 0.5f);
-      float* const ins[] = {in.data()};
-      NodeContext rec = contextFor(clip, (int)in.size());
-      clip.startRecording();
-      clip.process(ins, nullptr, 1, 0, rec.ctx);
-      clip.stopRecording();
+      auto mono_clip = test_utils::committedClip("MonoClip", sr, 1000, 1.0f);
+      expect(!mono_clip->isStereoInput(), "a fresh clip has no right input");
+      expectEquals(mono_clip->contentChannels(), 1, "mono capture stays mono");
 
-      clip.pan.store(-1.0f);
-      std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
-      float* outs[] = {outL.data(), outR.data()};
-      NodeContext playNc = contextFor(clip, (int)outL.size());
-      ProcessContext& play = playNc.ctx;
-      play.is_playing = true;
-      clip.process(nullptr, outs, 0, 2, play);
-
-      expectWithinAbsoluteError(outL[100], 0.5f, 1.0e-6f, "left carries");
-      expectEquals(outR[100], 0.0f, "right silent at hard left");
-
-      // Center pan: both channels at unity (the historical behavior —
-      // existing sessions must not change loudness).
-      clip.pan.store(0.0f);
-      std::fill(outL.begin(), outL.end(), 0.0f);
-      std::fill(outR.begin(), outR.end(), 0.0f);
-      play.master_pos = 0;
-      clip.process(nullptr, outs, 0, 2, play);
-      expectWithinAbsoluteError(outL[100], 0.5f, 1.0e-6f, "center L unity");
-      expectWithinAbsoluteError(outR[100], 0.5f, 1.0e-6f, "center R unity");
-    }
-
-    beginTest("Stereo capture: two inputs land on two content channels");
-    {
       ClipNode clip("StereoClip", sr);
       clip.setInputChannel(0);
       clip.setInputChannelRight(1);
@@ -92,7 +64,7 @@ class StereoPanTests : public juce::UnitTest {
       NodeContext rec = contextFor(clip, (int)left.size());
       clip.startRecording();
       clip.process(ins, nullptr, 2, 0, rec.ctx);
-      clip.stopRecording();
+      test_utils::stopAtBlockTop(clip, rec.ctx);
 
       expectEquals(clip.contentChannels(), 2, "content is stereo");
       const auto& buf = clip.getAudioBuffer();
@@ -102,161 +74,28 @@ class StereoPanTests : public juce::UnitTest {
                                 "channel 1 holds the RIGHT input");
 
       // Stereo render: L content → out 0, R content → out 1.
-      std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
-      float* outs[] = {outL.data(), outR.data()};
-      NodeContext playNc = contextFor(clip, (int)outL.size());
-      ProcessContext& play = playNc.ctx;
-      play.is_playing = true;
-      clip.process(nullptr, outs, 0, 2, play);
-      expectWithinAbsoluteError(outL[100], 0.25f, 1.0e-6f, "L renders L");
-      expectWithinAbsoluteError(outR[100], 0.75f, 1.0e-6f, "R renders R");
+      test_utils::StereoBlock out = test_utils::renderBlock(clip, 4410);
+      expectWithinAbsoluteError(out.left[100], 0.25f, 1.0e-6f, "L renders L");
+      expectWithinAbsoluteError(out.right[100], 0.75f, 1.0e-6f,
+                                "R renders R");
 
       // Balance toward the left attenuates only the right channel.
       clip.pan.store(-0.5f);
-      std::fill(outL.begin(), outL.end(), 0.0f);
-      std::fill(outR.begin(), outR.end(), 0.0f);
-      play.master_pos = 0;
-      clip.process(nullptr, outs, 0, 2, play);
-      expectWithinAbsoluteError(outL[100], 0.25f, 1.0e-6f,
+      out = test_utils::renderBlock(clip, 4410);
+      expectWithinAbsoluteError(out.left[100], 0.25f, 1.0e-6f,
                                 "balance left keeps L");
-      expectWithinAbsoluteError(outR[100], 0.75f * 0.5f, 1.0e-6f,
+      expectWithinAbsoluteError(out.right[100], 0.75f * 0.5f, 1.0e-6f,
                                 "balance left halves R");
 
       // Mono device: stereo content folds to equal halves.
       clip.pan.store(0.0f);
-      std::fill(outL.begin(), outL.end(), 0.0f);
-      float* mono[] = {outL.data()};
-      play.master_pos = 0;
-      clip.process(nullptr, mono, 0, 1, play);
-      expectWithinAbsoluteError(outL[100], 0.5f * (0.25f + 0.75f), 1.0e-6f,
-                                "mono fold is the channel mean");
-    }
-
-    beginTest("Mono clip is unaffected by a stale right-input value of 0");
-    {
-      // A pre-stereo session with inputChannelR defaulted wrongly would
-      // arm stereo takes; the loader defaults to −1 — pin the mono path.
-      ClipNode clip("MonoClip", sr);
-      expect(!clip.isStereoInput());
-      clip.startRecording();
-      std::vector<float> in(1000, 1.0f);
-      float* const ins[] = {in.data()};
-      NodeContext rec = contextFor(clip, (int)in.size());
-      clip.process(ins, nullptr, 1, 0, rec.ctx);
-      expectEquals(clip.contentChannels(), 1, "mono capture stays mono");
-      clip.stopRecording();
-    }
-
-    beginTest("Stack group pan scales the summed children");
-    {
-      StackNode stack("PanStack");
-      auto clip = std::make_unique<ClipNode>("Child", sr);
-      std::vector<float> in(4410, 0.5f);
-      float* const ins[] = {in.data()};
-      NodeContext rec = contextFor(*clip, (int)in.size());
-      clip->startRecording();
-      clip->process(ins, nullptr, 1, 0, rec.ctx);
-      clip->stopRecording();
-      ClipNode* raw = clip.get();
-      stack.addChild(std::move(clip));
-      raw->startPlayback();
-
-      stack.pan.store(1.0f);  // hard right
-      std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
-      float* outs[] = {outL.data(), outR.data()};
-      NodeContext play = contextFor(stack, (int)outL.size());
+      std::vector<float> fold(4410, 0.0f);
+      float* mono[] = {fold.data()};
+      NodeContext play = contextFor(clip, (int)fold.size());
       play.ctx.is_playing = true;
-      stack.process(nullptr, outs, 0, 2, play.ctx);
-      expectEquals(outL[100], 0.0f, "group hard right silences L");
-      expectWithinAbsoluteError(outR[100], 0.5f, 1.0e-6f,
-                                "group hard right keeps R");
-    }
-
-    beginTest("Session round-trip: pan, stereo wiring, stereo audio");
-    {
-      const int64_t Q = 48000;
-      StackNode root("SessionRoot");
-      root.setQuantum(Q, 0);
-
-      auto clip = std::make_unique<ClipNode>("Overheads", (double)Q);
-      clip->duration_samples.store(Q);
-      clip->setInputChannel(2);
-      clip->setInputChannelRight(3);
-      clip->pan.store(-0.25f);
-      // Distinct L/R ramps pin per-channel WAV fidelity.
-      juce::AudioBuffer<float> audio(2, (int)Q);
-      for (int i = 0; i < (int)Q; ++i) {
-        audio.setSample(0, i, std::sin((float)i * 0.001f));
-        audio.setSample(1, i, std::cos((float)i * 0.002f));
-      }
-      clip->loadCommitted(audio, 0);
-      const juce::String uuid = clip->getUuid();
-      root.addChild(std::move(clip));
-
-      auto group = std::make_unique<StackNode>("Kit");
-      group->pan.store(0.5f);
-      const juce::String groupUuid = group->getUuid();
-      root.addChild(std::move(group));
-
-      auto dir = test_utils::freshTempDir("stereo_pan");
-      expect(session_io::save(root, (double)Q, dir), "save");
-      auto loaded = session_io::load(dir, (double)Q);
-      expect(loaded.ok, "load ok");
-
-      auto* c = dynamic_cast<ClipNode*>(loaded.children[0].get());
-      expect(c != nullptr, "clip restored");
-      expectEquals(c->getInputChannel(), 2, "left input restored");
-      expectEquals(c->getInputChannelRight(), 3, "right input restored");
-      expectWithinAbsoluteError(c->pan.load(), -0.25f, 1.0e-6f,
-                                "clip pan restored");
-      expectEquals(c->contentChannels(), 2, "stereo content restored");
-      const auto& rb = c->getAudioBuffer();
-      float maxErr = 0.0f;
-      for (int i = 0; i < 200; ++i) {
-        maxErr = std::max(maxErr,
-                          std::abs(rb.getSample(0, i) - audio.getSample(0, i)));
-        maxErr = std::max(maxErr,
-                          std::abs(rb.getSample(1, i) - audio.getSample(1, i)));
-      }
-      expect(maxErr < 1.0e-6f, "stereo audio lossless (32-bit float wav)");
-
-      auto* g = dynamic_cast<StackNode*>(loaded.children[1].get());
-      expect(g != nullptr && g->getUuid() == groupUuid, "group restored");
-      expectWithinAbsoluteError(g->pan.load(), 0.5f, 1.0e-6f,
-                                "group pan restored");
-
-      // A pre-stereo session (no inputChannelR key) loads as MONO.
-      auto jf = dir.getChildFile("session.json");
-      auto parsed = juce::JSON::parse(jf.loadFileAsString());
-      // The session's nodes are the root record's children (audit D7-3).
-      auto* clipObj = parsed.getProperty("root", {})
-                          .getProperty("nodes", {})[0]
-                          .getDynamicObject();
-      expect(clipObj != nullptr && clipObj->hasProperty("inputChannelR"),
-             "key was present to strip");
-      clipObj->removeProperty("inputChannelR");
-      jf.replaceWithText(juce::JSON::toString(parsed, true));
-      auto legacy = session_io::load(dir, (double)Q);
-      auto* lc = dynamic_cast<ClipNode*>(legacy.children[0].get());
-      expect(lc != nullptr, "legacy clip loads");
-      expectEquals(lc->getInputChannelRight(), -1,
-                   "absent inputChannelR defaults to mono");
-      dir.deleteRecursively();
-    }
-
-    beginTest("lcm saturates instead of overflowing to 0/negative");
-    {
-      const int64_t big = (int64_t{1} << 62) + 12345;
-      const int64_t coprime = 3;
-      const int64_t l = timing::lcm(big, coprime);
-      expect(l > 0, "no wrap to negative");
-      expectEquals(l, std::numeric_limits<int64_t>::max(), "saturated");
-      // The composite fold treats 0 as "empty": saturation must never
-      // return 0 for positive inputs.
-      expect(timing::lcm(big, big - 1) != 0, "never 0 for positive inputs");
-      // Sanity on the normal path.
-      expectEquals(timing::lcm(6, 4), (int64_t)12);
-      expectEquals(timing::lcm(0, 7), (int64_t)7);
+      clip.process(nullptr, mono, 0, 1, play.ctx);
+      expectWithinAbsoluteError(fold[100], 0.5f * (0.25f + 0.75f), 1.0e-6f,
+                                "mono fold is the channel mean");
     }
   }
 };

@@ -1,40 +1,31 @@
 /**
- * Master monitor VU needles (dark tape theme handoff, waveform-vu.js).
+ * The master monitor: VU needles, their peak ticks and clip lamps, and
+ * the master fader.
  *
- * The audio engine is native (JUCE) — there is no Web Audio graph to
- * analyse, so the mockup's attachMasterVU(audioCtx, masterNode, …) shape
- * doesn't apply here. Instead the engine computes smoothed output RMS on
- * the audio thread and publishes it as masterVuL/masterVuR (linear 0..1)
- * on every getGraphState; app.js hands those to updateMasterVU() from
- * the 50 ms poll. The needle's CSS transition (see #master-monitor in
- * session.css) interpolates between polls, so the sweep reads as
- * continuous without a rAF loop.
+ * THE MASTER READING: the engine meters the device buffers after the
+ * root stack's own output stage — post-fader, post-rack, what the
+ * speakers get — through an envelope follower, and publishes it as
+ * masterVuL / masterVuR (linear 0..1) on every state. The needle's CSS
+ * transition (#master-monitor in session.css) carries the sweep between
+ * polls.
  *
- * THE MASTER READING (B5): the engine meters the device buffers after
- * root_node->process, i.e. after the root stack's own output stage —
- * post-fader, post-rack; what the speakers get.
- *
- * Dial mapping: −48 dB … 0 dB across the −26° … +26° sweep. The engine
- * meters an envelope follower (~15 ms attack, ~400 ms release), so the
- * needle dances with transients; the wide absolute scale means quiet
- * laptop takes read mid-dial and a hot mix rides the top (a −20…+3 VU
- * range would pin everything below −20 dB).
- *
- * Peak-hold tick: a thin marker parked at the highest needle angle of
- * the last HOLD_MS, then falling at HOLD_FALL_PER_MS — the "how hot did
- * that hit" answer a moving needle cannot give.
- * Clip lamp: lit (momentary) above −3 dB as the near-clip warning, and
- * LATCHED — solid, until the meter is clicked — once the follower reads
- * full scale (CLIP_LV): the buffers are unclamped floats, so an over
- * pushes the follower to or past 1.0 and only an over can.
+ * The dial spans SWEEP_MIN_DB … SWEEP_MAX_DB: an absolute scale wide
+ * enough that a quiet take reads mid-dial and a hot mix rides the top.
+ * The peak tick parks at the highest needle angle of the last HOLD_MS,
+ * then falls — "how hot did that hit". The clip lamp is lit above
+ * PEAK_LV and LATCHED, until the face is clicked, once the follower
+ * reads CLIP_LV: the buffers are unclamped floats, so only an over
+ * pushes it there.
  */
+
+import { setTitle } from './session_view/sv_util.js';
 
 const SWEEP_MIN_DB = -48;
 const SWEEP_MAX_DB = 0;
-const SWEEP_DEG = 26;
-const PEAK_LV = 0.9375;  // −3 dB on the −48..0 sweep
-const CLIP_LV = 1.0;     // linear full scale — the follower reads it only on an over
-const HOLD_MS = 1500;    // the peak tick parks this long before falling
+const SWEEP_DEG = 26;    // the needle swings ± this
+const PEAK_LV = 0.9375;  // −3 dB on the sweep, as a dial fraction
+const CLIP_LV = 1.0;     // linear full scale
+const HOLD_MS = 1500;
 const HOLD_FALL_PER_MS = 0.4 / 1000;  // dial fraction per ms (~2.5 s full sweep)
 
 /** Map a linear RMS level (0..1) to dial fraction (0..1). */
@@ -51,12 +42,11 @@ export function freshMeterMemory() {
 }
 
 /**
- * One poll of peak-hold + clip-latch bookkeeping. PURE: returns the next
- * memory for `level` (linear 0..1) at wall clock `now` (ms) — the DOM
- * drive below applies it, and js/tests pin it without a document.
- * A held peak is refreshed by any level reaching it; once HOLD_MS has
- * passed it falls linearly toward the live level, never below it. The
- * latch only ever sets here — clearing is the click (clearClip).
+ * One poll of peak-hold and clip-latch bookkeeping, pure: the next
+ * memory for `level` (linear 0..1) at wall clock `now` (ms). A held
+ * peak is refreshed by any level reaching it; once HOLD_MS has passed
+ * it falls linearly toward the live level, never below it. The latch
+ * only ever sets here — clearing is the click (clearClip).
  */
 export function meterStep(memory, level, now) {
     const lv = levelToDial(level);
@@ -87,19 +77,14 @@ function memoryFor(id) {
 }
 
 /** Release a meter's clip latch (the click on the meter face). */
-export function clearClip(id) {
+function clearClip(id) {
     memoryFor(id).clipped = false;
 }
 
 /**
- * Point one meter's needle at `level`, park the hold tick and set the
- * clip lamp. Rotations are inline transforms; the CSS transition on
- * .needle supplies the sweep between polls (the tick jumps — a held
- * peak is a fact, not a motion).
- *
- * @param {Element|null} el the meter root (.needle, .hold, .peak)
- * @param {number} level linear RMS 0..1 from the engine
- * @param {number} now wall clock, ms
+ * Point one meter's needle at `level` (linear 0..1), park the hold
+ * tick and set the clip lamp. The needle sweeps by its CSS transition;
+ * the tick jumps — a held peak is a fact, not a motion.
  */
 function drive(el, level, now) {
     if (!el) return;
@@ -124,10 +109,7 @@ function drive(el, level, now) {
     el.classList.toggle('clipped', memory.clipped);
 }
 
-/**
- * Patch both master meters from polled state. Idempotent; cheap enough
- * to call every poll tick. `now` defaults to the wall clock.
- */
+/** Patch both master meters with the polled levels. */
 export function updateMasterVU(levelL, levelR, now = Date.now()) {
     drive(document.getElementById('vu-l'), levelL, now);
     drive(document.getElementById('vu-r'), levelR, now);
@@ -141,13 +123,10 @@ export function initMasterMeters() {
     }
 }
 
-/* ---------- master fader (root-node gain) ---------- */
-// The vertical fader beside the meters: the grip tracks the pointer 1:1
-// and streams setNodeGain on the island ROOT (the whole mix's output
-// stage — stacks apply gain·pan at their output, so the root's fader IS
-// the master fader). Same streaming/non-undoable contract as the rail
-// dials; `hot` keeps the 50 ms state tick from fighting the gesture
-// (the fx-slider lesson).
+/* ---------- master fader (the root's gain) ---------- */
+// The grip tracks the pointer 1:1 and streams the gain as it moves
+// (a knob: not undoable). While a drag holds it (`faderHot`), the
+// poll's reflection stands off, so the two never fight over the grip.
 
 let faderHot = false;
 let faderValue = 1;
@@ -157,13 +136,8 @@ function faderTravel(el, grip) {
     return Math.max(1, el.clientHeight - grip.offsetHeight - 2);
 }
 
-/**
- * Position the fader grip for gain `v` (0..1). Pure DOM write — no
- * backend call; both the gesture and the poll reflection go through
- * this so the grip can never disagree with the value.
- *
- * @param {number} v master gain 0..1 (0 = bottom of travel, 1 = top)
- */
+/** Place the grip for gain `v` (0 = bottom of travel, 1 = top). The
+ * gesture and the poll's reflection both draw through here. */
 function paintFader(v) {
     const el = document.getElementById('master-fader');
     if (!el) return;
@@ -178,8 +152,8 @@ export function initMasterFader(onSetGain) {
     el.addEventListener('pointerdown', e => {
         e.preventDefault();
         // Capture keeps the drag alive off-element; a webview that
-        // refuses (or a synthetic pointer) must not kill the gesture
-        // wiring below (session_view convention).
+        // refuses it (or a synthetic pointer) must not stop the wiring
+        // below.
         try { el.setPointerCapture(e.pointerId); } catch (_) {}
         faderHot = true;
         const grip = el.querySelector('.grip');
@@ -187,7 +161,6 @@ export function initMasterFader(onSetGain) {
         const startY = e.clientY;
         const startV = faderValue;
         const move = ev => {
-            // 1:1 — the grip follows the pointer, real-fader feel
             const v = Math.max(0, Math.min(1,
                 startV + (startY - ev.clientY) / travel));
             faderValue = v;
@@ -204,9 +177,8 @@ export function initMasterFader(onSetGain) {
         el.addEventListener('pointermove', move);
         el.addEventListener('pointerup', up);
         el.addEventListener('pointercancel', up);
-        // If capture is torn away mid-gesture (element re-render, OS
-        // gesture steal), release the hot flag so the 50 ms poll can
-        // reclaim the grip — otherwise the fader freezes forever.
+        // Capture torn away mid-drag (a re-render, an OS gesture) must
+        // release the hold too, or the poll never reclaims the grip.
         el.addEventListener('lostpointercapture', up);
     });
     el.addEventListener('dblclick', () => {
@@ -224,4 +196,42 @@ export function updateMasterFader(gain) {
     if (v === faderValue) return;
     faderValue = v;
     paintFader(v);
+}
+
+/* ---------- the monitor as a whole ---------- */
+
+/** A linear level as a dB figure for the hover readout. */
+const dbText = v => {
+    const n = Number(v) || 0;
+    return n <= 0 ? '−∞' : (20 * Math.log10(n)).toFixed(1);
+};
+
+/** Whether `state` carries no master levels: an engine that publishes
+ * none would otherwise show dead needles that look broken. */
+export const masterLevelsMissing = state =>
+    typeof state.masterVuL === 'undefined';
+
+/** The monitor's hover title: the live dB readout (which doubles as the
+ * diagnostic surface for the meter path), or why the meters are dim. */
+export function masterMonitorTitle(state) {
+    if (masterLevelsMissing(state)) {
+        return 'No master levels in engine state — rebuild the app (the ' +
+            'C++ engine predates the master VU)';
+    }
+    return 'Master output (post-fader) — L ' + dbText(state.masterVuL) +
+        ' dB · R ' + dbText(state.masterVuR) + ' dB (raw L=' +
+        state.masterVuL + ') · click a face to release its clip lamp';
+}
+
+/** Poll hook: the whole master monitor from polled `state` — the dim
+ * `.stale` look and the title, the needles, and the fader at
+ * `rootGain`. The title is a guarded write: the monitor is clickable. */
+export function updateMasterMonitor(state, rootGain) {
+    const monitor = document.getElementById('master-monitor');
+    if (monitor) {
+        monitor.classList.toggle('stale', masterLevelsMissing(state));
+        setTitle(monitor, masterMonitorTitle(state));
+    }
+    updateMasterVU(Number(state.masterVuL) || 0, Number(state.masterVuR) || 0);
+    updateMasterFader(rootGain);
 }

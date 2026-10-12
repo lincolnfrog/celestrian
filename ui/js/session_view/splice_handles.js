@@ -1,103 +1,53 @@
 /**
  * THE SPLICE AND THE TOP — a heard lane's loop chrome (loop_selection.md
- * §9, P2.3–P2.6; built 2026-09-24, prototype v10).
+ * §9).
  *
  * Two kinds of handle for the two things a loop edit can do:
- *   - a SPLICE handle on every heard repeat of every splice: the WRAP,
- *     where the recording jumps from the loop's end back to its start,
- *     and each inner CUT. Grabbed by the lane's LOWER half, its tab on
- *     the bottom edge ("splice", "‖ 1Q"). Drag = SWAP (map_edit
- *     slideSeam): the splice slides with the period held, and by the
- *     anchoring law only the strip it sweeps changes what it plays — so
- *     the drag is exact direct manipulation in heard time. The tiles
- *     follow the pointer as a LOCAL preview (pending_edits.js +
- *     requestRender), with no reveal and no rescale; the swept strip is
- *     tinted by the SIGNED drag distance (never "the short way round").
- *     Whole Q relative, ⌥ free. ⇧-drag = the LENGTH at that splice
- *     (map_edit lengthAtSeam) through the same-scale reveal (map_bands
- *     runRevealDrag), anchored so the grabbed bound sits under the
- *     pointer. A cut's splice heals on double-click or right-click.
- *   - the ↺ TOP on every heard repeat of the loop's one (lane.topHeardQ),
- *     grabbed by the UPPER half, its tab on the top edge ("↺ top"). Drag =
- *     SHIFT: the take's origin moves with the hand (setTiming), so the
- *     audio, the ↺ and the splices move together — a re-time, the ONE
- *     gesture that changes WHEN a take plays. Whole Q, ⌥ fine.
- * The ↺ and a splice are independent even where they coincide (a fresh
- * take's top IS its region start): each grabs by its own half.
+ *   - a SPLICE on every heard repeat of every splice — the WRAP (where
+ *     the loop's end jumps back to its start) and each inner CUT —
+ *     grabbed by the lane's LOWER half. Drag = SWAP (map_edit slideSeam):
+ *     the splice slides with the period held, in heard time, the tiles
+ *     following as a LOCAL preview (pending_edits.js). ⇧-drag = the
+ *     LENGTH there, through the same-scale reveal (map_bands.js).
+ *   - the ↺ TOP on every heard repeat of the loop's one, grabbed by the
+ *     UPPER half. Drag = SHIFT: the take's origin moves with the hand
+ *     (setTiming) — a re-time, the one gesture that changes WHEN a take
+ *     plays.
+ * The two are independent even where they coincide: each grabs by its
+ * own half.
  *
- * A PLAIN LOOP (a clip with no map: the whole take loops) wears the ↺
- * alone — nothing to swap, so no splice, but its timing is the ↺'s to
- * shift ("my drum loop is 40 ms late"). Its ↺ grabs by the TAB only:
- * the line sits on the lane's latent brackets (drag an edge in to make
- * a region) and must never steal their press — the panel's rule. The
- * tab is the take PASS's (inTakePass): the take tile sits where it was
- * performed, and a top moved into the take can sound past the frame's
- * end. A bypassed map wears none (its raw-framed brackets own the lane;
- * the panel's "Timing as played" still reaches its timing).
+ * A PLAIN LOOP (no map: the whole take loops) wears the ↺ alone, grabbed
+ * by its TAB only — its line sits on the lane's latent brackets and must
+ * never steal their press. A bypassed map wears none.
  *
- * GHOSTS (session_view.md §3): when a loop is shorter than the frame one
- * tile is the take and the rest are faded prints. Only the handles in
- * the take tile wear their tabs; a ghost repeat's handle is a faint line
- * whose tab shows on hover — and it stays grabbable (a tab on every
- * repeat buried a 3Q loop in a 12Q frame under twelve labels).
+ * GHOSTS: only the handles in the take tile wear their tabs; a ghost
+ * repeat's handle is a faint line whose tab shows on hover, and it stays
+ * grabbable.
  *
  * OUTSIDE THE KEYED OVERLAY: the handles live in their own layer
- * (.lr-layer), positioned on EVERY patch. The overlay rebuilds on key
- * changes and freezes through a drag, and these must move with a drag's
- * preview (the other repeats of the grabbed splice, the ↺ riding a
- * shift) and with the frame when it moves onto a new seat. A live
- * edit's chrome is CREATED mid-gesture (a repeat that enters the
- * frame); nothing is REMOVED until the gesture ends — the grabbed
- * handle holds the pointer capture (§7).
- *
- * NO GLIDE OF ITS OWN (removed 2026-10-01): an edit that RESETS the ↺ —
- * a cut, heal, nudge, undo or redo dropping its raw sample — lands it
- * on its new place at once. Where that moves the frame's seat (the
- * loop that places the frame), the whole frame then moves onto it
- * (reseat_tween.js), the ↺ with it; on any other loop the ↺ rests at
- * the frame's top and never moves on screen.
- *
- * BOTH EDGES (2026-10-01): a splice resting on the frame's left edge
- * shows at the right edge too (.lr-end, spliceSpots) — the loop's END,
- * grabbed where the loop ends. ⇧ moves the end of the material BEFORE a
- * splice, so the right-edge handle shortens by dragging INWARD, with
- * the material it gives up in view; the left-edge one lengthens the
- * same way. With the left one alone (the placing loop's wrap sits there
- * always) shortening meant dragging off the lane, where the reveal's
- * edge pan ran the length away.
- *
- * THE RECORDING GATE: under it every handle draws INERT (.lr-inert, the
- * gate's tooltip, no gesture) — where the loop is stays visible.
- *
- * THE RECONCILE (owner 2026-09-24, P2): every swap STORES the top it
- * leaves — the ↺ where it was while the new region still plays it, else
- * the new region start — so a reset stays put when the region slides
- * back, and a fresh loop's ↺ stays where it showed on its first slide.
- * The engine publishes the EFFECTIVE top (`loopTop`), which is exactly
- * what it reconciles from, so a swap preview predicts the landing from
- * it alone (predictTop): no guessing what the engine stores.
+ * (.lr-layer), placed on EVERY patch — they move with a drag's preview
+ * and with the frame. Mid-gesture, chrome may be CREATED (a repeat
+ * entering the frame) and nothing is REMOVED: the grabbed handle holds
+ * the pointer capture (gesture.js, the freeze law). Under the recording
+ * gate every handle draws INERT (.lr-inert).
  */
 
 import { el, pct, setStyle, setText, setTitle } from './sv_util.js';
 import { isGestureLive, isOverlayFrozen } from './gesture.js';
 import { selectOnly } from './selection.js';
-import { bandState, coveredSegs, commitBandSegs, commitTiming, runRawDrag,
-         cancelBandGesture, lengthMoveFn, timingText, fmtSignedQ, WHOLE_Q_TOL,
+import { bandState, coveredSegs, commitBandSegs, runMapDrag, cancelBandGesture,
+         timingSender, timingText, fmtSignedQ, flatSegs, segsSamples, badgeLeft,
          LOCKED_TITLE } from './map_core.js';
+import { lengthMoveFn, cutLenText } from './map_moves.js';
 import { runRevealDrag } from './map_bands.js';
 import { slideSeam, slideSeamWhole, healCut } from '../map_edit.js';
 import { posMod, foldShift } from '../math_utils.js';
 import { setPendingEdit, clearPendingEdit, pendingEditOf } from './pending_edits.js';
 import { requestRender } from './render_request.js';
+import { addDim } from './dims.js';
+import { spliceSpots, topSpots, inTakeTile, inTakePass, pairHandles,
+         TILE_EPS, MAX_SPOTS } from './splice_spots.js';
 
-/* A splice within this of its period's end is ON the left edge (the
- * next repeat's), not a sliver past the right one. */
-const EDGE_EPS = 1e-7;
-/* A handle within this of a tile's bounds belongs to that tile. */
-const TILE_EPS = 1e-6;
-/* The degenerate-frame guard: never more handles than this per lane
- * (a tiny period in a huge frame draws no tiles either — unrollReps). */
-const MAX_SPOTS = 256;
 /* Tabs within this many px of a lane edge anchor inward (the lane body
  * clips its overflow). */
 const TAB_EDGE_LEFT_PX = 14;
@@ -111,8 +61,6 @@ const CHIP_GAP_PX = 4;
 const CHIP_RIGHT_PX = 4;
 /* The snap ghost shows only when the landing is this far from the hand. */
 const SNAP_GHOST_MIN_PX = 1.5;
-/* The drag badge keeps this far inside the lane's edges (px). */
-const BADGE_INSET_PX = 4;
 
 const TITLES = {
     wrap: 'Splice: where the recording jumps from the loop\'s end back ' +
@@ -127,12 +75,12 @@ const TITLES = {
         'not change.',
 };
 
-/* ---------- the pure geometry (exported for the tests) ---------- */
+/* ---------- which lanes wear what (exported for the tests) ---------- */
 
-/** Does this lane wear the splice chrome? A committed heard lane —
- * clip or group — with a map to edit (or one the recording gate holds),
- * that is not a one-shot (its offset IS its placement: it keeps its
- * edge grips, map_bands) and not the Q-definer (its trim SETS Q). */
+/** Does this lane wear the splice chrome? A committed heard lane — clip
+ * or group — with a map to edit (or one the recording gate holds), that
+ * is not a one-shot (its offset IS its placement: it keeps its edge
+ * grips, map_bands) and not the Q-definer (its trim SETS Q). */
 export function wantsSpliceChrome(lane) {
     return !!(lane.windowChipQ && !lane.windowEditing && !lane.oneShot &&
         !lane.isQDefiner && lane.bandHeard &&
@@ -149,9 +97,9 @@ export function wantsTopHandle(lane) {
 
 /** A PLAIN LOOP: a committed clip or group with no map of its own, its
  * whole take tiled where it sounds — the kept set is the take (a
- * group's: its inner cycle).
- * Not a bypassed map (lane.window: the raw-framed bracket overlay), a
- * live take, nor comp mode's raw inspector. */
+ * group's: its inner cycle). Not a bypassed map (lane.window: the
+ * raw-framed bracket overlay), a live take, nor comp mode's raw
+ * inspector. */
 export function isPlainLoop(lane) {
     return (lane.kind === 'clip' || lane.kind === 'group') && !lane.window &&
         !(lane.windowChipQ > 0) &&
@@ -167,96 +115,11 @@ export function wantsLaneTop(lane) {
 }
 
 /**
- * Every heard splice across the frame: the WRAP (j = 0, at the region
- * start's heard position `anchorQ`) and one per inner cut (j ≥ 1, the
- * kept length before it later), each on every repeat of `periodQ`
- * inside [0, cycleQ) — and, for a splice that sits ON the frame's left
- * edge, at the frame's RIGHT edge too (`end: true`, x = cycleQ).
- *
- * BOTH EDGES (2026-10-01): a splice on the left edge is the end of the
- * last repeat as much as the start of the first, and that end is the
- * frame's right edge. Since 2026-09-29 the loop that places the frame
- * has its ↺ — so, untouched, its wrap — on the left edge ALWAYS, and
- * drawn there alone the loop had no handle at its end: ⇧ on a splice
- * moves the end of the material BEFORE it, so shortening the loop meant
- * dragging the left-edge handle further left, off the lane, where the
- * reveal's edge pan ran the length away (a 1.2Q drag took 3Q). It is
- * the owner's 2026-08-18 report again — "the right handle is gone".
- * The right-edge handle is that right handle: the same splice, grabbed
- * where the loop ends; dragged inward it shortens (⇧) or swaps, with
- * the material it moves over in view. The left-edge one lengthens the
- * same way.
- *
- * @param {Array<[number, number]>} segs  the covered set, raw Q
- * @param {number} anchorQ  where the wrap first sounds (lane.takeStartQ)
- * @returns {Array<{kind: 'wrap'|'cut', j: number, k: number, x: number,
- *                  cut: ?[number, number], end?: boolean}>}
- */
-export function spliceSpots(segs, anchorQ, periodQ, cycleQ) {
-    const out = [];
-    if (!(periodQ > 0) || !(cycleQ > 0) || !segs || !segs.length) return out;
-    let h = 0;
-    segs.forEach(([s, e], j) => {
-        const spot = { kind: j === 0 ? 'wrap' : 'cut', j,
-                       cut: j ? [segs[j - 1][1], s] : null };
-        let x = posMod(anchorQ + h, periodQ);
-        if (x > periodQ - EDGE_EPS) x -= periodQ;  // ON the left edge
-        let k = 0;
-        for (; x < cycleQ - EDGE_EPS && out.length < MAX_SPOTS; k++) {
-            out.push({ ...spot, k, x });
-            x += periodQ;
-        }
-        // The next repeat lands ON the right edge: the loop's end.
-        if (Math.abs(x - cycleQ) <= EDGE_EPS && out.length < MAX_SPOTS) {
-            out.push({ ...spot, k, x: cycleQ, end: true });
-        }
-        h += e - s;
-    });
-    return out;
-}
-
-/** The ↺ on every repeat: first at `topHeardQ` (lane.topHeardQ, in
- * [0, periodQ)), then every period inside [0, cycleQ). */
-export function topSpots(topHeardQ, periodQ, cycleQ) {
-    const out = [];
-    if (!(periodQ > 0) || !(cycleQ > 0) || !Number.isFinite(topHeardQ)) return out;
-    let x = posMod(topHeardQ, periodQ);
-    if (x > periodQ - EDGE_EPS) x -= periodQ;
-    for (let k = 0; x < cycleQ - EDGE_EPS && out.length < MAX_SPOTS; k++) {
-        out.push({ kind: 'top', j: 0, k, x });
-        x += periodQ;
-    }
-    return out;
-}
-
-/** Is lane position `x` inside the take tile (a non-ghost rep)? With no
- * tiles to judge by, every handle is the take's. */
-export function inTakeTile(reps, x) {
-    const tiles = (reps || []).filter(r => !r.ghost && !r.bar);
-    if (!tiles.length) return true;
-    return tiles.some(r => x >= r.startQ - TILE_EPS && x < r.endQ - TILE_EPS);
-}
-
-/** Is lane position `x` in the take's own PASS — its tile, or the part
- * of it the frame's end clips, which sounds at the frame's start? (A
- * PLAIN loop's ↺.) A heard lane's take tile starts the frame grid, so
- * its first ↺ is always inside; a plain loop's sits where the take was
- * performed, and a top moved into the take (the panel's start marker)
- * can sound past the frame's end — its one ↺ would be a tabless ghost.
- * Exactly one ↺ lies in the pass. */
-export function inTakePass(reps, x, periodQ, cycleQ) {
-    if (inTakeTile(reps, x)) return true;
-    const take = (reps || []).find(r => !r.ghost && !r.bar);
-    const over = take ? take.startQ + periodQ - cycleQ : 0;
-    return over > TILE_EPS && x < over - TILE_EPS;
-}
-
-/**
  * The top the engine will store — and publish — once a swap to `segsQ`
  * lands (the reconcile, time_map.js reconcileTop): `top`, the EFFECTIVE
- * top the swap starts from (the published `loopTop`), while the new kept
- * set still plays it, else the new region start. The swap preview shows
- * it, so the ↺ never jumps when the commit answers.
+ * top the swap starts from, while the new kept set still plays it, else
+ * the new region start. The swap preview shows it, so the ↺ never jumps
+ * when the commit answers.
  *
  * @param {Array<[number, number]>} segsQ  the new covered set, raw Q
  * @param {number} top  the effective top before the swap, samples
@@ -265,16 +128,15 @@ export function inTakePass(reps, x, periodQ, cycleQ) {
  */
 export function predictTop(segsQ, top, quantum) {
     if (!segsQ || !segsQ.length) return undefined;
-    const segs = segsQ.map(([a, b]) => [Math.round(a * quantum), Math.round(b * quantum)]);
+    const segs = segsSamples(segsQ, quantum);
     if (Number.isFinite(top) && segs.some(([a, b]) => top >= a && top < b)) return top;
     return segs[0][0];
 }
 
 /** A cut splice's tab: its length, whole Qs bare, a fraction flagged. */
 function cutTabText(cut) {
-    const len = cut[1] - cut[0];
-    const whole = Math.abs(len - Math.round(len)) < WHOLE_Q_TOL;
-    return '‖ ' + (whole ? Math.round(len) : len.toFixed(2)) + 'Q' + (whole ? '' : ' ⚠');
+    const { text, whole } = cutLenText(cut[1] - cut[0]);
+    return '‖ ' + text + 'Q' + (whole ? '' : ' ⚠');
 }
 
 /* ---------- the layer ---------- */
@@ -304,11 +166,10 @@ function hideAll(body) {
 }
 
 /**
- * Per patch (lane_body, BEFORE its frozen gates — these move with a
- * drag's preview): place the lane's splice handles and ↺ — a plain
- * loop's ↺ alone — or clear them off a lane that no longer wears them
- * (never mid-gesture: the grabbed handle holds the capture — hidden
- * until the gesture ends instead).
+ * Per patch (lane_body, before the overlay's frozen gate): place the
+ * lane's splice handles and ↺ — a plain loop's ↺ alone — or clear them
+ * off a lane that no longer wears them (mid-gesture: hidden, not
+ * removed).
  *
  * @param {Element} body     the lane body
  * @param {Element} overlay  its keyed overlay (the runners' preview key)
@@ -330,43 +191,19 @@ export function patchSpliceHandles(body, overlay, lane, vm, cycleQ) {
         return;
     }
     layerOf(body);
-    const c = {
+    body._lrCtx = {
         lane, vm, overlay, cycleQ,
-        // A plain loop's band state: its kept set is the whole take, so
-        // its period (the ↺'s repeat) is the take's.
+        // A plain loop's kept set is its whole take, so its period (the
+        // ↺'s repeat) is the take's.
         st: bandState(lane, vm, cycleQ),
         W: body.clientWidth,
         splices, withTop,
-        // A plain loop's ↺ grabs by its tab only (its line sits on the
-        // latent brackets), and wears it in the take's PASS (inTakePass).
+        // A plain loop's ↺ grabs by its tab only, and wears it in the
+        // take's PASS (inTakePass).
         plain: isPlainLoop(lane),
     };
-    body._lrCtx = c;
     layoutHandles(body, keep);
     layoutDrag(body);
-}
-
-/**
- * Pair a pool's elements with its spots. The GRABBED handle keeps its
- * element (it holds the pointer capture) and takes the spot nearest the
- * hand — so it stands for that repeat and no repeat shows twice; the
- * rest pair in order. Returns the pairs (a null element = make one) and
- * the elements left over.
- */
-export function pairHandles(els, spots, dragEl = null, dragX = 0) {
-    const pairs = [];
-    let free = els;
-    const rest = spots.slice();
-    if (dragEl && els.includes(dragEl)) {
-        free = els.filter(h => h !== dragEl);
-        let bi = -1;
-        rest.forEach((sp, i) => {
-            if (bi < 0 || Math.abs(sp.x - dragX) < Math.abs(rest[bi].x - dragX)) bi = i;
-        });
-        pairs.push([dragEl, bi >= 0 ? rest.splice(bi, 1)[0] : null]);
-    }
-    rest.forEach((sp, i) => pairs.push([free[i] || null, sp]));
-    return { pairs, surplus: free.slice(rest.length) };
 }
 
 /** Place every handle from the lane's current (preview-applied) picture. */
@@ -406,7 +243,7 @@ function layoutHandles(body, keep) {
             // The grabbed handle rides the hand (its landing is the
             // snap ghost), even where its repeat has left the frame.
             let x;
-            if (grabbed && (drag.kind !== 'length' || !sp)) x = drag.followX;
+            if (grabbed) x = drag.followX;
             else if (sp) x = sp.x;
             else continue;
             placeHandle(h, x, c, {
@@ -519,7 +356,7 @@ function layoutDrag(body) {
     if (!layer) return;
     const d = body._lrDrag;
     const c = body._lrCtx;
-    const on = !!(d && d.engaged && d.kind !== 'length' && c);
+    const on = !!(d && d.engaged && c);
     const tints = child(layer, 'lr-tints', on && !!d.tint);
     const snap = child(layer, 'lr-snap', on && d.ghost);
     const badge = child(layer, 'lr-badge', on);
@@ -530,28 +367,20 @@ function layoutDrag(body) {
     // a splice's (bottom edge), below the ↺'s (top edge).
     badge.classList.toggle('lr-badge-splice', d.kind !== 'top');
     badge.classList.toggle('lr-badge-top', d.kind === 'top');
-    // Centred on the hand, kept inside the lane (it clips its overflow;
-    // a re-time's badge is long). One layout read per move of a drag.
-    const bx = W * d.followX / cycleQ;
-    const bw = badge.offsetWidth;
-    setStyle(badge, 'left',
-        Math.max(BADGE_INSET_PX, Math.min(W - bw - BADGE_INSET_PX, bx - bw / 2)) + 'px');
+    // Centred on the hand, inside the lane. One layout read per move.
+    setStyle(badge, 'left', badgeLeft(W * d.followX / cycleQ, badge.offsetWidth, W));
     if (snap) setStyle(snap, 'left', pct(d.landX, cycleQ));
     if (tints) {
         // The swept strip on every repeat, by the SIGNED distance: the
-        // material the swap changes, in the direction dragged.
+        // material the swap changes, in the direction dragged (never
+        // "the short way round").
         tints.textContent = '';
         const { base, S } = d.tint;
         const dq = Math.max(-S, Math.min(S, d.tint.d));
         if (Math.abs(dq) > 1e-6 && S > 0 && cycleQ / S <= MAX_SPOTS) {
             for (let x = base - S; x < cycleQ + S; x += S) {
-                const a = Math.max(0, Math.min(x, x + dq));
-                const b = Math.min(cycleQ, Math.max(x, x + dq));
-                if (b - a <= 1e-9) continue;
-                const t = el('div', 'lr-tint');
-                t.style.left = pct(a, cycleQ);
-                t.style.width = pct(b - a, cycleQ);
-                tints.appendChild(t);
+                addDim(tints, cycleQ, Math.min(x, x + dq), Math.max(x, x + dq),
+                    'lr-tint');
             }
         }
     }
@@ -578,20 +407,13 @@ function endDrag(body, d) {
 
 /* ---------- the preview ---------- */
 
-/** Samples of a covered set, flat (the engine's publication). */
-const flatOf = (segsQ, quantum) => {
-    const out = [];
-    segsQ.forEach(([a, b]) => out.push(Math.round(a * quantum), Math.round(b * quantum)));
-    return out;
-};
-
 /**
  * A gesture's handle on the lane's pending preview (the lane's drags
  * and the panel's start marker). A preview still in flight from an
  * EARLIER gesture (its commit not yet polled back) is built on, never
  * cleared (pending_edits pendingEditOf): the new preview carries it, a
  * shift adding to its shift. Nothing in flight: the first show starts a
- * fresh preview (a fresh shift base), as a clear at the start would.
+ * fresh preview (a fresh shift base).
  */
 export function previewer(laneId) {
     const prev = pendingEditOf(laneId);
@@ -620,16 +442,12 @@ export function previewer(laneId) {
 }
 
 /** The lane's top as the engine will publish it after a swap (clip or
- * group, fractal): the
- * reconcile from the effective top the gesture starts with — the one
- * every live commit of it reconciles from too (AudioEngine::record).
- * That is the engine's OWN top (lane.storedTopQ), never the ↺ as shown:
- * on a loop that slots into the frame the ↺ shows where it starts
- * playing (view_model topFields), which the engine neither stores nor
- * publishes — predicted from it, the preview's top never matched the
- * engine's answer, so the preview outlived its commit by the whole
- * hold cap and an undo, a nudge or a panel edit made meanwhile did not
- * show. Exported for the tests. */
+ * group): the reconcile (predictTop) from the top the gesture starts
+ * with — the engine's OWN effective top (lane.storedTopQ), never the ↺
+ * as shown: on a loop that slots into the frame the ↺ shows where it
+ * starts playing, which the engine neither stores nor publishes, and a
+ * preview predicted from it would never match the engine's answer.
+ * Exported for the tests. */
 export function topAfterSwap(lane, st) {
     const q = st.quantum;
     const T0 = Math.round((lane.storedTopQ ?? lane.topQ ?? 0) * q);
@@ -666,10 +484,35 @@ function onHeal(ev) {
     const c = h._body._lrCtx;
     const sp = h._spot;
     if (!c || !sp || h._kind !== 'cut' || !sp.cut || !c.st.editable) return;
-    // Both clicks have landed: the claim is safe now (and drops the one
-    // the second click's gesture left waiting).
     selectOnly(c.lane.id);
     commitBandSegs(c.st, healCut(c.st.segs, sp.cut[0], sp.cut[1], c.st.totalQ));
+}
+
+/**
+ * One HEARD drag of handle `h` (a swap or a shift): the drag chrome's
+ * state on the body, the shared runner (map_core runMapDrag) with the
+ * caller's own `preview(res, d)` / `commit` / `restore`, and the
+ * chrome's end on every path — a press that never engaged too (each
+ * click of a double-click).
+ */
+function runHandleDrag(ev, h, body, kind, { posAt, onMove, preview, commit, restore }) {
+    const c = body._lrCtx;
+    const d = beginDrag(body, h, kind, h._spot.x);
+    const run = runMapDrag(ev, c.overlay, c.st, {
+        posAt,
+        onMove,
+        parts: {
+            preview: res => { preview(res, d); layoutDrag(body); },
+            commit,
+            restore,
+            held: () => { endDrag(body, d); requestRender(); },
+            teardown: () => {},
+        },
+        onTeardown: () => endDrag(body, d),
+        freeze: [body],
+        onEngage: () => { d.engaged = true; h.classList.add('lr-active'); },
+    });
+    if (!run.live) endDrag(body, d);
 }
 
 /**
@@ -680,9 +523,8 @@ function onHeal(ev) {
  * as the engine will (topAfterSwap).
  */
 function startSpliceDrag(ev, h, body) {
-    const c = body._lrCtx;
     const sp = h._spot;
-    const { lane, st, cycleQ } = c;
+    const { lane, st, cycleQ } = body._lrCtx;
     const segs0 = coveredSegs(st).map(s => s.slice());
     const S = st.periodQ;
     const pxPerQ = body.getBoundingClientRect().width / cycleQ;
@@ -692,12 +534,9 @@ function startSpliceDrag(ev, h, body) {
     const tintBase = posMod(st.anchorQ + hQ, S);
     const topOf = topAfterSwap(lane, st);
     const pv = previewer(lane.id);
-    const show = segsQ => pv.show({ segments: flatOf(segsQ, st.quantum), top: topOf(segsQ) });
-    const d = beginDrag(body, h, 'splice', sp.x);
-    const run = runRawDrag(ev, c.overlay, st, {
-        claim: lane.id,  // a handle's gesture claims the track, at its end
-        rawQAt: x => sp.x + (x - ev.clientX) / pxPerQ,
-        clamp: false,
+    const show = segsQ => pv.show({ segments: flatSegs(segsQ, st.quantum), top: topOf(segsQ) });
+    runHandleDrag(ev, h, body, 'splice', {
+        posAt: x => sp.x + (x - ev.clientX) / pxPerQ,
         onMove: (pq, alt) => {
             if (pq === null) return { segs: segs0, deltaQ: 0, pq: sp.x, alt };
             const free = pq - sp.x;
@@ -707,7 +546,7 @@ function startSpliceDrag(ev, h, body) {
                           : slideSeamWhole(segs0, sp.j, free, st.totalQ);
             return { segs: r.segs, deltaQ: r.deltaQ, pq, alt };
         },
-        preview: res => {
+        preview: (res, d) => {
             d.followX = res.pq;
             d.landX = sp.x + res.deltaQ;
             d.ghost = Math.abs(res.pq - d.landX) * pxPerQ > SNAP_GHOST_MIN_PX;
@@ -715,23 +554,15 @@ function startSpliceDrag(ev, h, body) {
                 fmtSignedQ(res.deltaQ) + 'Q' + (res.alt ? ' · free' : '');
             d.tint = { base: tintBase, d: res.deltaQ, S };
             show(res.segs);
-            layoutDrag(body);
         },
+        commit: res => commitBandSegs(st, res.segs, true),
         restore: last => {
             const p = last ? cancelBandGesture(st) : undefined;
             if (p) show(segs0);
             else pv.restore(null);
             return p;
         },
-        held: () => { endDrag(body, d); requestRender(); },
-        // Every end path runs onTeardown — a press that never engaged
-        // too (each click of a double-click): the drag state goes.
-        onTeardown: () => endDrag(body, d),
-        freeze: [body],
-        engage: true,
-        onEngage: () => { d.engaged = true; h.classList.add('lr-active'); },
     });
-    if (!run.live) endDrag(body, d);
 }
 
 /**
@@ -744,42 +575,37 @@ function startSpliceDrag(ev, h, body) {
 function startLengthDrag(ev, h, body) {
     const c = body._lrCtx;
     const sp = h._spot;
-    const { lane, st } = c;
+    const st = c.st;
     const segs0 = coveredSegs(st).map(s => s.slice());
     const j = sp.kind === 'cut' ? sp.j : 0;
     const gi = j > 0 ? j - 1 : segs0.length - 1;
-    runRevealDrag(ev, c.overlay, lane, st, body, segs0[gi][1],
+    runRevealDrag(ev, c.overlay, st, body, segs0[gi][1],
         lengthMoveFn(st, segs0, j));
 }
 
 /**
  * THE ↺ DRAG = a SHIFT: the take's origin moves with the hand (whole Q
  * from the grab; ⌥ fine), so the audio, the ↺ and the splices move
- * together — the preview moves the origin locally; live setTiming
- * commits send only what the last one had not (relative shifts).
+ * together — the preview moves the origin locally; live commits go
+ * through the re-time sender (map_core timingSender).
  */
 function startTopDrag(ev, h, body) {
-    const c = body._lrCtx;
     const sp = h._spot;
-    const { lane, vm, st, cycleQ } = c;
+    const { lane, vm, st, cycleQ } = body._lrCtx;
     const q = st.quantum;
     const pxPerQ = body.getBoundingClientRect().width / cycleQ;
     const msPerQ = vm.sampleRate > 0 ? q / vm.sampleRate * 1000 : 0;
     const retime0 = lane.retimeQ || 0;
     const pv = previewer(lane.id);
-    const d = beginDrag(body, h, 'top', sp.x);
-    let sent = 0;        // samples this gesture has committed
-    let lastP;           // its last commit
-    const run = runRawDrag(ev, c.overlay, st, {
-        claim: lane.id,
-        rawQAt: x => (x - ev.clientX) / pxPerQ,
-        clamp: false,
+    const sender = timingSender(st, pv);
+    runHandleDrag(ev, h, body, 'top', {
+        posAt: x => (x - ev.clientX) / pxPerQ,
         onMove: (dx, alt) => {
             if (dx === null) return { dx: 0, dq: 0, shift: 0, alt };
             const dq = alt ? dx : Math.round(dx);
             return { dx, dq, shift: Math.round(dq * q), alt };
         },
-        preview: res => {
+        preview: (res, d) => {
             d.followX = sp.x + res.dx;
             d.landX = sp.x + res.dq;
             d.ghost = Math.abs(res.dx - res.dq) * pxPerQ > SNAP_GHOST_MIN_PX;
@@ -789,31 +615,10 @@ function startTopDrag(ev, h, body) {
                 timingText(foldShift(retime0 + res.shift / q,
                                      lane.retimePeriodQ || 0), msPerQ);
             pv.show({ originShift: res.shift });
-            layoutDrag(body);
         },
-        commit: res => {
-            const delta = res.shift - sent;
-            if (delta === 0) return lastP;
-            sent = res.shift;
-            return (lastP = commitTiming(st, delta, null, true));
-        },
-        restore: () => {
-            if (!lastP) {
-                pv.restore(null);
-                return undefined;
-            }
-            // Whatever was sent — a net shift of nothing included — its
-            // step goes: the log is as the gesture found it.
-            const p = cancelBandGesture(st);
-            sent = 0;
-            pv.restore({ originShift: 0 });
-            return p;
-        },
-        held: () => { endDrag(body, d); requestRender(); },
-        onTeardown: () => endDrag(body, d),
-        freeze: [body],
-        engage: true,
-        onEngage: () => { d.engaged = true; h.classList.add('lr-active'); },
+        commit: res => sender.commit(res.shift),
+        // Whatever was sent — a net shift of nothing included — its step
+        // goes: the log is as the gesture found it.
+        restore: () => sender.restore({ originShift: 0 }),
     });
-    if (!run.live) endDrag(body, d);
 }

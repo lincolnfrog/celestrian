@@ -105,7 +105,7 @@ region start).
   re-time does. The ruler's ticks and every lane's gridlines sit at
   `(line − zero) / Q` (`buildRulerTicks`).
 
-The view model does this (`seatFrameZero`, `ui/js/view_model.js`) once,
+The view model does this (`seatFrameZero`, `ui/js/vm/frame.js`) once,
 for the mock and the engine alike, and publishes it as `vm.seatedZero`.
 The zero DRAWN (`resolveFrameZero`) is, in order: the drag pin while a
 gesture holds it; a re-seat tween on its way to the seat; else the
@@ -154,7 +154,8 @@ passing zero).
 
 `session_view/reseat_tween.js` decides when a move runs (`app.js`
 `deriveFrame` derives the frame that would have jumped once more, from
-the move's first step); `resolveFrameZero` only resolves it. Pinned by
+the move's first step); `resolveFrameZero` (`ui/js/vm/frame.js`) only
+resolves it. Pinned by
 `ui/js/tests/reseat_tween.test.mjs` and `ui/e2e/reseat_tween.spec.js`
 (real mouse, every animation frame sampled).
 
@@ -215,9 +216,9 @@ loop longer than Q — places the frame, so B slots in 2Q in (until
 
 | Fact | What it is |
 |---|---|
-| **Origins**, on every node (Q18) | when the node began; moved only to keep audio continuous (the continuity re-anchor while playing, the definer's re-trim), by a seek (everything together), and by a lock-collapse |
-| **Q, with the island zero** | the grid: a length and where it starts. The zero is the first take's origin, set at the first commit (an import that establishes Q likewise), immortal until the island empties (Q1, S11), shifted by seek, re-set by a Q13 re-trim to the definer's new top. It is the arm grid's phase — user-facing as the ● "your take starts here" marker and the count-in — and the frame a root window folds from. Stored as a residue because committed origins are *not* all on the grid: a take recorded through an ⌥-slid window has an off-grid origin. |
-| **The root's origin**, while it carries a song (2026-09-17) | Q18 at depth 0: authoring a song on the root anchors it at the zero the view had seated — `setSequence` carries that zero, snapped to the Q grid; the island zero when none is given — so the song's top is where the picture already started. Its song folds from it on both threads (`StackNode::frameOrigin`, `heard::songPositionAt`), the cursor, a seek and the root's bounce measure from it (`AudioEngine::rootFrameTop`), a seek shifts it with every origin, and the session stores it like any stack's. A root already anchored keeps its origin (the song owns the frame); clearing the song un-anchors, as does the island revert that clears every song. Content never anchors the root (`settleAnchors` skips it). Both changes ride the edit's inverse. |
+| **Origins**, on every node (Q18) | when the node began; moved only to keep audio continuous (the continuity re-anchor while playing, the definer's re-trim), by a seek (everything together), and by a lock-collapse (a cut map's lock-collapse is a splice: `origin += a0`, the kept cells become the take and NO window is left on it) |
+| **Q, with the island zero** | the grid: a length and where it starts. The zero is the first take's origin, set at the first commit (an import that establishes Q likewise), immortal until the island empties (Q1, S11), shifted by seek, re-set by a Q13 re-trim to the definer's new top. It is the arm grid's phase — user-facing as the ● "your take starts here" marker and the count-in — and the frame a root window folds from (the root's map is the island's loop region, so an island with no Q has none to set or to bypass; one a delete left stored can only be cleared — time_maps.md §7). Undoing the first take sets Q and the zero back and moves no song. Stored as a residue because committed origins are *not* all on the grid: a take recorded through an ⌥-slid window has an off-grid origin. |
+| **The root's origin**, while it carries a song (2026-09-17) | Q18 at depth 0: authoring a song on the root anchors it at the zero the view had seated — `setSequence` carries that zero, snapped to the Q grid; the island zero when none is given — so the song's top is where the picture already started. Its song folds from it on both threads (`AudioNode::frameOrigin`, `heard::songPositionAt`), the cursor, a seek and the root's bounce measure from it (`AudioEngine::rootFrameTop`), a seek shifts it with every origin, and the session stores it like any stack's. A root already anchored keeps its origin (the song owns the frame); clearing the song un-anchors, and so does the DELETE that empties the island, which clears every song with it (the undo of the delete brings them back, anchor and all). The undo of the island's FIRST TAKE is not that revert: a performance moves no song, so the songs authored before the take, and the root's anchor, stay exactly as the take found them. Content never anchors the root (`settleAnchors` skips it). Every change rides its edit's inverse. |
 
 Nothing else. No commit and no map edit moves the zero
 (`StackNode::takeCommitted`, `AudioEngine::attachMapEditRiders`).

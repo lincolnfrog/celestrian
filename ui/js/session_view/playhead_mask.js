@@ -5,8 +5,8 @@
  *   - an inspecting lane (the raw-take edit view, its own scale);
  *   - a revealing lane (the same-scale reveal, raw coordinates for the
  *     length of a map gesture — map_bands.js).
- * (The region panel, raw time too, needs no mask since 2026-10-08: it
- * lives in the edit bar, below the session the line crosses.)
+ * (The region panel, raw time too, needs none: it lives in the edit
+ * bar, below the session the line crosses.)
  * A vertical mask carves those rows' bands out of the line itself —
  * paint-order-independent: the z-index scheme (an opaque body above
  * the line) leaves stray frames where the webview compositor lets the

@@ -9,11 +9,11 @@
  * samples each produces against an independent oracle, that everything
  * away from a seam is the kernel law untouched, that the result is a
  * pure function of t (block size never changes a sample), and that a
- * seam that used to pop no longer steps. Also the engine's TRANSPORT
- * fades: a resume mid-waveform ramps in on the master, and a stop ramps
- * out through a clocked tail. The rest of the
- * suite runs with both off (tests/test_runner.cc) so its oracles stay
- * the plain law; this file switches them on.
+ * loop cut mid-cycle does not step. Also the engine's TRANSPORT fades:
+ * a resume mid-waveform ramps in on the master, and a stop ramps out
+ * through a clocked tail. The rest of the suite runs with both off
+ * (tests/test_runner.cc) so its oracles stay the plain law; this file
+ * switches them on.
  */
 
 #include <juce_core/juce_core.h>
@@ -28,6 +28,7 @@
 
 namespace celestrian {
 
+using scenario::posmod;
 using test_utils::contextFor;
 using test_utils::NodeContext;
 
@@ -47,8 +48,6 @@ float ramp(int64_t j, int64_t len) {
   return (float)(0.5 - 0.5 * std::cos(pi * ((double)j + 0.5) / (double)len));
 }
 
-int64_t posMod(int64_t a, int64_t m) { return ((a % m) + m) % m; }
-
 }  // namespace
 
 class SeamFadeTests : public juce::UnitTest {
@@ -59,8 +58,8 @@ class SeamFadeTests : public juce::UnitTest {
   // The default ProcessContext rate (44.1 kHz): 176 samples.
   const int64_t F = ClipNode::seamFadeSamples(ProcessContext{}.sample_rate);
 
-  /** A clip committed at origin 0 holding `content` (Q == 0 → the
-   * immediate commit), past its commit gate. */
+  /** A clip committed at origin 0 holding `content`: a first take (no
+   * Q), stopped, and committed by the block top that follows. */
   static void commit(ClipNode& clip, std::vector<float>& content) {
     float* ins[] = {content.data()};
     NodeContext rec = contextFor(clip, (int)content.size());
@@ -119,7 +118,7 @@ class SeamFadeTests : public juce::UnitTest {
       const auto got = renderRange(clip, 0, T, 64);
       std::vector<float> want((size_t)T);
       for (int64_t t = 0; t < T; ++t) {
-        const int64_t h = posMod(t - 1000, 2000);
+        const int64_t h = posmod(t - 1000, 2000);
         const float plain = raw(1000 + h);
         // The incoming lands ON TIME; the outgoing runs on into its tail.
         want[(size_t)t] = h < F ? ramp(h, F) * plain +
@@ -139,7 +138,7 @@ class SeamFadeTests : public juce::UnitTest {
       const auto got = renderRange(clip, 0, T, 64);
       std::vector<float> want((size_t)T);
       for (int64_t t = 0; t < T; ++t) {
-        const int64_t h = posMod(t - 1000, N - 1000);
+        const int64_t h = posmod(t - 1000, N - 1000);
         const float plain = raw(1000 + h);
         const int64_t j = h - (N - 1000 - F);  // offset into the window
         want[(size_t)t] = j >= 0 ? (1.0f - ramp(j, F)) * plain +
@@ -277,7 +276,7 @@ class SeamFadeTests : public juce::UnitTest {
       }
     }
 
-    beginTest("the pop is gone: a loop cut mid-cycle steps no more than it swings");
+    beginTest("no pop: a loop cut mid-cycle steps no more than it swings");
     {
       // 440 Hz whose loop ends mid-cycle: the raw wrap jumps by ~1.
       std::vector<float> sine(N);
@@ -298,8 +297,8 @@ class SeamFadeTests : public juce::UnitTest {
       ClipNode::seam_fades_enabled.store(true);
       expect(popped > 0.4f, "the bare wrap steps (" + juce::String(popped) + ")");
       expect(faded < 1.5f * swing, "the faded wrap steps " + juce::String(faded) +
-                                       " — within the sine's own " +
-                                       juce::String(swing) + " (×1.5)");
+                                       " - within the sine's own " +
+                                       juce::String(swing) + " (x1.5)");
     }
 
     beginTest("a segment shorter than two fades shortens the fade to fit");
@@ -313,6 +312,7 @@ class SeamFadeTests : public juce::UnitTest {
       clip.setMap(m);
       const auto got = renderRange(clip, 0, 2200, 64);
       const int64_t f = 50;
+      std::vector<float> want(2200);
       for (int64_t t = 0; t < 2200; ++t) {
         const int64_t h = t % 1100;
         const int64_t p = h < 100 ? h : 2000 + (h - 100);
@@ -323,12 +323,9 @@ class SeamFadeTests : public juce::UnitTest {
         } else if (h < f) {
           v = ramp(h, f) * v + (1.0f - ramp(h, f)) * raw(3000 + h);
         }
-        if (std::abs(got[(size_t)t] - v) > 1e-5f) {
-          expect(false, "t=" + juce::String(t) + ": " + juce::String(got[(size_t)t]) +
-                            " != " + juce::String(v));
-          break;
-        }
+        want[(size_t)t] = v;
       }
+      expectMatches(got, want, "both seams at the 50-sample fade");
     }
 
     beginTest("the play-start fade: a resume mid-waveform ramps in on the master");
@@ -358,7 +355,7 @@ class SeamFadeTests : public juce::UnitTest {
         if (std::abs(faded[i].second - g * is.loopVal(c, faded[i].first)) > 1e-6f)
           ++bad;
       }
-      expectEquals(bad, 0, "g(i) · the loop law, then the law untouched");
+      expectEquals(bad, 0, "g(i) x the loop law, then the law untouched");
       expect(faded.front().second < 0.01f * is.loopVal(c, faded.front().first),
              "the first sample after the start is near silence");
 
@@ -414,7 +411,7 @@ class SeamFadeTests : public juce::UnitTest {
       expect(std::abs(out[(size_t)F - 1].second) < 1e-3f, "the tail ends near silence");
       expectEquals(is.clock, t0 + scenario::BLOCK, "the tail's block is clocked");
       is.drive(2 * scenario::BLOCK);
-      expectEquals(is.clock, t0 + scenario::BLOCK, "…and then the clock halts");
+      expectEquals(is.clock, t0 + scenario::BLOCK, "...and then the clock halts");
 
       // A stop inside a start's ramp starts the tail at the gain the
       // ramp reached — no step up.

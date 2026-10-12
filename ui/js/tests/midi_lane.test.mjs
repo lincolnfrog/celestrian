@@ -1,5 +1,5 @@
 /**
- * MIDI lane rendering (docs/vst3.md §11) — the pure functions between
+ * MIDI lane rendering (docs/vst3.md §8.5) — the pure functions between
  * the bridge's getMidiNotes rows and the tile: event pairing (the
  * mock's twin of AudioEngine::getMidiNotes), the row decode, the
  * compact pitch-range fit, and the slice into ONE rep tile under the
@@ -14,9 +14,7 @@ import { pairMidiEvents, notesFromRows, fitPitchRange, sliceNotesToTile,
          MIN_PITCH_SPAN, rescaleNotes } from '../midi_notes.js';
 import { callNative, loadScenario, getState } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
-import { MOCK_Q } from './helpers.mjs';
-
-const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `${a} ≉ ${b}`);
+import { MOCK_Q, near } from './helpers.mjs';
 
 test('pairMidiEvents: on/off pairs, velocity-0 off, an open note runs to the end', () => {
     const notes = pairMidiEvents([
@@ -67,44 +65,44 @@ test('fitPitchRange: padded, at least MIN_PITCH_SPAN, clamped to MIDI pitch', ()
     assert.equal(high.hi - high.lo, MIN_PITCH_SPAN);
 });
 
-test('sliceNotesToTile: the whole take maps to [0, 1)', () => {
-    const notes = [{ posQ: 0, lenQ: 1, note: 60, vel: 100 },
-                   { posQ: 3, lenQ: 1, note: 64, vel: 90 }];
-    const out = sliceNotesToTile(notes, 4, null);
-    assert.equal(out.length, 2);
-    near(out[0].f0, 0); near(out[0].f1, 0.25);
-    near(out[1].f0, 0.75); near(out[1].f1, 1);
-    assert.equal(out[0].note, 60);
-    assert.equal(out[1].vel, 90);
-    assert.deepEqual(sliceNotesToTile(notes, 0, null), []);
-    assert.deepEqual(sliceNotesToTile([], 4, null), []);
-});
-
-test('sliceNotesToTile: a window cuts a crossing note and concatenates ranges', () => {
-    const notes = [{ posQ: 0.5, lenQ: 1, note: 60, vel: 100 },   // crosses the cut at 1Q
-                   { posQ: 2, lenQ: 0.5, note: 64, vel: 90 }];    // outside both ranges
-    // Two ranges, each 1Q of a 4Q take: [0,1Q) and [3Q,4Q).
-    const out = sliceNotesToTile(notes, 4, [[0, 0.25], [0.75, 1]]);
-    assert.equal(out.length, 1);
-    near(out[0].f0, 0.25); near(out[0].f1, 0.5);   // 0.5Q..1Q of a 2Q tile
-});
-
-test('sliceNotesToTile: rotation moves the heard top and splits a straddling bar', () => {
-    const notes = [{ posQ: 3.5, lenQ: 1, note: 60, vel: 100 }];  // 3.5Q..4.5Q?? clipped to 4Q
-    const out = sliceNotesToTile(notes, 4, null, 0.25);
-    // 3.5..4 of 4 = [0.875, 1) rotated by 0.25 → [1.125, 1.25) → wraps to [0.125, 0.25)
-    assert.equal(out.length, 1);
-    near(out[0].f0, 0.125); near(out[0].f1, 0.25);
-    const straddle = sliceNotesToTile([{ posQ: 2.5, lenQ: 1, note: 60, vel: 1 }], 4, null, 0.5);
-    // [0.625, 0.875) + 0.5 → [1.125, 1.375) wraps whole → [0.125, 0.375)
-    assert.equal(straddle.length, 1);
-    near(straddle[0].f0, 0.125); near(straddle[0].f1, 0.375);
-    const split = sliceNotesToTile([{ posQ: 1.5, lenQ: 1, note: 60, vel: 1 }], 4, null, 0.5);
-    // [0.375, 0.625) + 0.5 → [0.875, 1.125) → two bars
-    assert.equal(split.length, 2);
-    near(split[0].f0, 0.875); near(split[0].f1, 1);
-    near(split[1].f0, 0); near(split[1].f1, 0.125);
-});
+/* sliceNotesToTile(notes, takeQ, srcSegs, rotation) on a 4Q take —
+ * [what, the arguments, the pieces as [f0, f1, onset?, {fields}?]].
+ * `onset` marks the piece a note starts in (one velocity stem per
+ * note). */
+const note = (posQ, lenQ, pitch = 60, vel = 100) => ({ posQ, lenQ, note: pitch, vel });
+const SLICES = [
+    ['the whole take maps to [0, 1)', [[note(0, 1), note(3, 1, 64, 90)], 4, null],
+     [[0, 0.25, undefined, { note: 60 }], [0.75, 1, undefined, { vel: 90 }]]],
+    ['no take length: nothing', [[note(0, 1), note(3, 1, 64, 90)], 0, null], []],
+    ['no notes: nothing', [[], 4, null], []],
+    // Ranges [0,1Q) and [3Q,4Q): the first note crosses the cut at 1Q
+    // (0.5Q..1Q of a 2Q tile), the second is outside both.
+    ['a window cuts a crossing note and concatenates ranges',
+     [[note(0.5, 1), note(2, 0.5, 64, 90)], 4, [[0, 0.25], [0.75, 1]]], [[0.25, 0.5, true]]],
+    ['a window starting at 1Q cuts a note\'s head away: no onset in the tile',
+     [[note(0.5, 1)], 4, [[0.25, 0.5]]], [[0, 0.5, false]]],
+    // 3.5Q..4Q of 4 = [0.875, 1), rotated by 0.25 → wraps to [0.125, 0.25).
+    ['rotation moves the heard top (the take\'s end clips the note)',
+     [[note(3.5, 1)], 4, null, 0.25], [[0.125, 0.25]]],
+    // [0.625, 0.875) + 0.5 → [1.125, 1.375) wraps whole.
+    ['a bar past the rotation wraps whole', [[note(2.5, 1, 60, 1)], 4, null, 0.5],
+     [[0.125, 0.375]]],
+    // [0.375, 0.625) + 0.5 → [0.875, 1.125) → two bars.
+    ['a bar straddling it splits: only the first piece carries the onset',
+     [[note(1.5, 1, 60, 1)], 4, null, 0.5], [[0.875, 1, true], [0, 0.125, false]]],
+];
+for (const [what, args, want] of SLICES) {
+    test(`sliceNotesToTile: ${what}`, () => {
+        const out = sliceNotesToTile(...args);
+        assert.equal(out.length, want.length);
+        want.forEach(([f0, f1, onset, fields = {}], i) => {
+            near(out[i].f0, f0);
+            near(out[i].f1, f1);
+            if (onset !== undefined) assert.equal(out[i].onset, onset);
+            for (const [k, v] of Object.entries(fields)) assert.equal(out[i][k], v);
+        });
+    });
+}
 
 test('the mock readout: the midi-clip scenario answers four paired notes as QTime rows', async () => {
     loadScenario('midi-clip');
@@ -116,7 +114,6 @@ test('the mock readout: the midi-clip scenario answers four paired notes as QTim
     near(notes[3].posQ, 1.5); near(notes[3].lenQ, 0.5);   // open → runs to 2Q
     assert.deepEqual(rows[0].slice(0, 2), [0, 1]);
     assert.deepEqual(await callNative('getMidiNotes', 'seed'), [], 'audio clip → none');
-    assert.equal(MOCK_Q > 0, true);
 });
 
 test('rescaleNotes: a Q change re-expresses the same samples in the new Q', () => {
@@ -145,18 +142,4 @@ test('a windowed MIDI lane slices its notes on the RAW take (contentQ), not the 
     assert.deepEqual(out.map(n => n.note), [67, 72]);
     near(out[0].f0, 0); near(out[0].f1, 0.25);
     near(out[1].f0, 0.5); near(out[1].f1, 1);
-});
-
-test('sliceNotesToTile: `onset` marks the piece a note starts in (one velocity stem per note)', () => {
-    const notes = [{ posQ: 0.5, lenQ: 1, note: 60, vel: 100 }];   // crosses the cut at 1Q
-    // [0,1Q) then [3Q,4Q) of a 4Q take — the note starts inside
-    const inside = sliceNotesToTile(notes, 4, [[0, 0.25], [0.75, 1]]);
-    assert.equal(inside[0].onset, true);
-    // A window starting at 1Q cuts its head away: no onset in the tile
-    const clipped = sliceNotesToTile(notes, 4, [[0.25, 0.5]]);
-    assert.equal(clipped.length, 1);
-    assert.equal(clipped[0].onset, false);
-    // A bar split by rotation: only the first piece carries the onset
-    const split = sliceNotesToTile([{ posQ: 1.5, lenQ: 1, note: 60, vel: 1 }], 4, null, 0.5);
-    assert.deepEqual(split.map(n => n.onset), [true, false]);
 });

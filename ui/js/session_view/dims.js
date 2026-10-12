@@ -1,28 +1,32 @@
 /**
- * Window/map dim overlays: the "everything OUTSIDE the covered set is
- * dimmed" builders, shared by the lane body, the window brackets, and
- * the expanded-drag preview.
+ * Dim overlays: everything OUTSIDE a covered set is dimmed — the lane
+ * body's window dims, the bracket drag's, the region panel's, the
+ * raw-frame drag preview's (map_core.js) — and the one "a span of the
+ * frame, clipped to it" builder the other span layers share (addDim).
  */
 
 import { el, pct } from './sv_util.js';
 import { posMod } from '../math_utils.js';
 
-/* Degenerate-span guard: a dim thinner than this is fp noise. */
+/* A span thinner than this is fp noise. */
 const EPS_Q = 1e-9;
 
-function addDim(o, cycleQ, fromQ, toQ, className) {
+/** Append a `className` div over [fromQ, toQ) of a `cycleQ` frame,
+ * clipped to the frame. Returns it, or null when none of it shows. */
+export function addDim(o, cycleQ, fromQ, toQ, className) {
     const from = Math.max(0, fromQ);
     const to = Math.min(cycleQ, toQ);
-    if (to - from <= EPS_Q) return;
+    if (to - from <= EPS_Q) return null;
     const d = el('div', className);
     d.style.left = pct(from, cycleQ);
     d.style.width = pct(to - from, cycleQ);
     o.appendChild(d);
+    return d;
 }
 
 /** Dim the COMPLEMENT of `segs` inside one span [baseQ, baseQ+spanQ),
- * clipped to [0, cycleQ). `className` lets callers brand the dims
- * (e.g. 'win-dim parent-map-dim' for the enclosing-map projection). */
+ * clipped to [0, cycleQ). `className` brands the dims (e.g. 'win-dim
+ * parent-map-dim' for the enclosing-map projection). */
 export function dimComplementInto(o, cycleQ, segs, baseQ, spanQ,
                                   className = 'win-dim') {
     let prev = 0;
@@ -34,33 +38,25 @@ export function dimComplementInto(o, cycleQ, segs, baseQ, spanQ,
 }
 
 /**
- * Dim everything OUTSIDE the window, in EVERY repetition of the lane's
- * period across the cycle — the frame stays intrinsic (displayPeriodQ),
- * so the window reads as a subset of each tile, never as a reframe.
+ * Dim everything OUTSIDE the window (`win.segs`, or the one span
+ * [startQ, endQ)) in EVERY place the lane draws its raw material — the
+ * frame stays intrinsic, so the window reads as a subset of each tile,
+ * never as a reframe.
  */
 export function buildWindowDims(o, win, lane, cycleQ) {
     const intrinsicQ = lane.intrinsicQ || 0;
     if (intrinsicQ <= 0) return;
-    // Segment-general (phase 3): dim the COMPLEMENT of the map's
-    // covered set. A single window is the one-segment case.
     const segs = win.segs || [[win.startQ, win.endQ]];
     const anchorQ = lane.takeStartQ || 0;
     if (lane.kind === 'clip' || lane.isQDefiner) {
-        // Clips render raw material in ONE place — the take tile; every
-        // other tile is an audible echo of the window segment and must
-        // not be dimmed as "outside the window" (ghosts show what
-        // sounds). Use the RAW intrinsicQ (not rounded): the provisional
-        // Q-definer's tile is buffer/selection, a fractional number of
-        // Q, so rounding would drop its trailing dim. The DEFINER STACK
-        // (Q13 for groups) is the same trim view — one raw tile,
-        // buffer/selection long: tiling its dims at round(intrinsicQ)
-        // would put a spurious dim past the end bracket of a
-        // fractional-Q take, so the dimmed region and the brackets
-        // disagree.
+        // ONE raw tile — a clip's take tile (its other tiles are audible
+        // echoes of the window: never dimmed), the definer's buffer (a
+        // stack's too). The RAW intrinsicQ, unrounded: a definer's tile
+        // is a fractional number of Q, and a rounded span would end its
+        // trailing dim off the end bracket.
         dimComplementInto(o, cycleQ, segs, anchorQ, intrinsicQ);
-        // The frame's end may clip the take tile: its rest is drawn
-        // from the frame's start, and so are the dims over it (addDim
-        // clips each copy to the frame).
+        // A tile the frame's end clips draws its rest from the frame's
+        // start: so do the dims over it.
         if (anchorQ + intrinsicQ > cycleQ + EPS_Q) {
             dimComplementInto(o, cycleQ, segs, anchorQ - cycleQ, intrinsicQ);
         }

@@ -305,13 +305,17 @@ mock in lockstep) keeps the sounding sample sounding:
   sub-Q loop only the fold is free of the pass count.
 - **Playing only.** Idle edits keep the deterministic fixed-origin
   layout.
+- **Never under a bypass.** A bypassed node plays whole before the
+  edit and whole after it: nothing heard changes, so nothing
+  re-anchors. Drawing or cutting a map on a bypassed, playing take
+  leaves its origin where it was.
 
 Net behaviour for the origin: a cut AFTER the playing point causes no
 re-anchor and no jump; BEFORE it, the least whole-Q re-anchor and no
 jump; AT it, no re-anchor and one expected jump; a slide, none at all.
 Where the loop then sits on screen is the view's seating (frame.md),
 in every case. The algebra is `heard::continuityOriginFor` (mock twin
-`mock/maps.js continuityOriginFor`), golden-pinned by
+`mock/heard.js continuityOriginFor`), golden-pinned by
 `continuity_origin_cases`; engine-level continuity tests in
 `tests/time_map_record_tests.cc`, scenario S40, the mock journeys in
 `ui/js/tests/continuity_origin.test.mjs`; the I4 regression pin asserts
@@ -322,11 +326,32 @@ the mod-Q invariant and that a playing slide keeps the origin.
 While the island's only committed content is the Q-defining clip (or
 definer stack), a segments re-trim re-establishes `Q := period`,
 `zero := origin' + a0`, with the phase-preserving origin re-anchor
-generalized through the map inverse (`heardOffsetOf`). Lock-collapse of
-a multi-segment definer is a **splice copy** — kept cells into an
-exact-size buffer — and the edit inverse owns the pre-splice buffer and
-map, so undo un-splices (`Edit::Kind::Collapse`; the owned-subtree
-precedent). Full statement of Q13, including the group case, lives in
+generalized through the map inverse (`heardOffsetOf`). **A re-trim
+that still plays the sounding sample keeps it sounding** — by a window
+or by cells, and whether or not a map was in force before the edit
+(`soleDefinerOrigin`, `src/engine/map_edits.cc`). When the re-trim
+REMOVES the sounding sample a window and a cell map still answer
+differently (tasks.md Tier G).
+
+Lock-collapse of a multi-segment definer is a **splice copy** — kept
+cells into an exact-size buffer — and the edit inverse owns the
+pre-splice buffer and map, so undo un-splices (`Edit::Kind::Collapse`;
+the owned-subtree precedent). **A splice leaves NO window on the
+take**: the kept cells ARE the take, and whole is no window — the same
+state the single-window collapse leaves (`windowActive` false,
+`loopEnd` 0). Every take of the slot is cut to the same cells, a MIDI
+take's notes too, and a comp is flattened into the active take
+(takes.md §3). Undo puts the cut map back; redo splices again.
+
+**A bypassed map is not in use** (owner, 2026-10-11: least surprise — a
+bypassed map means "record without it"). At the second arm a bypassed
+definer map is neither collapsed (one window) nor spliced (cells): the
+take stays whole, the map stays stored and bypassed, and no undo entry
+is made for it. Nor is a bypassed map GEOMETRY when the definer is
+judged — a bypassed window or cell map on a sibling does not stop the
+sole take from being the definer.
+
+Full statement of Q13, including the group case, lives in
 design_language.md.
 
 ---
@@ -378,8 +403,8 @@ drum loop is 40 ms late").
   preview predicted from it never matched the commit's answer — it
   outlived the commit by the whole hold cap, so an undo or a nudge made
   meanwhile did not show (2026-10-01; `swap_preview.test.mjs`). An
-  undo or redo drops any preview still up (`app.js`
-  `dropStaleEditFeedback`): no poll will ever match it.
+  undo or redo drops any preview still up (`edit_verdict.js`
+  `dropStale`): no poll will ever match it.
 - **Whole Qs, never a sliver (2026-10-01).** A plain drag moves by the
   largest whole number of Qs its clamp allows (`slideSeamWhole`), 0
   when none fits. `slideSeam`'s own bound — the take's edge, the 1/64 Q
@@ -427,7 +452,10 @@ drum loop is 40 ms late").
   `bandLocked` needs a ≥ 2Q take, and a 1Q loop's ↺ would vanish.
 - **What else keeps its chrome.** A one-shot keeps its edge grips (trim
   through the reveal) and seam handles — its offset IS its placement
-  (Q5), so it has no splice to swap and no ↺ to shift. The Q-definer
+  (Q5), so it has no splice to swap and no ↺ to shift. They are live
+  edit surfaces (owner, 2026-10-11: a one-shot can be edited), placed
+  from where the shot starts sounding and repeated at the shot's FIRING
+  cadence (`shotEveryQ`), not at the loop period. The Q-definer
   keeps its free brackets (Q13), and raw-framed lanes their brackets,
   latent brackets and cut bands (a plain loop's under its ↺).
 
@@ -555,12 +583,14 @@ no lane moves. Handing Q to a track (its Q lamp) selects it, since its
 trim view's brackets set Q. Pinned by `slotted_loop.spec.js` ("An
 unselected track").
 
-(History: from 2026-10-01 to 10-08 every lane wore its handles, and a
-handle's gesture claimed its track when it ENDED — `gesture.js` `claim`,
-`CLAIM_CLICK_MS` — because the panel was then a row under the selected
-lane and a claim at the press moved a lower lane 74 px out from under
-the hand. That machinery stays and is a no-op now: every handle is on
-the selected track.)
+**A handle press selects its track alone, at the press** (owner,
+2026-10-11). With several tracks selected, grabbing a handle on one
+makes it the selection from the first frame of the drag, and the edit
+bar shows it. The gesture runner selects once it has accepted the press
+(`map_core.js` `runMapDrag`); a press it refuses selects nothing. An
+additive click (⌘ / ⇧) on the only selected rail keeps it: the
+selection is never emptied that way. Pinned by `lane_chrome.spec.js`
+and `release_lifecycle.test.mjs`.
 
 **Keyboard:** `←` / `→` slide the selected region by 1Q (⇧ 4Q), length
 held, one undo step per press (`nudgeRegion`). There is no ⌥ step: the
@@ -596,8 +626,9 @@ pairing, who wears what — the plain loop's lone ↺ and its tab in the
 take's pass, none on a bypassed map, inert under the gate — the
 panel's start marker and when the timing shows), `top_fields.test.mjs`
 (`canRetime`, `retimeLocked`),
-`release_lifecycle.test.mjs` (the heard
-drags' pluggable preview and commit under the raw drag's lifecycle),
+`release_lifecycle.test.mjs` (every map drag's lifecycle on the one
+runner: engage, live commits under one step, cancel, the held picture;
+a handle press selects its track),
 `pending_edits.test.mjs`, `panel_view.test.mjs` (fit, clamp, zoom,
 pan, keep-in-view, the whole-Q grid, the wheel and overview-box laws,
 one gain per take), `edge_pan.test.mjs` (the direction-aware pan),
@@ -639,6 +670,39 @@ input).
   bypassed geometry survives undo. Drags stream throttled commits and
   `Edit::Segments` coalesces in the undo log, keeping one gesture to one
   undo step.
+- **One commit for both verbs** (`AudioEngine::commitMap`,
+  `src/engine/map_edits.cc`). `setLoopPoints` (which CLAMPS a window to
+  the material: a clip's to its take, the definer stack's to its inner
+  cycle) and `setSegments` (which takes a list literally and refuses a
+  malformed one) are its two entry points; everything after is shared:
+  - **The root of an island with no Q takes no map.** The root's map is
+    the island's loop region — it selects from the island's own
+    timeline and folds from the island zero — and an island with no Q
+    has neither. A non-empty map on it is refused, live commits
+    included, and so is its bypass toggle (`toggleLoopWindow`). A CLEAR
+    is not refused: a delete that empties the island leaves the root's
+    map stored, and it must be removable. With content the root is a
+    stack like any other. An empty GROUP is different — a part authored
+    ahead of its first take — and keeps its pre-Q window.
+  - **Identity records nothing**: re-committing the stored map logs no
+    step, keeps the redo branch and answers false.
+  - **A window is judged as CLAMPED**: identity and coherence are
+    judged on the map that would be stored. A drag past the end of a
+    definer stack's take that lands on the window it already has is an
+    identity — no step, no origin moved — exactly as for a clip.
+  - **Coherence**, with the definer exempt (its map re-establishes Q);
+    the three definer branches (cleared, with company, sole); the
+    members-whole riders; the continuity rider.
+- **The bypass rides every map edit.** The inverse of a map edit puts
+  back the bypass flag it found (`bypassRider`,
+  `src/engine/edit_geometry.cc`), not only a clear's: a window drawn on
+  a clip whose bypass is on, undone, comes back bypassed; a live drag
+  that clears and re-windows is one undo step that restores the bypass
+  the gesture found. A forward clear still drops a stale bypass.
+- **A live gesture is one undo step that restores what it FOUND**: the
+  step a drag's live commits coalesce into keeps the first origin (and
+  ancestor lift), island facts and window riders — whichever commit of
+  the drag moved them.
 - **A cancelled drag leaves no trace** (`cancelGesture(uuid)`,
   2026-10-01). Escape — or a lost capture — mid-drag asks the engine to
   CANCEL the open gesture: the entry its live commits coalesced into is
@@ -657,7 +721,7 @@ input).
   `tests/time_map_record_tests.cc` ("a CANCELLED drag"),
   `undo.test.mjs`, `release_lifecycle.test.mjs`,
   `e2e/splice_handles.spec.js` and `e2e_engine/loop_edits.spec.js`.
-- Bridged in all three places (`protocol.js` ↔ `main_component.cc` ↔
+- Bridged in all three places (`protocol.js` ↔ `bridge_dispatch.cc` ↔
   mock); `segments` (flat samples) in metadata, `segmentsQ` (QTime
   pairs) in the save format (additive; templates strip it).
 
@@ -668,7 +732,7 @@ The one edit that changes **when** a take plays is the re-time: the
 lane's ↺ drag and the panel's start marker. Two per-clip facts carry
 it, beside the origin:
 
-- **The top** (`ClipNode::storedTop`): a RAW take position, the ↺ —
+- **The top** (`AudioNode::storedTop`): a RAW take position, the ↺ —
   where the loop reads as starting — or unset (`timing::kNoTop`) on a
   take no edit has touched (a fresh take, a session saved before tops),
   when the region start stands in. It sounds at `origin + a0 +
@@ -698,19 +762,26 @@ it, beside the origin:
   shift are different gestures). The origin reaches the audio thread
   the continuity rider's way (a named island generation published with
   the unchanged Q and zero); the top and the re-time never reach it.
-  Refused for stacks, an empty clip, the Q-definer (the published
-  `definerId` — its frame top IS the island zero), a recording or
-  pending clip, and anything under a live take.
+  Refused for the root, a node with nothing committed (an empty clip, a
+  group no content has anchored), the Q-definer (the published
+  `definerId` — its frame top IS the island zero), a top outside the
+  kept set, and anything under a live take. An identity — a zero shift
+  with no top, or with the top the node already stores — records
+  nothing.
 - **The reconcile rule** (owner, 2026-09-24) rides inside every map
   edit's applier, so it is part of that edit's undo state:
   `reconcileTopRider` after LoopPoints / Segments (setLoopPoints,
   setSegments, clears, cell cuts and heals, the Q13 definer re-trim),
   and the window riders' own copy. It starts from `T0`, the EFFECTIVE
-  top before the edit (`topBeforeEdit`, read before the geometry
-  moves — on a take never edited, its region start), and STORES `T0`
-  while the new kept set plays it, else the new region start
+  top before the edit (`AudioNode::effectiveTop`, read before the
+  geometry moves — on a take never edited, its region start), and
+  STORES `T0` while the new kept set plays it, else the new region start
   (`timing::reconcileTop`): never unset, so `kNoTop` means only "never
-  edited". The inverse restores the old stored top exactly, unset
+  edited". "The region start" is the map's first start while the map is
+  ACTIVE, and a map is active in the domain the edit leaves it in: both
+  appliers stamp a stack's window domain BEFORE the top reconciles
+  (sequencer.md §11.8), so a window re-drawn over a suspended one lands
+  its top on its start by either verb. The inverse restores the old stored top exactly, unset
   included. **Why materialize** (P2, owner 2026-09-24: an existing ↺
   stays put when the region moves, if it can): an unset top IS the
   region start, so a reset left unset rode every later slide — bars
@@ -730,7 +801,7 @@ it, beside the origin:
 - **Saved** as `loopTopQ` / `retimeQ` (QTime of Q like `originQ`;
   additive — absent = unset / as played, every bundle before
   2026-09-24; templates strip both).
-- **The mock twin** (`mock/maps.js setTiming`, `topBeforeEdit`,
+- **The mock twin** (`mock/maps.js setTiming`,
   `reconcileStoredTop`, `topBaseFor`) keeps `storedTop` private and
   publishes the same two fields; the pure algebra is `ui/js/time_map.js
   keepsTop / reconcileTop / regionStart / effectiveTop`, golden-pinned
@@ -748,9 +819,9 @@ it, beside the origin:
 
 - **Context.** `ProcessContext` carries `island_pos` (the invariant
   monotonic clock — the folded `master_pos` cannot drive arm triggers),
-  the innermost active `map`, its heard grid anchor (`map_heard_top`),
-  and `map_count`. A mapping stack publishes them in `childContext` and
-  sets `context_loop = period`.
+  the innermost active `map` and its heard grid anchor
+  (`map_heard_top`). A mapping stack publishes them in `childContext` and
+  hands its children the map period as their `context_cycle`.
 - **Capture.** `timing::throughMapDest` folds destinations through the
   frozen map — bounded seam runs, dense zero-initialized `[0, C)` buffer
   (zeroed at ARM on the message thread; documented D4 deviation),
@@ -765,7 +836,10 @@ it, beside the origin:
 ### Gates and refusals
 
 - Nested ACTIVE ancestor maps refuse the arm — their composition is a
-  map product, not yet designed.
+  map product, not yet designed. A refused arm changes NOTHING: the
+  through-map refusals are judged against the graph the arm's own edits
+  (the lock-collapse, the end of a hand-off) would leave, and a refusal
+  puts those edits back unlogged (recording.md).
 - **The UI refuses every map edit while any take records or is pending**
   (owner ruling 2026-09-23: simplicity over a per-subtree gate). The
   view model's `anyTakeActive` locks every lane (`bandGate`:
@@ -798,10 +872,12 @@ map's excluded regions as dims (`parentMapSegs`).
 | Kernel + capture | `tests/time_map_record_tests.cc` (context plumbing, fold/cap/commit, I1 round trip, I9 degradation round trip, multi-segment node fold, bypassed == plain, gates) |
 | Content frame | `tests/content_frame_tests.cc` (which buffer sample is audible) |
 | Definer + splice | `tests/qtime_lock_tests.cc` |
-| Frame/zero rules | `tests/regression_tests.cc`, `ui/e2e_engine/loop_edits.spec.js` |
+| Frame/zero rules | scenarios S2, S32, S34, S41 (`tests/scenario_tests.cc`: no commit and no map edit moves an island fact, playing or stopped), `tests/monotonic_clock_tests.cc`, `ui/e2e_engine/loop_edits.spec.js` |
+| Undo | `tests/undo_symmetry_tests.cc` (every edit kind: edit, undo == found, redo == made, undo == found, over the whole published graph), `tests/undo_tests.cc` (the root of an empty island, the clamped identity, the top under a suspended window, a live gesture's one step) |
 | Persistence | `tests/session_io_tests.cc` |
-| Editor algebra | `ui/js/tests/map_edit.test.mjs`, `ui/js/tests/map_core.test.mjs`, `ui/js/tests/trim_drag.test.mjs`, `ui/js/tests/splice_handles.test.mjs` |
-| Gestures end-to-end | `ui/e2e/splice_handles.spec.js`, `ui/e2e/region_panel.spec.js`, `ui/e2e/session_view.spec.js` ("trim a long take") |
+| Editor algebra | `ui/js/tests/map_edit.test.mjs`, `ui/js/tests/map_core.test.mjs`, `ui/js/tests/map_moves.test.mjs`, `ui/js/tests/frame_seat.test.mjs`, `ui/js/tests/splice_handles.test.mjs` |
+| Gestures end-to-end | `ui/e2e/splice_handles.spec.js`, `ui/e2e/region_panel.spec.js`, `ui/e2e/slotted_loop.spec.js`, `ui/e2e/lane_chrome.spec.js` |
+| Mock ↔ engine | the differential's `window/*`, `cuts/*`, `timing/*` journeys (test_harness.md) |
 
 ### What the map replaced
 
@@ -966,8 +1042,9 @@ nothing selects content by the zero — so `epochViewStep` and both rider
 branches are deleted. The hazard the old frame created is worth keeping:
 a map that emits zero-stripped small values shifts every child whose
 origin ≢ 0 (mod its duration) — the 2026-07-09 field bug where a 2Q clip
-looped its Q2 under a Q1 window, still pinned by "Stack window selects
-view positions" in `tests/pre_record_tests.cc`.
+looped its Q2 under a Q1 window, still pinned by scenario S8 (a
+member's published playhead on its group's MAPPED clock, block by block
+over three window passes) and S35.
 
 **A stored frame zero, moved by rules** (2026-07-19 → 2026-09-16). The
 frame's left edge was the island "zero", a stored absolute sample the

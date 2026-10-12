@@ -11,13 +11,22 @@
 
 namespace celestrian {
 
+inline constexpr int kMidiChannels = 16;
+inline constexpr int kMidiNotes = 128;
+/** The storage one channel message takes in a juce::MidiBuffer — its
+ * sample position (int32), its size (uint16), up to three bytes: what a
+ * preallocation of one is counted in. */
+inline constexpr int kMidiBufferEventBytes =
+    (int)(sizeof(juce::int32) + sizeof(juce::uint16)) + 3;
+
 /**
- * One recorded MIDI event in a take's CONTENT frame (docs/vst3.md §8,
- * phase 5): `pos` is the content position in samples — the same frame
- * audio content lives in (content[0] belongs to the clip's origin) —
- * plus the raw channel message (≤ 3 bytes; SysEx never enters, see
- * MidiInputQueue). POD by design: the sequence is a plain array the
- * audio thread appends to and reads from.
+ * One recorded MIDI event (vst3.md §8): a raw channel message (≤ 3
+ * bytes; SysEx never enters — MidiInputQueue) at `pos`, a STORAGE
+ * position in samples: where an audio sample of the same moment sits in
+ * the clip's buffer, the content base included (ClipNode::
+ * getContentBase). Content position p of a collapsed slot is stored at
+ * base + p. POD: the sequence is a plain array the audio thread appends
+ * to and reads from.
  */
 struct MidiEvent {
   int64_t pos = 0;
@@ -37,55 +46,40 @@ struct MidiEvent {
 };
 
 /**
- * A take's note sequence: the MIDI twin of the clip's audio buffer
- * (Q-V4: samples in the engine content buffer, QTime only in the save
- * format).
- *
- * Storage discipline mirrors the audio take buffer: the clip reaches
- * its sequence through
- * ONE atomic pointer; the MESSAGE thread allocates a fixed-capacity
- * sequence at ARM (kMaxEvents — ~1 MiB, "hours of playing"; the wall
- * drops-and-counts instead of growing) and swaps replacements only on
- * idle clips, retiring the old one through the engine reclaimer. The
- * AUDIO thread appends during capture (sorted by content position —
- * insertion is a bounded backwards shift, and arrivals are monotone by
- * construction so the shift is almost always zero) and reads during
- * render (the same thread; count_ orders the two within a callback).
- * The message thread reads only when the clip is Idle (getWaveform's
- * Idle gate) — commit's seq-cst Idle store publishes every capture write.
+ * A take's note sequence: the MIDI twin of the clip's audio buffer —
+ * samples in the engine, QTime only in the save format — under the same
+ * pointer law (ClipNode's class comment). The MESSAGE thread allocates a
+ * fixed capacity at arm (kMaxEvents, ~1 MiB; a full sequence refuses
+ * further events rather than grow) and replaces the sequence only on an
+ * idle clip. The AUDIO thread appends during capture, sorted by
+ * position, and reads during render; count_ orders the two within a
+ * callback. The message thread reads only while the clip is Idle: the
+ * commit's Idle store publishes every capture write.
  */
 class MidiSequence {
  public:
   static constexpr int kMaxEvents = 1 << 16;
 
-  explicit MidiSequence(int capacity = 0) { reserve(capacity); }
-
-  /** Message thread, idle clip only: (re)allocate storage for
-   * `capacity` events and empty the sequence. */
-  void reserve(int capacity) {
-    events_.assign((size_t)std::max(0, capacity), MidiEvent{});
-    count_.store(0);
-    dropped_.store(0);
-  }
+  /** An empty sequence with storage for `capacity` events. Once a clip
+   * holds a sequence its storage is never reallocated: a take that needs
+   * room gets a NEW sequence (ClipNode's arm) and the one it displaces
+   * is retired whole, so nothing a render may hold moves under it. */
+  explicit MidiSequence(int capacity = 0)
+      : events_((size_t)std::max(0, capacity)) {}
 
   int capacity() const { return (int)events_.size(); }
   int count() const { return count_.load(); }
-  int dropped() const { return dropped_.load(); }
-  bool empty() const { return count() == 0; }
-  const MidiEvent* data() const { return events_.data(); }
   const MidiEvent& operator[](int i) const { return events_[(size_t)i]; }
 
-  /** Audio thread (capture): append at its sorted place. Full → the
-   * event is dropped and counted (the wall guard: integrity, not
-   * policy — a 65k-event take is beyond human playing). */
-  void append(int64_t pos, const juce::uint8* bytes, int size) {
+  /** Audio thread (capture): insert at its sorted place. False when the
+   * sequence is full or the message is not a channel message: the event
+   * is not stored. */
+  bool append(int64_t pos, const juce::uint8* bytes, int size) {
     const int n = count_.load();
-    if (n >= capacity() || size <= 0 || size > 3) {
-      dropped_.fetch_add(1);
-      return;
-    }
-    // Bounded backwards shift keeps the array sorted by pos (stable:
-    // equal positions keep arrival order).
+    if (n >= capacity() || size <= 0 || size > 3) return false;
+    // A bounded backwards shift keeps the array sorted by pos; equal
+    // positions keep arrival order. Arrivals are all but monotone, so
+    // the shift is almost always zero.
     int i = n;
     while (i > 0 && events_[(size_t)(i - 1)].pos > pos) {
       events_[(size_t)i] = events_[(size_t)(i - 1)];
@@ -97,6 +91,7 @@ class MidiSequence {
     memcpy(e.bytes, bytes, (size_t)size);
     for (int k = size; k < 3; ++k) e.bytes[k] = 0;
     count_.store(n + 1);
+    return true;
   }
 
   /** Message thread (load / splice): replace the whole content with
@@ -108,7 +103,6 @@ class MidiSequence {
                      });
     events_ = std::move(events);
     count_.store((int)events_.size());
-    dropped_.store(0);
   }
 
   /** A copy of the committed events [0, count) (message thread, idle
@@ -136,36 +130,30 @@ class MidiSequence {
  private:
   std::vector<MidiEvent> events_;
   std::atomic<int> count_{0};
-  std::atomic<int> dropped_{0};
 };
 
 /**
- * Held-note bookkeeping (128 notes × 16 channels as bitmasks, plus the
- * velocity each held note was struck with): capture uses it for the
- * take meter and the boundary notes (a note held across the take's
- * start lands as a note-on at content 0, one held across its end is
- * closed at the last sample — docs/vst3.md §11), render uses it to
- * release notes cut by a content discontinuity (loop seam, window
- * seam, one-shot rest, transport stop) — the "hanging notes closed at
- * the seam" rule (docs/vst3.md §8). Plain POD; the owner decides which
- * thread.
+ * Held-note bookkeeping: 128 notes × 16 channels as bitmasks, plus the
+ * velocity each held note was struck with. Capture uses it for the take
+ * meter and the boundary notes (vst3.md §8.4: a note held across the
+ * take's start lands as a note-on at content 0, one held across its end
+ * is closed at the last sample); render uses it to release the notes a
+ * content discontinuity cuts (vst3.md §8.3: hanging notes close at the
+ * seam). Plain POD; the owner decides which thread.
  */
 struct HeldNotes {
-  std::array<juce::uint16, 128> channels{};  // bit c = channel c held
-  // velocity[ch * 128 + note]: the note-on velocity while held.
-  std::array<juce::uint8, 16 * 128> velocity{};
+  /** The most notes that can be held at once. */
+  static constexpr int kMaxHeld = kMidiChannels * kMidiNotes;
+
+  std::array<juce::uint16, kMidiNotes> channels{};  // bit c = channel c held
+  // velocity[ch * kMidiNotes + note]: the note-on velocity while held.
+  std::array<juce::uint8, kMaxHeld> velocity{};
 
   void clear() { channels.fill(0); }
   bool any() const {
     for (const auto c : channels)
       if (c) return true;
     return false;
-  }
-  /** Bit c set when any note is held on channel c. */
-  juce::uint16 channelMask() const {
-    juce::uint16 mask = 0;
-    for (const auto c : channels) mask |= c;
-    return mask;
   }
   /** Track a raw channel message; returns true if it was a note event. */
   bool track(const juce::uint8* bytes, int size) {
@@ -175,7 +163,7 @@ struct HeldNotes {
     const int note = bytes[1] & 0x7F;
     if (status == 0x90 && bytes[2] > 0) {
       channels[(size_t)note] |= (juce::uint16)(1u << ch);
-      velocity[(size_t)(ch * 128 + note)] = bytes[2];
+      velocity[(size_t)(ch * kMidiNotes + note)] = bytes[2];
       return true;
     }
     if (status == 0x80 || (status == 0x90 && bytes[2] == 0)) {
@@ -187,11 +175,13 @@ struct HeldNotes {
   /** Calls fn(channel0, note, velocity) for every held note. */
   template <typename Fn>
   void forEachHeld(Fn&& fn) const {
-    for (int note = 0; note < 128; ++note) {
+    for (int note = 0; note < kMidiNotes; ++note) {
       const juce::uint16 mask = channels[(size_t)note];
       if (mask == 0) continue;
-      for (int ch = 0; ch < 16; ++ch) {
-        if (mask & (1u << ch)) fn(ch, note, velocity[(size_t)(ch * 128 + note)]);
+      for (int ch = 0; ch < kMidiChannels; ++ch) {
+        if (mask & (1u << ch)) {
+          fn(ch, note, velocity[(size_t)(ch * kMidiNotes + note)]);
+        }
       }
     }
   }
@@ -206,17 +196,20 @@ struct HeldNotes {
 };
 
 /**
- * The SOUND-OFF pair (docs/vst3.md §11): All Notes Off (CC 123) then
- * All Sound Off (CC 120) on every channel in `channel_mask`, at
- * `offset`. Sent to an instrument ONCE per closing edge — transport
- * stop, the S7 gate closing (mute / solo-silence / a sequence cut),
- * the new-take silence, a bounce tail, a device stop — so notes the
- * instrument holds release through its own envelope while the chain
- * after it rings. Fixed-size events; the buffer is preallocated.
+ * THE SOUND-OFF PAIR (vst3.md §8.3): All Notes Off (CC 123) then All
+ * Sound Off (CC 120) on every channel in `channel_mask`, at `offset`.
+ * Sent to an instrument ONCE per closing edge — a transport stop, the
+ * gate landing shut (mute, solo-silence, a sequence cut), a new take's
+ * silence, content handed down stopped (a bounce tail:
+ * ProcessContext::content_silent with no rest), a device stop — so
+ * notes the instrument holds release through its own envelope while the
+ * chain after it rings. A rest is not one: it releases the content's
+ * own notes and leaves the instrument be. Fixed-size events; the buffer
+ * is preallocated.
  */
 inline void addSoundOff(juce::MidiBuffer& out, juce::uint16 channel_mask,
                         int offset) {
-  for (int ch = 0; ch < 16; ++ch) {
+  for (int ch = 0; ch < kMidiChannels; ++ch) {
     if (!(channel_mask & (1u << ch))) continue;
     out.addEvent(juce::MidiMessage::allNotesOff(ch + 1), offset);
     out.addEvent(juce::MidiMessage::allSoundOff(ch + 1), offset);

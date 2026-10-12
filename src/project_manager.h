@@ -37,6 +37,8 @@ class ProjectManager {
   // --- roots ---
   juce::File projectsRoot() const;
   juce::File templatesRoot() const;
+  /** Tests and the headless server: everything lives under `base`,
+   * whatever setBase is told afterwards. */
   void setRootForTest(const juce::File& base) { base_override_ = base; }
   /** The base folder everything lives under (Projects/, Templates/,
    * TrackTemplates/): ~/Music/Celestrian unless the user chose another
@@ -55,10 +57,18 @@ class ProjectManager {
   juce::String id() const { return born() ? folder_.getFileName() : ""; }
   juce::String displayName() const { return display_name_; }
 
-  /** Heartbeat: births the project at the first committed take, then
-   * keeps the folder mirroring the session (incremental). Skips while a
-   * take is in flight (transient state is never saved). */
+  /** Heartbeat: returns idle takes' storage to exact size, then
+   * flush(). Skips while a take is in flight. */
   void tick();
+
+  /** Put the session on disk NOW: births the project if a take has
+   * committed, then mirrors (incremental). The heartbeat's write, and
+   * the one made wherever a session is about to be replaced or dropped
+   * (open, new-from-template, close, quit) — so rule 3 holds between
+   * ticks.
+   * No-op while a take is in flight (transient state is never saved)
+   * and for an unborn session with no take. */
+  void flush();
 
   /** Checkpoint now. Births the project if the user asked to save
    * before the first take (an explicit ⌘S is intent enough). */
@@ -68,14 +78,25 @@ class ProjectManager {
   void rename(const juce::String& name);
 
   /** Open a project folder (anywhere on disk — portability rule: the
-   * folder name is irrelevant, identity lives inside). */
+   * folder name is irrelevant, identity lives inside). The current
+   * session is flushed first. */
   bool openProject(const juce::File& dir);
 
-  /** Load a template as a fresh UNBORN session: the seed take will
-   * birth (and name) the project. */
-  bool newFromTemplate(const juce::String& template_name);
+  /** Load the template whose folder is `template_id` (a listTemplates
+   * id) as a fresh UNBORN session: the seed take will birth (and name)
+   * the project. The current session is flushed first. */
+  bool newFromTemplate(const juce::String& template_id);
 
-  /** Strip performances from the current session into a template. */
+  /** Let go of the current project: its session is flushed to its
+   * folder, then the manager is UNBORN — no folder, no name, no stamp.
+   * The session on stage is untouched: its next committed take, or a
+   * save, births a project of its own. */
+  void closeProject();
+
+  /** Strip performances from the current session into a template named
+   * `template_name`. Its folder (the template's id) is the name's
+   * legal-file-name form; false when the name leaves nothing to name a
+   * folder with. Re-saving a name overwrites its template. */
   bool saveAsTemplate(const juce::String& template_name);
 
   /** Codify the -02 habit: copy the folder to the next free serial and
@@ -90,12 +111,6 @@ class ProjectManager {
   };
   std::vector<Info> listTemplates() const;
   std::vector<Info> listRecents(int max = 10) const;
-
-  /** The last session template used or saved, persisted in
-   * <base>/state.json. Bookkeeping only (Q17): the app boots EMPTY and
-   * session templates are an explicit new-from choice — nothing
-   * auto-loads this. */
-  juce::String lastTemplateName() const;
 
   // --- Track templates (design_language.md Q17 — the Q7 companion) ---
   // SUBTREE templates: a track or group's structure + names + inputs,
@@ -128,13 +143,18 @@ class ProjectManager {
   juce::File base() const;
   /** First free YYYYMMDD-NN folder for today, NN from 01. */
   juce::File nextSerialFolder() const;
-  /** How the mirror writes take WAVs: INCREMENTAL skips files whose
-   * on-disk length already matches (committed audio is immutable);
-   * FULL_REWRITE stamps every file — used when a folder must become
-   * self-contained (save-as-template / duplicate). */
+  /** Give the unborn session its identity: the next serial folder, a
+   * display name equal to its id, and a creation stamp. */
+  void birth();
+  /** Back to unborn: the three identity fields empty. Writes nothing. */
+  void forgetIdentity();
+  /** How the mirror writes take WAVs: INCREMENTAL writes a take's file
+   * when it is missing or its clip marks its files dirty (committed
+   * audio is otherwise immutable); FULL_REWRITE stamps every file — a
+   * copied folder becoming the project's own (duplicate). False when
+   * the session is unborn or anything failed to write. */
   enum class MirrorMode { INCREMENTAL, FULL_REWRITE };
   bool mirror(MirrorMode mode);
-  void rememberLastTemplate(const juce::String& name);
 
   /** Where the chosen base folder persists. */
   static juce::File baseChoiceFile();

@@ -1,11 +1,14 @@
 /**
  * JUCE native bridge (production backend).
  *
- * Thin wrapper over the WebView bridge object JUCE injects at
- * `window.__JUCE__`. The C++ side (src/main_component.cc) registers every
- * protocol method via juce::WebBrowserComponent's withNativeFunction —
- * see ui/js/protocol.js for the canonical method list and
- * ui/js/tests/protocol_contract.test.mjs for the enforcement.
+ * JUCE injects `window.__JUCE__.backend` at document start. It is an
+ * event bus — addEventListener / removeEventListener / emitEvent /
+ * emitByBackend — and carries no native functions of its own: a native
+ * function is INVOKED by emitting '__juce__invoke' and ANSWERS with a
+ * '__juce__complete' event. The functions those names reach are the C++
+ * table in src/bridge_dispatch.cc plus the window verbs bound in
+ * src/main_component.cc; ui/js/protocol.js is the canonical list and
+ * ui/js/tests/protocol_contract.test.mjs enforces it.
  *
  * Only backend.js imports this module (the single backend facade); app
  * code never talks to it directly.
@@ -13,126 +16,93 @@
 
 import { QUIET_POLLS } from './protocol.js';
 
-const pendingCalls = new Map();
-let resultIdCounter = 0;
+// FIELD-NAME CONTRACT (JUCE's own wire protocol, asymmetric): the invoke
+// event carries the call's id as `resultId`; the completion event echoes
+// it back as `promiseId`.
+const INVOKE_EVENT = '__juce__invoke';
+const COMPLETE_EVENT = '__juce__complete';
 
-const CALL_TIMEOUT_MS = 1000;  // event-path call: resolve null after this
-const INIT_POLL_MS = 500;      // how often initBridge probes for __JUCE__
+// A heartbeat poll whose answer never comes resolves null after this,
+// so the poll loop asks again instead of waiting forever. No other verb
+// has a deadline: a chooser verb answers when the user closes its
+// dialog, and a slow verb answers when it is done.
+const HEARTBEAT_TIMEOUT_MS = 1000;
+
+const pendingCalls = new Map();  // resultId → { resolve, timer }
+let nextResultId = 0;
+let linkedBackend = null;        // the backend whose completions are heard
 
 /**
- * Debug log fan-out: writes `m` to (1) the browser console and (2) the
- * C++ terminal (stdout) via the `nativeLog` bridge method. (The status
- * strip's log line in app.js is the user-facing surface; this is
- * developer output.)
- *
- * The nativeLog leg is failure-safe: callNative's own error path calls
- * log(), so a throwing nativeLog must be swallowed here rather than
- * re-entering log() and recursing unboundedly.
+ * Debug log fan-out: writes `m` to the browser console and, through the
+ * `nativeLog` bridge method, to the C++ log. (The status strip's log
+ * line in app.js is the user-facing surface; this is developer output.)
  */
 export function log(m) {
     console.log("[Celestrian] " + m);
-    try {
-        // Route to terminal as requested. callNative resolves null (never
-        // rejects) on failure, but guard the synchronous part too.
-        callNative('nativeLog', m);
-    } catch (_) { /* never let logging recurse into logging */ }
+    callNative('nativeLog', m);
+}
+
+function settle(resultId, value) {
+    const call = pendingCalls.get(resultId);
+    if (!call) return;
+    pendingCalls.delete(resultId);
+    clearTimeout(call.timer);
+    call.resolve(value);
 }
 
 /**
- * Invoke a native bridge method. Two transport paths, tried in order:
- *
- *   1. DIRECT: `window.__JUCE__.backend[name](...)` — the official JUCE 8
- *      native-function API. src/main_component.cc registers all protocol
- *      methods this way (withNativeFunction), so this is the path that
- *      runs in production.
- *   2. EVENT: emitEvent('__juce__invoke', …) — JUCE's low-level internal
- *      wire protocol, kept as a fallback for bridge builds where the
- *      direct functions are not exposed.
- *
- * CONTRACT: this function never rejects. Failures — no bridge object, a
- * throwing direct call with no event path, or an event call that gets no
- * completion within CALL_TIMEOUT_MS — all resolve to `null`. Callers
- * must treat `null` as "bridge unavailable / call lost", not as a
- * method's return value.
+ * The injected backend with its completion listener attached, or null
+ * while JUCE has injected none. The listener is attached once per
+ * backend, the first time this sees it — at module load when JUCE is
+ * already there, otherwise by the first call that finds it — so no call
+ * is ever sent before its answer can be heard.
  */
-export async function callNative(name, ...args) {
-    const b = window.__JUCE__;
-
-    // 1. Try Direct Function Call (Official JUCE 8 API)
-    try {
-        if (b && b.backend && typeof b.backend[name] === 'function') {
-            const res = await b.backend[name](...args);
-            // The heartbeat polls stay quiet (protocol.js QUIET_POLLS,
-            // the C++ bridge and the mock do the same): logging the
-            // whole graph state 20×/s kept every object alive in the
-            // WebView console — memory growth and GC pauses (F12).
-            if (!QUIET_POLLS.has(name)) {
-                console.log(`Direct call [${name}] result:`, res);
-            }
-            return res;
-        }
-    } catch (e) {
-        log(`Direct call failed for ${name}: ${e.message}`);
+function linkBridge() {
+    const juce = window.__JUCE__;
+    const backend = juce && juce.backend;
+    if (!backend || typeof backend.emitEvent !== 'function' ||
+        typeof backend.addEventListener !== 'function') return null;
+    if (backend !== linkedBackend) {
+        backend.addEventListener(COMPLETE_EVENT,
+            done => settle(done.promiseId, done.result));
+        linkedBackend = backend;
+        log('Bridge linked.');
     }
-
-    // 2. Try Event-Based Call (Low level)
-    if (b && b.backend && typeof b.backend.emitEvent === 'function') {
-        return new Promise((resolve) => {
-            const resultId = resultIdCounter++;
-            pendingCalls.set(resultId, resolve);
-            // FIELD-NAME CONTRACT (JUCE 8 internals, deliberately
-            // asymmetric): the invoke event carries the id as `resultId`;
-            // JUCE's C++ side echoes it back on '__juce__complete' as
-            // `promiseId` (matched in initBridge below). Our own C++
-            // (main_component.cc) registers no custom event handlers —
-            // this speaks to JUCE's framework plumbing, so the names must
-            // stay exactly as JUCE defines them.
-            b.backend.emitEvent('__juce__invoke', { name: name, params: args, resultId: resultId });
-
-            // Timeout to prevent hanging the loop
-            setTimeout(() => {
-                if (pendingCalls.has(resultId)) {
-                    pendingCalls.delete(resultId);
-                    resolve(null);
-                }
-            }, CALL_TIMEOUT_MS);
-        });
-    }
-
-    return null;
+    return backend;
 }
 
 /**
- * One-shot bridge wiring, safe to call repeatedly: once `window.__JUCE__`
- * exists it registers the '__juce__complete' listener that settles
- * event-path calls (see the field-name contract in callNative — JUCE
- * sends the invoke's `resultId` back as `promiseId`), sets the
- * `window.bridgeInited` latch, invokes `onReady` if given, and fires the
- * 'bridge-ready' window event. Until the bridge appears it is a no-op —
- * the INIT_POLL_MS interval below keeps probing, since JUCE injects
- * __JUCE__ at its own pace during page load. Module-private: nothing
- * imports it; the poll below is its only caller.
+ * Invoke a native bridge method; resolves with its answer.
+ *
+ * CONTRACT: this function never rejects. With no bridge object, or one
+ * that cannot send, it resolves `null`; so does a heartbeat poll
+ * (protocol.js QUIET_POLLS) left unanswered for HEARTBEAT_TIMEOUT_MS.
+ * Callers must treat `null` as "bridge unavailable / call lost", not as
+ * a method's return value.
  */
-function initBridge(onReady) {
-    const b = window.__JUCE__;
-    if (b && b.backend && !window.bridgeInited) {
-        if (typeof b.backend.addEventListener === 'function') {
-            b.backend.addEventListener('__juce__complete', (res) => {
-                if (pendingCalls.has(res.promiseId)) {
-                    pendingCalls.get(res.promiseId)(res.result);
-                    pendingCalls.delete(res.promiseId);
-                }
-            });
+export function callNative(name, ...args) {
+    return new Promise(resolve => {
+        const resultId = nextResultId++;
+        pendingCalls.set(resultId, { resolve, timer: null });
+        try {
+            const backend = linkBridge();
+            if (!backend) { settle(resultId, null); return; }
+            backend.emitEvent(INVOKE_EVENT, { name, params: args, resultId });
+        } catch (err) {
+            // console, not log(): log() is itself a bridge call.
+            console.warn(`[Bridge] ${name} was not sent: ${err.message}`);
+            settle(resultId, null);
+            return;
         }
-        window.bridgeInited = true;
-        log("Bridge Linked.");
-        if (onReady) onReady();
-        window.dispatchEvent(new CustomEvent('bridge-ready'));
-    }
+        const call = pendingCalls.get(resultId);
+        if (call && QUIET_POLLS.has(name)) {
+            call.timer = setTimeout(() => settle(resultId, null),
+                                    HEARTBEAT_TIMEOUT_MS);
+        }
+    });
 }
 
-// Global hook for JUCE bridge initialization
-setInterval(() => initBridge(), INIT_POLL_MS);
+linkBridge();
 
 // Catch all errors
 window.addEventListener('error', (e) => {

@@ -3,7 +3,7 @@
 > Every doc carries a status: **spec** (binding — drift from code is a
 > bug), **proposal** (direction, not yet fully built), or **journal**
 > (history — kept for context, may describe superseded designs).
-> Index trued 2026-09-15.
+> Index trued 2026-10-12.
 >
 > A spec states what IS, in present tense. Where a doc has needed to
 > record what it *used* to be, that lives in a final **Appendix —
@@ -19,7 +19,7 @@
 | [kernel.md](kernel.md) | spec — implemented | The cyclic kernel: one monotonic clock, per-node origins, time-maps. §2 is the kernel itself, §3 the transport + recording lifecycle, §5 the migration record. Appendix §6. |
 | [recording.md](recording.md) | spec | Recording math: quantum, origins, arm/stop snapping, the LCM cycle view, ghosts. The worked examples are the executable spec (golden vectors). |
 | [time_maps.md](time_maps.md) | spec | Loop windows and non-contiguous selections as time-maps; recording through a map; the seam theorem; anchoring (§5 — the anchoring law, the cycle-top rule, the continuity re-anchor, the content frame); the editing surfaces (§6 — the same-scale reveal and the region panel). Appendix §8. |
-| [loop_selection.md](loop_selection.md) | guide + proposal | Loop regions end to end, with worked examples: the anchoring law in pictures, what each edit does in heard time (a slide moves only the splice), seating and the drag pin, both editing surfaces, the field-video glitches and their Phase 1 fixes (2026-09-23), the top model (§9, pending the owner) and the Phase 2 roadmap (§10). Appendix §11. |
+| [loop_selection.md](loop_selection.md) | guide + proposal | Loop regions end to end, with worked examples: the anchoring law in pictures, what each edit does in heard time (a slide moves only the splice), seating and the drag pin, both editing surfaces, the field-video glitches and their Phase 1 fixes (2026-09-23), the top model (§9) and the Phase 2 roadmap (§10), appendix §11; then the 2026-10-01 audit and what was built from it (§12–§14) and the edit bar with handles on the selected track only (§15 — the present law for selection and handles). |
 | [sequencer.md](sequencer.md) | spec | The fractal Sequence primitive on stacks: the **period law** (§2 — a stack's effective period is window ▸ active sequence length ▸ LCM of children's effective periods), gate/cue entrances, record-into-a-step, cue steps, successor graphs + the seed (§14 — the PROGRAM, root-only radios), per-step fades. Rulings S1–S22 (§0, §9, §11, §13). Appendix §16. **Section numbers are cited by other docs — do not renumber.** |
 | [engine_lcm_guard.md](engine_lcm_guard.md) | spec | The Q-coherence ruling (2026-08-09): every map/window period is a whole multiple or exact divisor of Q, enforced categorically on both sides; free-length cuts abolished. When a Q hand-off (Q22) moves the grid under a recorded loop, that loop drifts and folds into no cycle. |
 | [performance.md](performance.md) | spec | The audio-thread contract (§1 is project law), latency model, calibration feature, perf backlog and instrumentation. |
@@ -33,10 +33,10 @@
 | [session_view.md](session_view.md) | spec | The Tape Room session view (was `ui_overhaul.md`): the skeleton (§2), the interactions (§5), and the display laws (§6, laws 1–15, incl. the window law 13, the seek law 14 and the play-start law 15). Colors live in `ui/css/session.css`, not here. Appendix §8. |
 | [projects.md](projects.md) | spec | Projects as folders, birth at first take, the continuous mirror, whole-session templates, per-track record, post-hoc groups, the launch ritual (boot empty, Q17). Appendix at the end. |
 | [vst3.md](vst3.md) | spec | VST3/AU effect + instrument hosting: the dynamic per-node chain, native editor windows, out-of-process scanning, MIDI input and note clips (§8). Rulings Q-V1–V5 (§9). Appendix §11. |
-| [ui.md](ui.md) | spec | Frontend/backend separation of concerns; the masterPos contract; bridge placement rules (`ui/js/protocol.js` is the method list). |
-| [test_harness.md](test_harness.md) | spec | How to build and run every test layer, the gotchas, and the field checklist for loop regions. |
+| [ui.md](ui.md) | spec | Frontend/backend separation of concerns; the masterPos contract; **the answer law** (a verb that can be refused answers whether it applied; an edit that changes nothing is not applied; the status line reads the answer); bridge placement rules (`ui/js/protocol.js` is the method list). |
+| [test_harness.md](test_harness.md) | spec | How to build and run every test layer — C++, JS unit, mock e2e, engine e2e, and the DIFFERENTIAL that holds the mock to the engine — the gotchas, the mock's stepped clock, the shared e2e recipes, adding a bridge method or timing math, and the field checklists. |
 | [bounce.md](bounce.md) | spec | Bounce / export (Q19): the span rule (root: one effective cycle from the zero; node: one effective period from origin + a0), the −90 dBFS tail, stereo float WAV at the device rate, the bounce == live render golden. |
-| [takes.md](takes.md) | spec | Takes and comping (B4): a committed slot holds N immutable takes sharing one origin/period; the new-take arm rule (`t ≡ origin mod period`, one-period cap, stop = cancel); per-Q-cell comp with cell seams; undo shapes; persistence keys; what the UI half owes. Engine shipped; UI pending. |
+| [takes.md](takes.md) | spec | Takes and comping (B4): a committed slot holds N immutable takes sharing one origin/period; the new-take arm rule (`t ≡ origin mod period`, one-period cap, stop = cancel); per-Q-cell comp with cell seams, on a grid stored with the comp; undo shapes; persistence keys; the UI (§6). Engine and UI shipped. |
 | [import.md](import.md) | spec | Audio file import (B6): a WAV/AIFF/FLAC as a committed take — nearest-Q placement from the drop, the hysteresis length law, pre-Q import defines Q, a new take onto a committed slot, resampling, undo; the WebView path limit (a drop without a path → the chooser at the drop's Q). |
 | [frame.md](frame.md) | spec | Where the frame starts: the shared frame's zero is seated by the view from the lanes in the order shown (each loop's top at the left edge when a whole cycle-so-far reaches it, else where it fell, wrap ghosted), never stored. The engine keeps Q and the island zero (the first take's origin) and moves neither for a commit or a map edit. The pictures, the rulings it replaced (2026-09-16), what is pending. |
 | [tasks.md](tasks.md) | tracker | Tiered task list + the Open Design Questions table. |
@@ -81,7 +81,8 @@ closed:
 
 Q1–Q17, Q22 — design_language.md §5 · S1–S22 — sequencer.md §0/§9/§11/§13 ·
 Q-V1–V5 — vst3.md §9 · map coherence — engine_lcm_guard.md · projects
-model — projects.md · display laws 13/14 — session_view.md §6.
+model — projects.md · display laws 13/14 — session_view.md §6 · the
+answer law — ui.md · selection and handles — loop_selection.md §15.
 
 ## Ground rules for editing docs
 

@@ -1,247 +1,177 @@
 /**
- * Canonical bridge protocol between the Celestrian UI and its backends.
+ * The bridge protocol: every method the UI may call on a backend. Two
+ * implementations must match this list exactly —
+ *   - the C++ bridge: the table in src/bridge_dispatch.cc (boolMethod /
+ *     valueMethod / voidMethod), plus the verbs that need the window
+ *     (bindWindowVerb, src/main_component.cc);
+ *   - the mock: the `handlers` table in ui/js/mock_backend.js —
+ * and ui/js/tests/protocol_contract.test.mjs fails when either lacks a
+ * method, has an extra one, or answers another kind. To add a method:
+ * add it HERE first, then to both.
  *
- * This file is the single source of truth for which methods exist on the
- * native bridge. Two implementations must match it exactly:
+ * `params` is documentation. `returns` is THE ANSWER'S KIND, and each
+ * registration is held to it:
+ *   'bool — …'   a verb that can be REFUSED answers whether it applied:
+ *                `true` it did what the text says; `false` it was
+ *                refused and nothing changed. An edit that would change
+ *                nothing is not applied. The status line reads this
+ *                answer (shell_io.js `call`).
+ *   other text   the value the page reads.
+ *   absent       a knob or a notification nothing can refuse: answered
+ *                `true` once it ran.
+ * A call the bridge lost answers `null` whatever its kind. `read` marks
+ * a query that changes nothing: the only calls a transport may send
+ * twice (bridge_http.js).
  *
- *   1. The C++ JUCE bridge  — src/main_component.cc (withNativeFunction bindings)
- *   2. The mock backend     — ui/js/mock_backend.js (handlers table)
- *
- * The contract test (ui/js/tests/protocol_contract.test.mjs) parses both and
- * fails if either implementation is missing a method or has an extra one.
- * If you add a bridge method: add it HERE first, then to both backends.
- *
- * `params` and `returns` are documentation (not runtime-enforced yet); all
- * sample-domain values are int64 samples. No verb carries view state
- * (I6b): fold/expand and lane placement are UI-local (view_prefs.js).
+ * Sample-domain values are int64 samples. No verb carries view state:
+ * fold and lane placement are UI-local (view_prefs.js). What a verb
+ * does, and when the engine refuses it, is in the doc its group names.
  */
 export const BRIDGE_METHODS = [
-    { name: 'ping', params: [], returns: "'pong'" },
+    { name: 'ping', params: [], returns: "'pong'", read: true },
 
-    // Transport
-    { name: 'togglePlayback', params: [] },
-    // Ruler scrub: advance the playing PHASE by `deltaSamples`
-    // (negative moves it back). The engine reads no frame — the view
-    // seats the frame's zero (docs/frame.md) and computes the advance
-    // (seek.js) against the transport reading `atClock` it polled; the
-    // engine corrects for the clock having moved since. NOT undoable (a
-    // monitoring gesture, like auditionStep). Refused while any take is
-    // live or armed (returns false): takes place audio by the clock.
+    // Transport. A pause is refused under a live take. seekTransport
+    // takes a phase ADVANCE, not a position (seek.js); refused under a
+    // live take; not undoable.
+    { name: 'togglePlayback', params: [], returns: 'bool — the transport toggled' },
     { name: 'seekTransport', params: ['deltaSamples', 'atClock?'], returns: '{advance, clock} — what was applied and when; false refused (take live/armed)' },
 
-    // Recording
-    { name: 'startRecordingInNode', params: ['uuid'] },
-    { name: 'stopRecordingInNode', params: ['uuid'] },
+    // Recording (docs/recording.md). One take at a time: an arm under a
+    // live take is refused. A stop answers false when nothing beneath
+    // `uuid` was armed or capturing.
+    { name: 'startRecordingInNode', params: ['uuid'], returns: 'bool — a take is armed' },
+    { name: 'stopRecordingInNode', params: ['uuid'], returns: 'bool — a live take was asked to stop' },
 
     // State
-    { name: 'getGraphState', params: [], returns: 'GraphState (focused node metadata tree + isPlaying/masterPos/masterVuL/masterVuR; per-node isSoloed since Q16)' },
-    { name: 'getWaveform', params: ['uuid', 'numPeaks'], returns: 'float[] peaks (the ACTIVE take)' },
+    { name: 'getGraphState', params: [], read: true, returns: "GraphState (the root's metadata tree + isPlaying/masterPos/masterVuL/masterVuR; per-node isSoloed, Q16)" },
+    { name: 'getWaveform', params: ['uuid', 'numPeaks'], read: true, returns: 'float[] peaks (the ACTIVE take)' },
 
-    // Takes and comping (docs/takes.md): a committed clip holds N takes
-    // sharing its one origin/period. newTake arms a further take of a
-    // committed clip (or of every committed direct child of a stack,
-    // one performance) at the slot's next top, captures exactly one
-    // period and auto-finishes; a stop before that cancels it. Take
-    // commits ride the take undo entry (undo restores the previous
-    // active take). Selection, deletion and the comp are UNDOABLE and
-    // refused mid-take. State publishes `takes`, `activeTake`, `comp`.
-    { name: 'newTake', params: ['uuid'] },
-    { name: 'selectTake', params: ['uuid', 'index'] },
-    { name: 'deleteTake', params: ['uuid', 'index'] },
-    // cells = one take index per Q cell of the period (−1 = active);
-    // [] clears. Audio clips only.
-    { name: 'setComp', params: ['uuid', 'cells'] },
-    { name: 'getTakeWaveform', params: ['uuid', 'index', 'numPeaks'], returns: 'float[] peaks of take `index`' },
-    { name: 'dumpStateToFile', params: ['json'] },
+    // Takes and comping (docs/takes.md). newTake arms one more take of
+    // a committed clip (or of a stack's committed direct clips) at the
+    // slot's next top. Select, delete and comp are undoable and refused
+    // mid-take. setComp's cells: one take index per Q cell of the
+    // period (−1 = the active take); [] clears.
+    { name: 'newTake', params: ['uuid'], returns: 'bool — a new take is armed' },
+    { name: 'selectTake', params: ['uuid', 'index'], returns: 'bool — that take is now the active one' },
+    { name: 'deleteTake', params: ['uuid', 'index'], returns: 'bool — the take was removed' },
+    { name: 'setComp', params: ['uuid', 'cells'], returns: 'bool — the comp changed' },
+    { name: 'getTakeWaveform', params: ['uuid', 'index', 'numPeaks'], read: true, returns: 'float[] peaks of take `index`' },
+    { name: 'dumpStateToFile', params: ['json'], returns: 'bool — the file was written' },
 
-    // Graph structure
-    { name: 'createNode', params: ['type', 'parentUuid?'] },
-    { name: 'deleteNode', params: ['uuid'] },
-    { name: 'renameNode', params: ['uuid', 'name'] },
-    { name: 'reorderNode', params: ['uuid', 'newParentUuid', 'newIndex'] },
-    { name: 'combineNodes', params: ['draggedUuid', 'targetUuid'], returns: 'new stack uuid' },
+    // Graph structure. The two verbs that make a node answer its uuid.
+    // Delete, move and combine are refused under a live take.
+    { name: 'createNode', params: ['type', 'parentUuid?'], returns: 'the new node uuid; "" refused' },
+    { name: 'deleteNode', params: ['uuid'], returns: 'bool — the node and its subtree were removed' },
+    { name: 'renameNode', params: ['uuid', 'name'], returns: 'bool — the name changed' },
+    { name: 'reorderNode', params: ['uuid', 'newParentUuid', 'newIndex'], returns: 'bool — the node moved' },
+    { name: 'combineNodes', params: ['draggedUuid', 'targetUuid'], returns: 'the new stack uuid; "" refused' },
 
-    // Undo / redo (edits-as-events, unification_audit.md §2.2 Step 1).
-    // Every structural + property mutation is reversible; canUndo/canRedo
-    // publish on getGraphState. Effect enable/param edits are excluded
-    // this pass (non-destructive; a documented follow-up).
-    { name: 'undo', params: [] },
-    { name: 'redo', params: [] },
-    // A CANCELLED DRAG (Escape, a lost capture): the gesture open on
-    // `uuid` puts back exactly what it found and leaves no trace — the
-    // undo step its live commits coalesced into is applied and dropped
-    // (never redo-able), and the redo branch that step invalidated
-    // returns. A no-op with no gesture open there, or one that logged
-    // nothing. (Restoring by one more commit left a no-op undo step and
-    // the redo branch gone.)
-    { name: 'cancelGesture', params: ['uuid'] },
+    // Undo / redo. cancelGesture ends the drag open on `uuid` with no
+    // trace: the node is put back, the gesture's undo step is dropped,
+    // and the redo branch it invalidated returns. It answers false when
+    // what the drag did stands (no drag open there, or a take is live).
+    { name: 'undo', params: [], returns: 'bool — a step was undone' },
+    { name: 'redo', params: [], returns: 'bool — a step was redone' },
+    { name: 'cancelGesture', params: ['uuid'], returns: 'bool — the node is as the drag found it' },
 
-    // Save / Load (edits-as-events Step 2). A session is a bundle dir
-    // (session.json + audio/*.wav), device-independent + QTime-based
-    // (src/session_io.h). An empty path opens a native file chooser.
-    { name: 'saveSession', params: ['path?'], returns: 'true on success' },
-    { name: 'loadSession', params: ['path?'], returns: 'true on success' },
+    // Sessions: a bundle directory (src/session_io.h). An empty path
+    // opens the native chooser.
+    { name: 'saveSession', params: ['path?'], returns: 'bool — saved' },
+    { name: 'loadSession', params: ['path?'], returns: 'bool — loaded' },
 
-    // Bounce (design_language.md Q19, docs/bounce.md): render a node
-    // OFFLINE through the real render path to a stereo float WAV at
-    // the device rate — the island root for one effective cycle (the
-    // song), any other node for one effective period — with effect
-    // tails ringing past the end. Refused (false) while a take is
-    // live or armed, or when the node has no committed content.
-    // bounceWithDialog picks the path natively (default <node>.wav in
-    // the project folder); false when cancelled.
-    // `start` (optional, absolute samples) names the render's start —
-    // the app bounces the song from the frame zero the view seated
-    // (docs/frame.md), so the file starts where the picture starts;
-    // absent, the node's own top.
-    { name: 'bounce', params: ['uuid', 'path', 'start?'], returns: 'true on success' },
-    { name: 'bounceWithDialog', params: ['uuid', 'start?'], returns: 'true on success' },
+    // Bounce (docs/bounce.md): an offline render of a node to a WAV —
+    // the root for one cycle, any other node for one period. `start`
+    // (absolute samples) names where the render begins; absent, the
+    // node's own top. False when refused or cancelled.
+    { name: 'bounce', params: ['uuid', 'path', 'start?'], returns: 'bool — the file was rendered' },
+    { name: 'bounceWithDialog', params: ['uuid', 'start?'], returns: 'bool — the file was rendered' },
 
-    // Audio file import (docs/import.md): a WAV/AIFF/FLAC becomes a
-    // committed take. `originSamples` is the origin in absolute
-    // samples — the view computes it from the frame zero it seated
-    // (docs/frame.md; the drop's lane position in whole Q from that
-    // zero) and the engine snaps it to the Q grid. An EMPTY clip (or a
-    // stack, which gains a clip child named after the file) takes a
-    // first take with the record path's hysteresis snap — establishing
-    // Q on a pre-Q island, where the clock is the origin; a COMMITTED
-    // clip takes a NEW TAKE cut or zero-padded to its period. Undoable
-    // (rides Take/Untake). Refused (false) under a live take, on a
-    // MIDI track, or for an unreadable file. importAudioWithDialog
-    // picks the file natively (WAV/AIFF/FLAC); false when cancelled.
-    { name: 'importAudio', params: ['uuid', 'path', 'originSamples'], returns: 'true on success' },
-    { name: 'importAudioWithDialog', params: ['uuid', 'originSamples'], returns: 'true on success' },
+    // Audio file import (docs/import.md): a file becomes a committed
+    // take at `originSamples` (absolute; the engine snaps it to the Q
+    // grid). Undoable. False when refused or cancelled.
+    { name: 'importAudio', params: ['uuid', 'path', 'originSamples'], returns: 'bool — the file became a take' },
+    { name: 'importAudioWithDialog', params: ['uuid', 'originSamples'], returns: 'bool — the file became a take' },
 
-    // MIDI lane rendering (docs/vst3.md §11): a MIDI clip's notes,
-    // note-on/off PAIRED (an unpaired note-on runs to the take end),
-    // content positions as QTime on the island rate — fetched on demand
-    // like waveforms and cached by the UI on `midiEvents` + the active
-    // take. Empty for an audio clip or while a take is live on it.
-    { name: 'getMidiNotes', params: ['uuid'], returns: '[[posQnum, posQden, note, velocity, lenQnum, lenQden], ...]' },
+    // A MIDI clip's notes, paired (docs/vst3.md §8.5). Empty for an
+    // audio clip or while a take is live on it.
+    { name: 'getMidiNotes', params: ['uuid'], read: true, returns: '[[posQnum, posQden, note, velocity, lenQnum, lenQden], ...]' },
 
-    // The project model (docs/projects.md): a project is a FOLDER named
-    // YYYYMMDD-NN (the ID — renames never move it), BORN at the first
-    // committed take, continuously MIRRORED after. A template is a
-    // project with no performances (pre-Q by construction). The info
-    // carries the library folders the preferences panel shows: the
-    // projects root and the track-template library beneath it.
-    { name: 'getProjectInfo', params: [], returns: 'JSON {id, name, born, projectsRoot, trackTemplatesRoot}' },
-    // Preferences: the base folder (projects, templates, the track-
-    // template library) is a persisted choice — the audio device's
-    // discipline. chooseProjectsRoot picks it natively and answers the
-    // new path ("" when cancelled).
-    { name: 'setProjectsRoot', params: ['path'], returns: 'true on success' },
+    // The project model (docs/projects.md): a project is a folder
+    // named by its id, born at the first committed take and mirrored
+    // after; a template is a project with no performances.
+    { name: 'getProjectInfo', params: [], read: true, returns: '{id, name, born, projectsRoot, trackTemplatesRoot}' },
+    { name: 'setProjectsRoot', params: ['path'], returns: 'bool — the folder is the projects root' },
     { name: 'chooseProjectsRoot', params: [], returns: 'the chosen path, or ""' },
     { name: 'renameProject', params: ['name'] },
-    { name: 'saveProjectNow', params: [], returns: 'true on success' },
-    { name: 'listTemplates', params: [], returns: 'JSON [{id, name, path}]' },
-    { name: 'listRecentProjects', params: [], returns: 'JSON [{id, name, path}]' },
-    { name: 'newProjectFromTemplate', params: ['name'], returns: 'true on success' },
-    { name: 'openProjectPath', params: ['path'], returns: 'true on success' },
-    { name: 'saveAsTemplate', params: ['name'], returns: 'true on success' },
+    { name: 'saveProjectNow', params: [], returns: 'bool — the project is on disk' },
+    { name: 'listTemplates', params: [], read: true, returns: '[{id, name, path}]' },
+    { name: 'listRecentProjects', params: [], read: true, returns: '[{id, name, path}]' },
+    { name: 'newProjectFromTemplate', params: ['name'], returns: 'bool — the template is the session' },
+    { name: 'openProjectPath', params: ['path'], returns: 'bool — the project is the session' },
+    { name: 'saveAsTemplate', params: ['name'], returns: 'bool — the template was saved' },
     { name: 'duplicateProject', params: [], returns: 'new project id or ""' },
 
-    // Track templates (design_language.md Q17 — the Q7 companion):
-    // SUBTREE templates — a track or group's structure + names + input
-    // assignments, saved once from the selection and replayed from the
-    // creation menu. A GLOBAL user-level library, distinct from the
-    // whole-session templates above. Insert is ONE undoable edit.
-    { name: 'listTrackTemplates', params: [], returns: 'JSON [{name, kind: "clip"|"group", tracks}]' },
-    { name: 'saveTrackTemplate', params: ['uuid', 'name'], returns: 'true on success' },
-    { name: 'createFromTrackTemplate', params: ['name', 'parentUuid?'], returns: 'true on success' },
+    // Track templates (design_language.md Q17): a track or group's
+    // structure, names and inputs, in a user-level library. An insert
+    // is one undoable edit.
+    { name: 'listTrackTemplates', params: [], read: true, returns: '[{name, kind: "clip"|"group", tracks}]' },
+    { name: 'saveTrackTemplate', params: ['uuid', 'name'], returns: 'bool — the template was saved' },
+    { name: 'createFromTrackTemplate', params: ['name', 'parentUuid?'], returns: 'bool — the tracks were added' },
 
-    // Per-node audio state: there is no per-node Play/Stop (Q16) —
-    // mute/solo + the one transport are the per-node play controls.
-    // Solo is per-node, additive, fractal.
+    // Mute / solo: with the one transport, the per-node play controls.
+    // Mute is undoable; solo is a monitoring gesture.
     { name: 'toggleSolo', params: ['uuid'] },
-    { name: 'toggleMute', params: ['uuid'] },
-    // `live?` (owner ruling 2026-09-10): true for every commit AFTER a
-    // drag gesture's first — it coalesces into that gesture's undo
-    // entry. Omitted = a new undo step (separate gestures never merge).
-    { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples', 'live?'] },
-    { name: 'setSegments', params: ['uuid', 'flatSegments', 'live?'] },
-    // THE RE-TIME (docs/loop_selection.md §9, owner 2026-09-24): a swap
-    // (every map verb above) changes WHAT plays and keeps the origin; a
-    // shift changes WHEN — this verb moves a clip's origin by
-    // `shiftSamples` (any amount, sub-Q included; never re-folded) and
-    // adds the same to its `retime` (the cumulative user shift, 0 = as
-    // played). A finite `topSamples` ≥ 0 also stores the loop's top
-    // (the ↺, a raw take position; it must lie in the clip's kept set or
-    // the whole call is refused). The lane ↺ drag sends a shift; the
-    // panel's start marker sends a top AND the compensating shift, so
-    // the ↺ keeps its moment; "timing as played" sends −retime. ONE
-    // undoable step (origin, retime, top together); `live?` coalesces
-    // like setSegments'. Refused for stacks, the Q-definer, an empty,
-    // recording or pending clip, and anything while a take is live.
-    // State publishes `loopTop` (the effective top: the stored one while
-    // the map plays it, else the region start) and `retime` per clip.
-    // Every map edit reconciles the top and STORES it (the effective top
-    // before the edit while the new region plays it, else the new region
-    // start — unset only on a take never edited); a bypass leaves it.
-    { name: 'setTiming', params: ['uuid', 'shiftSamples', 'topSamples?', 'live?'] },
-    { name: 'warpPointer', params: ['x', 'y', 'viewportW', 'viewportH'] },
-    // Loop window activation is data, not view state (docs/time_maps.md):
-    // toggles a stack's window between active and bypassed.
-    { name: 'toggleLoopWindow', params: ['uuid'] },
-    // The SEQUENCER (docs/sequencer.md): install/replace/clear a stack's
-    // sequence — { steps: [{name, len}], gates: {uuid: [0/1 per step]} },
-    // lengths in samples; null/void clears. Undoable; refused mid-take.
-    // `zero` (optional, absolute samples) is the frame zero the view
-    // has seated: a song authored on the ROOT anchors it there
-    // (docs/frame.md §4), so the song's top is where the picture
-    // already started.
-    { name: 'setSequence', params: ['uuid', 'sequence', 'zero?'] },
-    // The sequence's jam toggle (bypass) — the loop-window twin.
-    { name: 'toggleSequence', params: ['uuid'] },
-    { name: 'auditionStep', params: ['uuid', 'step'] },
+    { name: 'toggleMute', params: ['uuid'], returns: 'bool — the mute flipped' },
 
-    // Hardware
-    // getInputList returns only ACTIVE input channels, in callback order —
-    // the index handed to setNodeInput IS the audio callback's channel index.
-    { name: 'getInputList', params: [], returns: '{ inputs: string[] }' },
-    { name: 'setNodeInput', params: ['uuid', 'channelIndex'] },
-    // Right input of a stereo pair (−1 = mono). Channel count of a take
-    // is fixed at arm; committed takes keep their recorded channels.
-    { name: 'setNodeInputRight', params: ['uuid', 'channelIndex'] },
-    // Software input monitoring (design_language.md Q20): hear the
-    // clip's input through its own rack, gate, gain and pan — idle,
-    // armed or capturing — with no latency beyond the device round
-    // trip. Clips only; OFF by default; a monitoring gesture like solo
-    // (NOT undoable). Persisted + captured by track templates as input
-    // setup. State publishes as `monitor` per clip.
-    { name: 'setMonitor', params: ['uuid', 'on'] },
+    // Loop windows and maps (docs/time_maps.md). `live?` is true for
+    // every commit of a drag after its first: it coalesces into that
+    // gesture's undo step. Omitted, the commit is a new step.
+    { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples', 'live?'], returns: 'bool — the window changed' },
+    { name: 'setSegments', params: ['uuid', 'flatSegments', 'live?'], returns: 'bool — the map changed' },
+    // The re-time (docs/loop_selection.md §9): moves a clip's origin by
+    // `shiftSamples` and adds the same to its `retime`; a `topSamples`
+    // ≥ 0 also stores the loop's top, and must lie in the clip's kept
+    // set or the whole call is refused. One undoable step.
+    { name: 'setTiming', params: ['uuid', 'shiftSamples', 'topSamples?', 'live?'], returns: 'bool — the timing changed' },
+    { name: 'warpPointer', params: ['x', 'y', 'viewportW', 'viewportH'], returns: 'bool — the OS cursor moved' },
+    // A window's activation is data: active or bypassed.
+    { name: 'toggleLoopWindow', params: ['uuid'], returns: 'bool — the bypass flipped' },
 
-    // Mixer: pan/balance −1 (L) .. +1 (R). Balance law (center unity),
-    // applied at render on clips and groups; NOT undoable (mixer knob —
-    // the effect-param ruling). State publishes as `pan` per node.
+    // The sequencer (docs/sequencer.md). A sequence is { steps: [{name,
+    // len}], gates: {uuid: [0/1 per step]} }, lengths in samples; null
+    // clears. `zero` (absolute samples) anchors a song on the ROOT at
+    // the frame zero the view seated (docs/frame.md §4). The bypass is
+    // a fact of the song: there is none to toggle without one.
+    { name: 'setSequence', params: ['uuid', 'sequence', 'zero?'], returns: 'bool — the song changed' },
+    { name: 'toggleSequence', params: ['uuid'], returns: "bool — the song's bypass flipped" },
+    { name: 'auditionStep', params: ['uuid', 'step'], returns: 'bool — the step loops (−1: the loop is released)' },
+
+    // Inputs. getInputList answers only the ACTIVE input channels, in
+    // callback order: the index handed to setNodeInput IS the audio
+    // callback's channel index. setNodeInputRight −1 is mono.
+    { name: 'getInputList', params: [], read: true, returns: '{ inputs: string[] }' },
+    { name: 'setNodeInput', params: ['uuid', 'channelIndex'], returns: 'bool — the input changed' },
+    { name: 'setNodeInputRight', params: ['uuid', 'channelIndex'], returns: 'bool — the right input changed' },
+    // Software input monitoring (design_language.md Q20); clips only.
+    { name: 'setMonitor', params: ['uuid', 'on'], returns: 'bool — the clip monitors as asked' },
+
+    // Mixer knobs, not undoable: pan −1 (L) .. +1 (R), gain 0 .. 1
+    // (unity; attenuate only).
     { name: 'setNodePan', params: ['uuid', 'pan'] },
-    // Mixer: volume fader 0 (silent) .. 1 (unity default — attenuate
-    // only, the pan no-boost law), applied at the node's output stage
-    // after fx; NOT undoable. State publishes as `gain` per node.
     { name: 'setNodeGain', params: ['uuid', 'gain'] },
 
-    // The period-source knob (Q5): 'context' makes the clip a ONE-SHOT
-    // (period := context cycle — sounds once per scope cycle at its
-    // origin, then rests); 'own' restores the loop. Clips only;
-    // UNDOABLE (a musical fact). State publishes as `periodSource`.
-    { name: 'setPeriodSource', params: ['uuid', 'source'] },
+    // The period source (Q5): 'context' makes the node a one-shot,
+    // 'own' a loop. Undoable.
+    { name: 'setPeriodSource', params: ['uuid', 'source'], returns: 'bool — the period source changed' },
 
-    // HAND Q TO A TRACK (Q22): the node becomes the island's Q-definer —
-    // Q := its loop, the zero := its loop top (nothing sounds different);
-    // its region trims then re-establish (Q, zero) like a first take's,
-    // until the next take records new content. Loops that no longer fit
-    // Q drift. A committed looping clip, or a group whose tracks are one
-    // take; refused under a live take. UNDOABLE. The definer publishes as
-    // `definerId`.
-    { name: 'setDefiner', params: ['uuid'] },
+    // Hand Q to a track (Q22): the node becomes the island's
+    // Q-definer. Undoable; published as `definerId`.
+    { name: 'setDefiner', params: ['uuid'], returns: 'bool — the node defines Q' },
 
-    // Audio device selection. On Windows a multi-channel interface only
-    // appears whole under ASIO — its WDM driver splits the box into stereo
-    // endpoints — so picking the driver TYPE matters as much as the device.
-    // The choice persists to <app data>/Celestrian/audio_device.xml and is
-    // restored at launch. Rate/buffer of 0 mean "the device's preference".
+    // Audio device (docs/performance.md §4). A rate or buffer of 0
+    // means the device's preference; the choice is persisted.
     {
-        name: 'getAudioDeviceState', params: [],
+        name: 'getAudioDeviceState', params: [], read: true,
         returns: '{ types, currentType, devices, currentDevice, sampleRates, ' +
             'currentSampleRate, bufferSizes, currentBufferSize, inputChannels, ' +
             'outputChannels, availableInputChannels, asioAvailable, error }'
@@ -251,46 +181,35 @@ export const BRIDGE_METHODS = [
         returns: '"" on success, else an error string'
     },
 
-    // The effect chain (src/dsp/fx_chain.h, docs/vst3.md phase 2): a
-    // dynamic per-node slot chain (built-ins now; VST3 slots in phase
-    // 3). State publishes on every node's metadata as `effects` =
-    // {chain: [{slot, type, enabled, ...params}], scope?}; edits are
-    // keyed by the stable slot uuid. moveChainSlot is UNDOABLE (chain
-    // structure); enable/params are knobs (not undoable, like pan).
-    { name: 'setSlotEnabled', params: ['uuid', 'slotUuid', 'enabled'] },
+    // The effect chain (docs/vst3.md): per-node slots, edited by slot
+    // uuid. Enable and params are knobs (not undoable); move, add and
+    // remove are undoable structure edits. An add answers once the
+    // plugin has loaded: true with its slot in the chain, false when it
+    // is not in the registry, could not be loaded, or its node is gone.
+    // Only plugin slots can be removed.
+    { name: 'setSlotEnabled', params: ['uuid', 'slotUuid', 'enabled'], returns: 'bool — the slot is switched as asked' },
     { name: 'setSlotParam', params: ['uuid', 'slotUuid', 'key', 'value'] },
-    { name: 'moveChainSlot', params: ['uuid', 'slotUuid', 'newIndex'] },
-    // VST3 slots (docs/vst3.md phase 3): add is ASYNC on the backend
-    // (instantiation completes later; the chip appears when the chain
-    // publishes) and lands enabled; add/remove are UNDOABLE structure
-    // edits; removal is VST3-only (built-ins are the fixed cards).
-    // openPluginEditor raises the plugin's native floating window.
-    { name: 'addPluginToChain', params: ['uuid', 'pluginUid', 'index?'] },
-    { name: 'removeChainSlot', params: ['uuid', 'slotUuid'] },
-    { name: 'openPluginEditor', params: ['uuid', 'slotUuid'] },
-    // Live MIDI (docs/vst3.md §8, phase 4): single-armed play-through
-    // target (arming a node clears every other); a monitoring gesture
-    // like solo — not undoable, not persisted. getMidiInputs is the
-    // diagnostics readout for the plugins panel.
+    { name: 'moveChainSlot', params: ['uuid', 'slotUuid', 'newIndex'], returns: 'bool — the slot moved' },
+    { name: 'addPluginToChain', params: ['uuid', 'pluginUid', 'index?'], returns: "bool — the plugin's slot is in the chain" },
+    { name: 'removeChainSlot', params: ['uuid', 'slotUuid'], returns: 'bool — the slot was removed' },
+    { name: 'openPluginEditor', params: ['uuid', 'slotUuid'], returns: "bool — the plugin's editor is on screen" },
+    // Live MIDI (docs/vst3.md §8): arming a node clears every other.
+    // getMidiInputs is a diagnostics readout no panel shows.
     { name: 'setMidiArmed', params: ['uuid', 'on'] },
-    { name: 'getMidiInputs', params: [], returns: '{ devices: [name], dropped }' },
-    // Panel open/closed: gates the node's scope capture + telemetry —
-    // when no panel watches, the audio thread doesn't even copy.
+    { name: 'getMidiInputs', params: [], read: true, returns: '{ devices: [name], dropped }' },
+    // Whether an effects row is watching: gates the node's scope capture.
     { name: 'setEffectScope', params: ['uuid', 'active'] },
 
-    // Latency calibration (docs/performance.md §7): emits a click while
-    // capturing input; the measured round-trip supersedes device-reported
-    // latencies in recording alignment.
-    { name: 'startLatencyCalibration', params: [], returns: 'true' },
-    { name: 'getLatencyCalibration', params: [], returns: '{ phase, roundTripSamples, roundTripMs, calibrated }' },
+    // Latency calibration (docs/performance.md §7). A run in flight is
+    // left to finish: a second start is refused.
+    { name: 'startLatencyCalibration', params: [], returns: 'bool — a run started' },
+    { name: 'getLatencyCalibration', params: [], read: true, returns: '{ phase, roundTripSamples, roundTripMs, calibrated }' },
 
-    // Plugin hosting (docs/vst3.md phase 1): the known-plugin registry.
-    // Scanning runs on a backend background thread with the
-    // dead-man's-pedal crash blacklist; the UI polls status while the
-    // plugin panel is open (poll-shaped, like the device panel).
-    { name: 'getKnownPlugins', params: [], returns: '[{name, uid, file, maker, category, version, isInstrument}] name-sorted' },
+    // The plugin registry (docs/vst3.md): a scan runs in the
+    // background; the UI polls its status while the panel is open.
+    { name: 'getKnownPlugins', params: [], read: true, returns: '[{name, uid, file, maker, category, version, isInstrument}] name-sorted' },
     { name: 'scanPlugins', params: ['extraPath?'] },
-    { name: 'getPluginScanStatus', params: [], returns: '{ scanning, progress, current, count, blacklistCount, crashed: [file names excluded this scan], crashedCount, error, outOfProcess }' },
+    { name: 'getPluginScanStatus', params: [], read: true, returns: '{ scanning, progress, current, count, blacklistCount, crashed: [file names excluded this scan], crashedCount, error, outOfProcess }' },
 
     // Debug
     { name: 'nativeLog', params: ['message'] },
@@ -298,10 +217,28 @@ export const BRIDGE_METHODS = [
 
 export const BRIDGE_METHOD_NAMES = BRIDGE_METHODS.map(m => m.name);
 
-/** THE HEARTBEAT: the polls exempt from every invocation trace — the
- * 50 ms graph poll and the 2 s project poll are not events, and tracing
- * them buries every real call (and, in the WebView, retains every
- * logged state object: flash-chrome F12, 2026-09-22). One list for the
- * JS backends (bridge.js, mock_backend.js); the C++ bridge's twin is
- * logCall in src/bridge_dispatch.cc. */
+/** A method's answer kind, as its `returns` declares it: 'bool' (a verb
+ * that can be refused), 'value', or 'void'. */
+export function answerKind(method) {
+    if (!method.returns) return 'void';
+    return /^bool\b/.test(method.returns) ? 'bool' : 'value';
+}
+
+const namesOfKind = kind => new Set(
+    BRIDGE_METHODS.filter(m => answerKind(m) === kind).map(m => m.name));
+
+/** The verbs that answer whether they applied. */
+export const BOOL_METHODS = namesOfKind('bool');
+/** The verbs nothing can refuse: a backend answers `true` once one ran. */
+export const VOID_METHODS = namesOfKind('void');
+/** The queries: they change nothing, so one may be sent again when its
+ * answer was lost. No verb may. */
+export const READ_METHODS = new Set(
+    BRIDGE_METHODS.filter(m => m.read).map(m => m.name));
+
+/** THE HEARTBEAT: the graph poll and the project poll. Every invocation
+ * trace skips them (mock_backend.js; logCall in src/bridge_dispatch.cc)
+ * — they would bury every real call, and a WebView console retains
+ * each logged state object. They are also the only calls bridge.js
+ * gives a deadline: a poll is asked again, a verb is not. */
 export const QUIET_POLLS = new Set(['getGraphState', 'getProjectInfo']);

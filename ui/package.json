@@ -4,10 +4,11 @@
   "description": "Celestrian UI integration tests",
   "type": "module",
   "scripts": {
-    "test": "for f in js/tests/*.test.mjs; do echo \"--- $f\"; node \"$f\" || exit 1; done",
+    "test": "node --test js/tests/*.test.mjs",
     "test:playwright": "npx playwright test",
     "test:engine": "npx playwright test -c playwright.engine.config.js",
-    "test:all": "npm run test && npm run test:playwright && npm run test:engine"
+    "test:diff": "node differential/selftest.mjs && node differential/run.mjs",
+    "test:all": "npm run test && npm run test:playwright && npm run test:engine && npm run test:diff"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",

@@ -10,22 +10,26 @@
 namespace celestrian {
 
 /**
- * The live MIDI mailbox (docs/vst3.md §8, phase 4): a lock-free
- * single-producer/single-consumer ring between the OS MIDI thread
- * (push) and the audio callback (drainTo). Fixed POD storage — no
- * locks, no allocation on either side (performance.md §1 applies to
- * the drain side; the push side is a realtime-ish MIDI thread that
- * deserves the same manners).
+ * The live MIDI mailbox (vst3.md §8): a lock-free single-producer /
+ * single-consumer ring between the OS MIDI thread (push) and the audio
+ * callback (drainTo). Fixed POD storage — no locks, no allocation on
+ * either side (performance.md §1 applies to the drain side; the push
+ * side is a realtime-ish MIDI thread that deserves the same manners).
+ *
+ * SINGLE PRODUCER, though the engine registers this one callback for
+ * every MIDI device: juce::AudioDeviceManager delivers its MIDI
+ * callbacks one at a time, under its own lock. A second pusher that
+ * bypassed the manager would break the ring.
  *
  * Scope: CHANNEL messages only (≤ 3 bytes — notes, CC, pitch bend).
  * SysEx is ignored at push.
  *
- * Timestamps (phase 5): each event carries JUCE's arrival timestamp
- * (seconds on Time::getMillisecondCounterHiRes's clock — the clock
- * every MidiInput backend stamps with). The timestamped drain spreads
- * the events that arrived since the previous drain across the block
- * in proportion (the MidiMessageCollector rule): sub-block onsets for
- * both play-through and recording.
+ * Timestamps: each event carries JUCE's arrival timestamp (seconds on
+ * Time::getMillisecondCounterHiRes's clock — the clock every MidiInput
+ * backend stamps with). The timestamped drain spreads the events that
+ * arrived since the previous drain across the block in proportion (the
+ * MidiMessageCollector rule): sub-block onsets for both play-through
+ * and recording.
  *
  * Overflow drops the NEWEST event and counts it (droppedCount — a
  * diagnostics readout, not a hidden truncation; the UI can surface
@@ -99,8 +103,8 @@ class MidiInputQueue {
 };
 
 /**
- * The MIDI ARRIVAL HISTORY (docs/vst3.md §8, phase 5) — the note twin
- * of the pre-record ring (docs/performance.md §3): every drained event
+ * The MIDI ARRIVAL HISTORY (vst3.md §8) — the note twin of the
+ * pre-record ring (performance.md §3): every drained event
  * is appended with its ARRIVAL INDEX on the engine's monotonic input
  * clock (input_clock + block offset). Recording clips read their
  * capture window from here rather than from the live block, so a take

@@ -1,24 +1,49 @@
 /**
- * Rail state: patch every rail control in place from the lane snapshot
- * — all writes idempotent (the setText law), none over a held control
- * (_hot) or an open rename editor (_renaming).
+ * Rail state: patch every rail control in place from the lane snapshot.
+ * The rail is never rebuilt, and no write lands on a held control or an
+ * open rename editor (context.js).
  */
 
-import { setText, setTitle, fmtQ } from './sv_util.js';
+import { setText, setTitle, fmtQ, MAX_INDENT_DEPTH } from './sv_util.js';
 import { selection } from './selection.js';
 import { setGainDial, setPanDial } from './dials.js';
 import { patchFxRow } from './fx_row.js';
 import { patchSeqGrid } from './seq_grid.js';
+import { takeVerbOwner } from './take_menu.js';
 
-/* The recording sub-line prints one decimal below this, whole Qs above
- * ("12.3Q…" outgrew the slot). */
+/* The recording sub-line prints one decimal below this, whole Qs above:
+ * "12.3Q…" does not fit the slot. */
 const REC_LEN_DECIMAL_MAX_Q = 9.95;
 
+/** The fx chip — a rail's, and the master strip's: the count of enabled
+ * slots at rest, lit with any. */
+export function patchFxChip(btn, count) {
+    setText(btn, count > 0 ? 'fx·' + count : 'fx');
+    btn.classList.toggle('on', count > 0);
+}
+
+/** The sequencer chip — a group rail's, and the root's (docs/
+ * sequencer.md §9): 'seq' with no sequence, 'seq·NQ' with one, '⟲ step
+ * N' while a step loops; lit while active, struck while bypassed,
+ * marked while its passes drift. `seq` is the lane's (or root's) seq
+ * summary, or null. */
+export function patchSeqChip(btn, seq) {
+    const looping = !!(seq && seq.auditionStep >= 0);
+    setText(btn, seq
+        ? (looping ? '⟲ step ' + (seq.auditionStep + 1)
+                   : 'seq·' + fmtQ(seq.totalQ) + 'Q')
+        : 'seq');
+    btn.classList.toggle('on', !!(seq && !seq.bypassed));
+    btn.classList.toggle('looping', looping);
+    btn.classList.toggle('drift', !!(seq && seq.drift));
+    btn.classList.toggle('bypassed', !!(seq && seq.bypassed));
+}
+
 /**
- * Patch one lane's rail: selection classes, name (never over a rename),
- * Q-definer chip, arm/mute/solo/delete/fx/input/one-shot states and
- * tooltips, the sub-line (period ↔ live take length ↔ armed), the
- * status word, and the two dials (never over a drag).
+ * Patch one lane's rail: selection classes, name, Q-definer chip,
+ * arm / take / mute / solo / delete / fx / seq / one-shot / input /
+ * monitor states and tooltips, the sub-line (period ↔ live take length
+ * ↔ armed), the status word, and the two dials.
  */
 export function patchRail(row, lane, vm) {
     if (lane.kind === 'add') return; // affordance row: nothing to patch
@@ -28,14 +53,12 @@ export function patchRail(row, lane, vm) {
     const railEl = row.querySelector('.lane-rail');
     if (railEl) railEl.classList.toggle('selected', selection.has(lane.id));
     row.classList.toggle('sel', selection.has(lane.id));
-    row.dataset.depth = String(Math.min(lane.depth, 2));
-    // Never patch the name over an open rename editor (or its optimistic
-    // value — the backend echoes the new name on the next poll anyway)
+    row.dataset.depth = String(Math.min(lane.depth, MAX_INDENT_DEPTH));
     if (!row._renaming) setText(row.querySelector('.rail-name'), lane.name);
     const tempoChip = row.querySelector('.tempo-chip');
     if (tempoChip) {
         // LIT on the definer; an unlit OFFER (hover-revealed) on a lane
-        // that could take Q (Q22, view_model canDefineNode).
+        // that could take Q (Q22, vm/definer.js canDefineNode).
         const offer = !lane.isQDefiner && !!lane.canDefine;
         const show = lane.isQDefiner || offer ? '' : 'none';
         if (tempoChip.style.display !== show) tempoChip.style.display = show;
@@ -71,12 +94,18 @@ export function patchRail(row, lane, vm) {
                 : 'Stop recording');
     } else {
         // The ● verb (view_model.armMode): stop / record / new take;
-        // a committed one-shot has no slot top to take at.
+        // a committed one-shot has no slot top to take at. A mic of the
+        // group that sets the tempo (the trim view's `definerMember`) has
+        // no ● of its own: that group is one take, and its ● takes it.
         const mode = lane.armMode ?? (lane.armable ? 'record' : null);
+        const groups = !!lane.definerMember && !lane.armable;
         arm.classList.toggle('on', lane.armed);
-        arm.classList.toggle('retake', mode === 'retake');
+        arm.classList.toggle('retake', mode === 'retake' && !groups);
         if (arm.disabled !== !lane.armable) arm.disabled = !lane.armable;
-        setTitle(arm, mode === null
+        setTitle(arm, groups
+            ? 'This track is part of the group that sets the tempo — take ' +
+              'it again with the group’s ● (all its tracks, one performance)'
+            : mode === null
             ? 'One-shot: loop it (↺) to record a new take'
             : mode === 'retake'
                 ? 'New take — one period from the slot top; ● again cancels (⌘Z undoes a take)'
@@ -105,30 +134,27 @@ export function patchRail(row, lane, vm) {
             : n > 1
                 ? `Take ${(lane.activeTake || 0) + 1} of ${n} sounds — click for the list` +
                   (lane.comp && lane.comp.length ? ' (comped per Q cell)' : '')
-                : 'One take — ● records another; click for the list');
+                : 'One take — ' + takeVerbOwner(lane) +
+                  ' records another; click for the list');
     }
 
-    // Sub-line: the period at rest; while RECORDING it becomes the live
-    // take length, pulsing record-red — the period slot is the one place
-    // on the rail with reserved room, so nothing else reflows (a word
-    // on the head row would squeeze the name to an ellipsis).
+    // THE SUB-LINE: the one slot on the rail with reserved room, so
+    // whatever it says, nothing reflows (a word on the head row would
+    // squeeze the name to an ellipsis). The period at rest; "armed"
+    // while a clip waits to start; the live take length, pulsing
+    // record-red, while it records.
     const sub = row.querySelector('.rail-sub');
     const recLen = lane.recordingLengthQ;
     const clipArmed = lane.kind === 'clip' && lane.armed && !lane.recording;
     if (lane.recording) {
-        // Decimal below 10Q; whole Qs above — "12.3Q…" outgrew the slot
         const len = Number.isFinite(recLen) && recLen > 0
             ? (recLen < REC_LEN_DECIMAL_MAX_Q
                 ? recLen.toFixed(1) : Math.round(recLen)) + 'Q'
             : 'rec';
         setText(sub, len + (lane.awaitingStop ? '…' : ''));
     } else if (clipArmed) {
-        // Armed lives in the Q slot too — the same reserved room, the
-        // same no-reflow guarantee. It hands
-        // over to the live length when audio starts flowing.
         setText(sub, 'armed');
     } else if (lane.driftShown && lane.periodQ > 0) {
-        // ↯ DRIFTING (Q22): the period fits no whole number of Qs.
         setText(sub, '↯ ' + fmtQ(lane.periodQ) + 'Q');
     } else if (lane.kind === 'group') {
         setText(sub, lane.periodQ > 0 ? fmtQ(lane.periodQ) + 'Q' : 'group');
@@ -159,12 +185,11 @@ export function patchRail(row, lane, vm) {
         setTitle(sub, '');
     }
 
+    // THE STATUS WORD carries only the group aggregates and the map cue
+    // (time_maps.md ruling 5: a through-map take shows ⟲ on the
+    // recording lane AND on the mapping group's rail). A clip's own
+    // arm / record state is the sub-line's.
     const status = row.querySelector('.rail-status');
-    // "A map is shaping time" (time_maps.md ruling 5): through-map
-    // takes carry the ⟲ cue on the recording lane AND the mapping
-    // group's rail. Clip arm/record state lives ENTIRELY in the sub-line
-    // (the head row never reflows); the status word only carries the
-    // group aggregates and the map cue.
     setText(status, lane.recording || clipArmed
         ? (lane.throughMap ? '⟲map' : '')
         : lane.kind === 'group'
@@ -178,8 +203,8 @@ export function patchRail(row, lane, vm) {
     row.querySelector('.mute-btn').classList.toggle('on', lane.muted);
     row.querySelector('.solo-btn').classList.toggle('on', lane.soloed);
 
-    // Delete is refused mid-take by the engine (cancel is the verb), so
-    // disable it while recording/armed rather than offer a dead click.
+    // The engine refuses a delete mid-take (cancel is the verb), so the
+    // button is disabled rather than a dead click.
     const del = row.querySelector('.delete-btn');
     if (del) {
         const busy = lane.recording || lane.armed;
@@ -187,25 +212,12 @@ export function patchRail(row, lane, vm) {
     }
 
     const fxBtn = row.querySelector('.fx-btn');
-    if (fxBtn) {
-        setText(fxBtn, lane.fxCount > 0 ? 'fx·' + lane.fxCount : 'fx');
-        fxBtn.classList.toggle('on', lane.fxCount > 0);
-    }
+    if (fxBtn) patchFxChip(fxBtn, lane.fxCount);
 
-    // The sequencer chip (docs/sequencer.md §9): 'seq' ghost when none,
-    // 'seq·NQ' when one exists; lit while active, struck while bypassed.
     const seqBtn = row.querySelector('.seq-btn');
     if (seqBtn) {
         const s = lane.seq;
-        const looping = !!(s && s.auditionStep >= 0);
-        setText(seqBtn, s
-            ? (looping ? '⟲ step ' + (s.auditionStep + 1)
-                       : 'seq·' + fmtQ(s.totalQ) + 'Q')
-            : 'seq');
-        seqBtn.classList.toggle('on', !!(s && !s.bypassed));
-        seqBtn.classList.toggle('looping', looping);
-        seqBtn.classList.toggle('drift', !!(s && s.drift));
-        seqBtn.classList.toggle('bypassed', !!(s && s.bypassed));
+        patchSeqChip(seqBtn, s);
         setTitle(seqBtn, s
             ? (s.bypassed
                 ? 'Sequencer (bypassed — the jam): click to open the grid'
@@ -214,51 +226,47 @@ export function patchRail(row, lane, vm) {
             : 'Sequencer: gate this group’s tracks over steps (the song grid)');
     }
 
-    // Period-source toggle (Q5; groups too since Q18): ↺ = loop,
-    // 1× = one-shot.
+    // Period-source toggle (Q5; clips and groups): ↺ = loop, 1× =
+    // one-shot.
     const ps = row.querySelector('.oneshot-btn');
     if (ps) {
         setText(ps, lane.oneShot ? '1×' : '↺');
         const what = lane.kind === 'group' ? 'the whole group' : 'it';
-        const t = lane.oneShot
+        setTitle(ps, lane.oneShot
             ? 'One-shot: ' + what + ' sounds once per cycle at its spot ' +
               '— click to loop'
             : 'Loops at its own length — click for one-shot ' +
-              '(' + what + ' sounds once per cycle)';
-        if (ps.title !== t) ps.title = t;
+              '(' + what + ' sounds once per cycle)');
         ps.classList.toggle('on', !!lane.oneShot);
     }
 
     const input = row.querySelector('.input-btn');
     if (input && lane.isMidi) {
-        // A MIDI track (phase 5) records notes from the keyboard into
-        // its instrument — there is no audio input to pick. The chip
-        // says so instead of offering a channel, and LIGHTS while this
-        // lane is the keyboard's target (monitoring follows selection —
-        // app.js syncMidiTarget; there is no arm toggle).
+        // A MIDI track records notes from the keyboard into its
+        // instrument: there is no audio input to pick. The chip says so,
+        // and LIGHTS while this lane is the keyboard's target —
+        // monitoring follows selection (app.js syncMidiTarget).
         setText(input, lane.midiArmed ? '♪ MIDI' : 'MIDI');
-        const t = lane.midiArmed
+        setTitle(input, lane.midiArmed
             ? 'MIDI track — your keyboard plays this instrument now'
-            : 'MIDI track — select it to play its instrument from your keyboard';
-        if (input.title !== t) input.title = t;
+            : 'MIDI track — select it to play its instrument from your keyboard');
         input.classList.add('midi');
         input.classList.toggle('on', !!lane.midiArmed);
         if (!input.disabled) input.disabled = true;
     } else if (input) {
         input.classList.remove('midi', 'on');
-        // −1 = device default (no explicit assignment yet). A stereo
-        // pair shows both channels, compact ("3/4" — the rail foot runs
-        // at the rail's full width, no room for a prefix).
+        // −1 = the device default (nothing assigned). A stereo pair
+        // shows both channels, compact ("3/4": no room for a prefix).
         const stereo = lane.inputChannelR >= 0;
         setText(input, stereo
             ? ((lane.inputChannel >= 0 ? lane.inputChannel : 0) + 1) +
               '/' + (lane.inputChannelR + 1)
             : lane.inputChannel >= 0 ? 'in ' + (lane.inputChannel + 1) : 'in ·');
-        input.title = stereo
+        setTitle(input, stereo
             ? 'Recording inputs (stereo pair) — click to choose'
-            : 'Recording input — click to choose';
-        // The take is being written from its input NOW — switching
-        // mid-take is not a thing (the engine reads the channel per block)
+            : 'Recording input — click to choose');
+        // A take is written from its input as it records: no switching
+        // mid-take.
         if (input.disabled !== !!lane.recording) input.disabled = !!lane.recording;
     }
 
@@ -276,8 +284,6 @@ export function patchRail(row, lane, vm) {
             (ms == null ? 'not calibrated' : ms.toFixed(1) + ' ms'));
     }
 
-    // Pan/gain dials: reflect the engine value unless the user is
-    // mid-drag (_hot — the held-control guard vs the 50ms tick).
     const dial = row.querySelector('.pan-dial');
     if (dial && !dial._hot) setPanDial(dial, lane.pan || 0);
     const gdial = row.querySelector('.gain-dial');

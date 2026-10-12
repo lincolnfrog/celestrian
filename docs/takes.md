@@ -39,6 +39,21 @@ ancestor window or step audition (the slot top may never be heard through
 it); a full list; a kind change. `startRecordingInNode` keeps refusing a
 committed clip; `newTake` is the sanctioned path.
 
+**A slot being re-taken is still a part of every fold.** From the arm
+to the commit the slot keeps its committed period (`prepareRetake`
+keeps `duration_samples` and returns what it displaced, for the engine
+to retire), and the period law has no "recording"
+clause: the slot's period stays in its group's own period, in the
+island cycle the transport wraps on and in every scope cycle a one-shot
+beside it fires on. Nothing re-aligns when the take starts or when it
+commits. A FIRST take is different: it has no committed period, so it
+plays nothing and contributes nothing until it commits. The JS twin
+(`ui/js/period_law.js`) reads the same two cases off the published
+state — a recording clip that publishes a slot period on `periodQ` is a
+new take of that slot; one that publishes none is a first take — and
+the golden `period_law_cases` pin both sides on a clip that is really
+capturing.
+
 ## 3. Selection, deletion, comping
 
 - `selectTake(uuid, k)`: an atomic content-pointer swap (`content_` /
@@ -51,7 +66,38 @@ committed clip; `newTake` is the sanctioned path.
   once per block (seqlocked, all-atomic, inline — the map's discipline) and
   **cell boundaries are seams**: a run never crosses a cell, so every run
   reads one buffer at `[base + p]`. A new take leaves the comp untouched.
-  MIDI clips take and select; comping them is refused.
+  MIDI clips take and select; comping them is refused. The cell bound is
+  judged only for a comp being SET: a clear is always accepted.
+
+**The comp's grid is stored with it** — a cell LENGTH and an OFFSET:
+cell k covers the content positions `[offset + k·len, offset + (k+1)·len)`.
+
+- The length is the Q the comp was authored at. It does not follow a
+  later change of Q (a hand-off, a definer re-trim): the cells stay
+  where they were drawn.
+- The offset is 0 as authored. A **lock-collapse** slides it exactly as
+  it slides the top (`collapseContent` / `uncollapseContent`), so each
+  cell keeps naming the same stretch of the recording; cells the
+  collapsed take no longer reaches stay stored, and the re-open brings
+  them back.
+- A **splice** (the lock-collapse of a cut map) cannot keep one grid:
+  it copies what the comp SOUNDED over each kept stretch into the
+  active take and clears the comp. The other takes are cut to the same
+  cells and stay selectable. The un-splice restores takes, map and comp.
+
+Both are published beside `comp` as `compCellLen` and `compOffset`
+(samples; 0 and 0 with no comp). `setComp` always authors on the
+current Q grid at offset 0.
+
+**What the verbs answer** (the answer law, ui.md). `newTake`,
+`selectTake`, `deleteTake` and `setComp` each answer whether they
+applied: `false` for a refusal (the cases above; a take live anywhere
+on the island) — nothing changed, nothing logged — and `false` too for
+an edit that would change nothing: selecting the take that is already
+active, setting the comp the slot already has. Such an identity
+records no undo step and keeps the redo branch; the shell does not
+send it. `stopRecordingInNode` answers false when nothing beneath was
+armed or capturing (recording.md).
 
 ## 4. Undo shapes (all refused, entries kept, while any take is live)
 
@@ -60,7 +106,7 @@ committed clip; `newTake` is the sanctioned path.
 | new take (settled) | `Untake` + `take_index`, `prev_active` | `Take` re-appends it as active |
 | `selectTake` | `SelectTake` (index) | `SelectTake` (old index) |
 | `deleteTake` | `DeleteTake` (index) | `DeleteTake` owning the record + old activity + old comp |
-| `setComp` | `Comp` (cells, cell length) | `Comp` (old cells) |
+| `setComp` | `Comp` (cells, cell length) | `Comp` (old cells, their length and offset) |
 
 A whole-clip `Untake` applies only to a single-take slot: undo removes a
 slot's takes one by one and empties the clip last.
@@ -79,20 +125,32 @@ yet — open.
 
 session_io keys `takes`, `activeTake`, `comp` + `compCellQ`; audio per take
 as `<uuid>.wav` (take 0) and `<uuid>.take<k>.wav`; MIDI takes as `midiTakes[k]`.
+The comp's OFFSET is not saved: a comp on a lock-collapsed clip reloads at
+offset 0 (tasks.md Tier G). A later take whose WAV is missing loads SILENT in
+its slot, so `activeTake` and the comp keep naming the takes that were saved.
 The mirror treats take files as immutable (length probe); a renumbering delete
 rewrites the slot's files and prunes stale ones. Templates strip takes. Metadata
-`takes`, `activeTake`, `comp`; `getWaveform` = the active take, `getTakeWaveform` any.
+`takes`, `activeTake`, `comp`, `compCellLen`, `compOffset`; `getWaveform` = the
+active take, `getTakeWaveform` any.
 
 ## 6. The UI
 
-- **● = new take on content** (`view_model.armMode`: stop / record /
-  retake / null for a one-shot). With nothing empty beneath, ● on a
-  committed clip — or a group whose committed direct clips exist — calls
-  `newTake`; ● again cancels. The lane keeps its tiles, `silent`
-  (dimmed) under the live bar, whose length runs from the slot top; the
-  arm marker waits at the slot's next top. Published state cannot say
-  "retake", so app.js infers it: a committed clip that goes hot can only
-  be retaking (`opts.retakes`).
+- **● = new take on content** (`armMode`, `ui/js/vm/lane_common.js`:
+  stop / record / retake / null for a one-shot). With nothing empty
+  beneath, ● on a committed clip — or a group whose committed direct
+  clips exist — calls `newTake`; ● again cancels. The lane keeps its
+  tiles, `silent` (dimmed) under the live bar, whose length runs from
+  the slot top; the arm marker waits at the slot's next top. The view
+  knows a new take from the published state alone — a recording clip
+  that publishes a slot period (`isRetaking`, `ui/js/vm/published.js`)
+  — so a page that first sees a take already running draws it right.
+  The app also keeps the ids it saw go hot (`retakes`,
+  `content_cache.js`) to seed the take's peaks, and passes them as
+  `opts.retakes` for a state that publishes no `periodQ`.
+- **A mic of the definer group** (the trim view) shows its take chip
+  and a disabled ●: the group is one take, so the mic's ●, chip and
+  take list say that the GROUP's ● records another
+  (`take_menu.takeVerbOwner`).
 - **The published shape of a new take (2026-10-01).** The slot keeps
   its facts, but while the take runs the engine PUBLISHES it this way
   (`AudioNode` / `ClipNode::getMetadata`): pending (`isPendingStart`,
@@ -108,15 +166,16 @@ rewrites the slot's files and prunes stale ones. Templates strip takes. Metadata
   - its lane tiles the slot's period and measures the bar from the slot
     top (`pushRecordingLane`) — read off the live length, the resting
     tiles re-tiled on every poll and the bar jumped about;
-  - the cycle and the growing-frame math keep it in the cycle and grow
-    nothing (`settledForFrame`) — read as a fresh take, a new take of
-    the loop that alone made the frame 4Q collapsed it to 1Q and regrew
-    it Q by Q;
+  - the cycle keeps it by the period law itself (§2), and the
+    growing-frame math grows nothing (`settledForFrame`) — read as a
+    fresh take, a new take of the loop that alone made the frame 4Q
+    collapsed it to 1Q and regrew it Q by Q;
   - the seat reads its top and period (`seatFrameZero`, frame.md §1) —
     counted as a growing take, a new take of a 1Q loop above the placing
     loop took the frame for as long as it recorded.
   - a GROUP's own lane reads its mics the same way
-    (`pushGroupLane`, through `settledForFrame`): read as published, a
+    (`readGroup` in `ui/js/vm/lanes.js`, through `settledForFrame`):
+    read as published, a
     4Q kit re-tiled as four 1Q tiles for as long as its mics captured.
   All four were engine-only (the mock could not show them) and were
   found with the headless engine; pinned by `takes_ui.test.mjs` and
@@ -135,3 +194,15 @@ rewrites the slot's files and prunes stale ones. Templates strip takes. Metadata
   cycles −1 → 0 … → n−1 → −1 (`comp_model.cycleComp`, all-−1 normalizes
   to `[]`) and commits ONE `setComp`. Cells naming another take tint in
   that take's hue with its slice drawn over — at rest too.
+- **The lane carries the comp's two grids** (`takeFields`,
+  `ui/js/vm/lane_common.js`; laid out by `comp_model.compLayout`):
+  `compCells` is the EDITOR's — one cell per Q of the take, what a click
+  authors; `compCellQ` / `compOffsetQ` are the grid the comp SOUNDS on,
+  from the published `compCellLen` / `compOffset` (§3). At rest the
+  tinted cells lie where the engine plays them — a cell length from
+  another Q, a grid slid by a lock-collapse, cells the take's ends
+  clip. In comp mode on a grid that is not today's Q grid, what sounds
+  is drawn as at rest with the editor's cells on top, and a click sends
+  the comp RE-READ onto today's grid — each cell names the take
+  sounding at its start — with the clicked cell cycled (the engine
+  authors every `setComp` on the current grid).

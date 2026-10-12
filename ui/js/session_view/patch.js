@@ -1,105 +1,91 @@
 /**
  * Top-level patch: patchSessionView renders the Q-unit view model into
  * the DOM every poll — transport chrome, ruler, keyed lane
- * reconciliation, region panels, and the one playhead (I8).
+ * reconciliation, region panels, and the playhead. Every write is
+ * idempotent (sv_util setText).
  */
 
 import { ctx } from './context.js';
-import { setText, fmtQ, snapThenAnimate } from './sv_util.js';
+import { setText, fmtQ, MAX_INDENT_DEPTH } from './sv_util.js';
 import { noteFrame } from './drag_pin.js';
 import { patchRuler } from './ruler.js';
 import { buildLane } from './lane_build.js';
-import { patchRail } from './rail.js';
+import { patchRail, patchSeqChip, patchFxChip } from './rail.js';
 import { patchLaneBody } from './lane_body.js';
-import { patchRegionPanel, patchRegionDock } from './region_panel.js';
-import { animatorPoll, animatorFrame, stopAnimator } from './animator.js';
+import { patchRegionPanel } from './region_panel.js';
+import { patchRegionDock } from './region_dock.js';
+import { patchPlayhead } from './playhead.js';
 import { ensureDefaultSelection } from './selection.js';
 import { noteSeekVm } from './ruler_seek.js';
 import { flushTeardowns } from './gesture.js';
-import { maskPlayheadOverInspectors } from './playhead_mask.js';
 
-/* A recording playhead moving backwards by more than this many px is a
- * commit jump — snap, never sweep backwards. */
-const REC_SNAP_BACK_PX = 40;
+/** Is the synthetic `kind` row ('seq' | 'fx') of the root open? */
+const rootRowOpen = (vm, kind) =>
+    vm.lanes.some(l => l.kind === kind && l.ownerId === vm.rootId);
 
-/**
- * `aux.rerender`: a re-render between polls (app.js requestRender —
- * the re-seat tween's frames, a gesture's pending preview), derived
- * from the LAST poll's state: its clock is stale, so the playhead's
- * dead-reckoner takes only the frame's own move (animatorFrame), never
- * the stale clock as a poll.
- */
-export function patchSessionView(vm, aux) {
-    // Pin source for map gestures (see drag_pin.js): the zero AT REST —
-    // under a re-seat tween, the seat it is moving to.
-    noteFrame(vm.cycleQ, vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ,
-              Number.isFinite(vm.restZero) ? vm.restZero : vm.frameZero);
-    // Transport (all writes idempotent — see the setText note)
-    setText(ctx.els.playBtn, vm.isPlaying ? '⏸' : '▶');
-    ctx.els.playBtn.classList.toggle('playing', vm.isPlaying);
-    const anyRecording = vm.lanes.some(l => l.recording);
+/** The transport's readout and Q line. */
+function patchReadout(vm, anyRecording) {
+    const seconds = samples => samples / vm.sampleRate;
     if (vm.provisionalDefiner) {
         // Q13: while trimming the sole clip, Q-units are circular (the
         // loop IS 1Q by definition). Read out the tempo being set — the
         // loop length in seconds — not the full-buffer frame in Q.
-        const sr = aux.sampleRate || vm.sampleRate || 44100;
-        setText(ctx.els.readout, 'loop ' + (vm.quantum / sr).toFixed(2) + ' s · sets tempo');
+        setText(ctx.els.readout,
+            'loop ' + seconds(vm.quantum).toFixed(2) + ' s · sets tempo');
     } else if (vm.qEstablished) {
-        // When windows shorten the audible cycle (E-C) the playhead
-        // wraps before the frame end — the readout says why
+        // When windows shorten the audible cycle the playhead wraps
+        // before the frame end — the readout says why.
         const loopNote = !vm.frameExtended && vm.loopCycleQ < vm.lcmQ
             ? ' · loop ' + fmtQ(vm.loopCycleQ) + 'Q' : '';
         setText(ctx.els.readout, vm.playheadQ.toFixed(1) + 'Q / ' + fmtQ(vm.cycleQ) + 'Q'
             + (vm.frameExtended ? '…' : ' ↺') + loopNote);
     } else if (anyRecording) {
-        // First take: no Q yet — this recording will define it
-        const sr = aux.sampleRate || 44100;
-        setText(ctx.els.readout, (vm.playheadQ * vm.quantum / sr).toFixed(1) + ' s · first take');
+        // First take: no Q yet — this recording will define it.
+        setText(ctx.els.readout,
+            seconds(vm.playheadQ * vm.quantum).toFixed(1) + ' s · first take');
     } else {
         setText(ctx.els.readout, '—');
     }
-    if (aux.sampleRate) {
-        setText(ctx.els.qInfo,
-            'Q = ' + (vm.quantum / aux.sampleRate).toFixed(2) + ' s · ' +
-            (aux.sampleRate / 1000) + ' kHz');
-    }
+    setText(ctx.els.qInfo,
+        'Q = ' + seconds(vm.quantum).toFixed(2) + ' s · ' +
+        (vm.sampleRate / 1000) + ' kHz');
+}
 
-    // THE ROOT SEQUENCER chip (docs/sequencer.md): the session's own
-    // song lives on the root stack, which has no rail — its chip sits
-    // in the transport and its grid opens as the first row. Hidden
-    // until there is anything to sequence.
-    const rootSeqBtn = document.getElementById('root-seq-btn');
-    if (rootSeqBtn) {
-        const s = vm.rootSeq;
-        const looping = !!(s && s.auditionStep >= 0);
-        setText(rootSeqBtn, s
-            ? (looping ? '⟲ step ' + (s.auditionStep + 1)
-                       : 'seq·' + fmtQ(s.totalQ) + 'Q')
-            : 'seq');
-        rootSeqBtn.classList.toggle('on', !!(s && !s.bypassed));
-        rootSeqBtn.classList.toggle('looping', looping);
-        rootSeqBtn.classList.toggle('drift', !!(s && s.drift));
-        rootSeqBtn.classList.toggle('bypassed', !!(s && s.bypassed));
-        rootSeqBtn.classList.toggle('open', vm.lanes.some(l =>
-            l.kind === 'seq' && l.ownerId === vm.rootId));
+/** The root's two chips. The session's own song lives on the root
+ * stack, which has no rail: its seq chip sits in the ruler row's rail
+ * spacer (hidden until there is anything to sequence) and its fx chip
+ * on the master strip; each opens its row as the first lane. */
+function patchRootChips(vm) {
+    const seqBtn = document.getElementById('root-seq-btn');
+    if (seqBtn) {
+        patchSeqChip(seqBtn, vm.rootSeq);
+        seqBtn.classList.toggle('open', rootRowOpen(vm, 'seq'));
         const show = vm.lanes.length && vm.qEstablished ? '' : 'none';
-        if (rootSeqBtn.style.display !== show) {
-            rootSeqBtn.style.display = show;
-        }
+        if (seqBtn.style.display !== show) seqBtn.style.display = show;
     }
-
-    // THE MASTER FX chip (B5): the root's rack, opened from the
-    // transport's master strip as the first row. The enabled count at
-    // rest, like a rail's fx chip.
-    const masterFxBtn = document.getElementById('master-fx-btn');
-    if (masterFxBtn) {
-        const n = vm.rootFxCount || 0;
-        setText(masterFxBtn, n > 0 ? 'fx·' + n : 'fx');
-        masterFxBtn.classList.toggle('on', n > 0);
-        masterFxBtn.classList.toggle('open', vm.lanes.some(l =>
-            l.kind === 'fx' && l.ownerId === vm.rootId));
+    const fxBtn = document.getElementById('master-fx-btn');
+    if (fxBtn) {
+        patchFxChip(fxBtn, vm.rootFxCount || 0);
+        fxBtn.classList.toggle('open', rootRowOpen(vm, 'fx'));
     }
+}
 
+/**
+ * `aux.rerender`: a re-render between polls (render_request.js —
+ * the re-seat tween's frames, a gesture's pending preview), derived
+ * from the LAST poll's state. Its clock is stale, which is the
+ * playhead's concern (playhead.js).
+ */
+export function patchSessionView(vm, aux) {
+    // Pin source for map gestures (drag_pin.js): the zero AT REST —
+    // under a re-seat tween, the seat it is moving to.
+    noteFrame(vm.cycleQ, vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ,
+              Number.isFinite(vm.restZero) ? vm.restZero : vm.frameZero);
+    setText(ctx.els.playBtn, vm.isPlaying ? '⏸' : '▶');
+    ctx.els.playBtn.classList.toggle('playing', vm.isPlaying);
+    const anyRecording = vm.lanes.some(l => l.recording);
+    patchReadout(vm, anyRecording);
+    patchRootChips(vm);
     patchRuler(vm);
 
     // The rail column grows one indent per nesting level PRESENT, so a
@@ -108,7 +94,7 @@ export function patchSessionView(vm, aux) {
     let railDepth = 0;
     for (const l of vm.lanes) {
         if (l.kind === 'clip' || l.kind === 'group') {
-            railDepth = Math.max(railDepth, Math.min(l.depth || 0, 2));
+            railDepth = Math.max(railDepth, Math.min(l.depth || 0, MAX_INDENT_DEPTH));
         }
     }
     const rootStyle = document.documentElement.style;
@@ -147,7 +133,7 @@ export function patchSessionView(vm, aux) {
     ctx.laneEls.forEach((row, id) => {
         if (!seen.has(id)) {
             row.remove();
-            if (row._regionNav) row._regionNav.remove();  // in the edit bar
+            if (row._region) row._region.nav.remove();  // in the edit bar
             ctx.laneEls.delete(id);
         }
     });
@@ -173,7 +159,7 @@ export function patchSessionView(vm, aux) {
     // body / strip rebuilt from the committed state above, in the same
     // frame, so nothing shows in between (gesture.js deferTeardown).
     flushTeardowns();
-    // THE RECORDING GATE (view_model bandGate): while a take is live or
+    // THE RECORDING GATE (vm/lane_common.js bandGate): while a take is live or
     // pending every loop region is display-only; the lanes' map chrome
     // takes no presses and shows no grab cursor (session.css).
     ctx.els.lanes.classList.toggle('map-locked', !!vm.mapEditsLocked);
@@ -187,74 +173,9 @@ export function patchSessionView(vm, aux) {
     // stylesheet's grid when lanes return.
     ctx.els.rulerRow.style.display = vm.lanes.length ? '' : 'none';
 
-    // Ruler scrub: feed the seek module the frame facts this patch
-    // rendered, and lock it while recording.
-    noteSeekVm(vm, anyRecording);
+    // Ruler scrub: the frame facts this patch rendered, and its lock —
+    // the engine refuses a seek under the recording gate.
+    noteSeekVm(vm, !!vm.mapEditsLocked);
 
-    // The one playhead (I8): a single line from the ruler through the
-    // last audio lane — never through the add-track affordance below.
-    // Visible while STOPPED too (the ruler scrub): a seek needs
-    // somewhere to land visibly, and the dimmed line says where
-    // playback will resume. Pre-Q there is no frame, so the stopped
-    // line waits for Q like the ruler does.
-    const showPlayhead = vm.lanes.length > 0 &&
-        (vm.isPlaying || (vm.qEstablished && !anyRecording));
-    if (showPlayhead) {
-        ctx.els.playhead.style.display = 'block';
-        ctx.els.playhead.classList.toggle('idle', !vm.isPlaying);
-        if (!vm.isPlaying) {
-            // STOPPED: no sweep to dead-reckon — draw the frozen
-            // (or freshly sought) position each poll, snapping (a
-            // 140ms glide would sweep a teleport).
-            stopAnimator();
-            if (ctx.els.playhead.style.transition !== 'none') {
-                ctx.els.playhead.style.transition = 'none';
-            }
-            const timelineW = ctx.els.ruler.clientWidth;
-            const newLeft = (vm.playheadQ / vm.cycleQ) * timelineW;
-            ctx.els.playhead._left = newLeft;
-            ctx.els.playhead.style.left = newLeft + 'px';
-        } else if (!anyRecording && vm.qEstablished) {
-            // Idle/playing: the animator draws at 60fps and wraps
-            // exactly at the audible cycle; the poll only corrects it.
-            // The frame's own move comes first, on every patch — a
-            // re-render between polls carries nothing else.
-            if (ctx.els.playhead.style.transition !== 'none') {
-                ctx.els.playhead.style.transition = 'none';
-            }
-            animatorFrame(vm);
-            if (!aux.rerender) animatorPoll(vm, aux);
-        } else {
-            stopAnimator();
-            if (ctx.els.playhead.style.transition === 'none') {
-                ctx.els.playhead.style.transition = '';
-            }
-            const timelineW = ctx.els.ruler.clientWidth;
-            const newLeft = (vm.playheadQ / vm.cycleQ) * timelineW;
-            // Recording: glide with the same 140ms linear timing as the
-            // recording bar's edge (they move in lockstep, law 10) — a
-            // commit jump must snap, not sweep backwards
-            const prevLeft = ctx.els.playhead._left ?? newLeft;
-            if (newLeft < prevLeft - REC_SNAP_BACK_PX) {
-                snapThenAnimate(ctx.els.playhead);
-            }
-            ctx.els.playhead._left = newLeft;
-            ctx.els.playhead.style.left = newLeft + 'px';
-        }
-        const audioRows = [...ctx.els.lanes.children].filter(r =>
-            !r.classList.contains('lane-add') && !r.classList.contains('lane-fx') &&
-            !r.classList.contains('lane-seq'));
-        const last = audioRows[audioRows.length - 1];
-        if (last) {
-            const h = last.offsetTop + last.offsetHeight;
-            const hpx = h + 'px';
-            if (ctx.els.playhead.style.height !== hpx) ctx.els.playhead.style.height = hpx;
-        }
-        // The white line never crosses a row on another time axis: an
-        // inspector, a revealing lane, the region panel (playhead_mask).
-        maskPlayheadOverInspectors();
-    } else {
-        stopAnimator();
-        ctx.els.playhead.style.display = 'none';
-    }
+    patchPlayhead(vm, aux, anyRecording);
 }

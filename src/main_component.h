@@ -2,21 +2,23 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <functional>
+#include <memory>
+#include <optional>
+
 #include "audio_engine.h"
 #include "plugin_editor_windows.h"
 #include "plugin_host_service.h"
 #include "project_manager.h"
 
 /**
- * The app shell: owns the engine + project manager and hosts the WebView
- * UI. All UI↔engine traffic crosses the JUCE native-function bridge
- * registered in the constructor — adding a UI-triggered feature needs
- * all three layers of the handshake (.agent/style.md: C++ logic, a
- * withNativeFunction registration HERE, and the JS callNative call);
- * a missing registration leaves the JS promise hanging forever. UI
- * assets are served through getResource under a custom scheme (not
- * file://, which CORS blocks). The timer drives ProjectManager::tick —
- * the continuous-mirror heartbeat.
+ * The app shell: owns the engine and its services and hosts the WebView
+ * UI. All UI↔engine traffic crosses the bridge browserOptions()
+ * registers — the shared table plus the verbs that need a window
+ * (src/bridge_dispatch.h says how a method is added). UI assets are
+ * served through getResource under a custom scheme (not file://, which
+ * CORS blocks). The timer is the project heartbeat
+ * (ProjectManager::tick).
  */
 class MainComponent : public juce::Component, public juce::Timer {
  public:
@@ -28,78 +30,70 @@ class MainComponent : public juce::Component, public juce::Timer {
   void timerCallback() override;
 
   /** Hand keyboard focus to the web page (the whole UI lives there).
-   * Called when the main window becomes active: WebView2 receives focus
-   * only on a FRESH focus gain of its JUCE component, and a window
-   * re-activated after the page was clicked restores JUCE's own record
-   * instead — keys then went to the native window, so Space did nothing
-   * after switching away and back until a click. */
+   * Called whenever the main window becomes active. */
   void focusWebView();
 
  private:
+  using Completion = juce::WebBrowserComponent::NativeFunctionCompletion;
+  /** What a chooser's pick is handed to, with the page's completion. */
+  using Picked = std::function<void(const juce::File&, Completion)>;
+
   AudioEngine audio_engine;
-  // The project model (docs/projects.md): birth at first take +
-  // continuous mirror, driven by the component timer (message thread).
+  // The project model (docs/projects.md), driven by the component timer.
   celestrian::ProjectManager project_manager_{audio_engine};
-  // Plugin hosting foundation (docs/vst3.md §4): known-plugin registry
-  // + background scan, persisted beside audio_device.xml. Message
-  // thread only.
+  // Plugin hosting (docs/vst3.md §4); its registry persists beside
+  // audio_device.xml.
   celestrian::PluginHostService plugin_host_{
       juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
           .getChildFile("Celestrian")};
-  // Floating native editor windows, keyed by slot uuid (docs/vst3.md
-  // §5). Declared after the engine: windows close before the engine
-  // (and its plugin instances) tears down.
+  // Plugin editor windows (docs/vst3.md §5). Declared after the engine:
+  // they close before it tears down.
   celestrian::PluginEditorWindows plugin_editor_windows_;
-  // Declared LAST: its options capture references to the members above
-  // (the shared bridge table, src/bridge_dispatch.h), which must exist
-  // before browserOptions() runs in the initializer list.
+  // Declared LAST: its options capture references to the members above,
+  // which must exist before browserOptions() runs in the initializer
+  // list.
   juce::WebBrowserComponent web_browser;
 
-  /** The WebView options: the resource provider, the window-bound
-   * bridge verbs (file choosers, plugin editors, the pointer warp), and
-   * every GUI-free protocol method from the shared bridge table. */
+  /** The WebView options: the resource provider, the window verbs, and
+   * every entry of the shared bridge table no window verb overrides. */
   juce::WebBrowserComponent::Options browserOptions();
-
-  /** Load-time revival sweep: instantiate every placeholder slot whose
-   * plugin is installed here (docs/vst3.md §6). */
-  void revivePlaceholderPlugins();
 
   std::optional<juce::WebBrowserComponent::Resource> getResource(
       const juce::String& path);
 
-  // Opens a native chooser for a session bundle directory, then
-  // saves/loads to it and reports success back to the webview. Keeps the
-  // chooser alive for the async callback.
+  /** Opens `chooser` natively. A pick is handed to `picked` with the
+   * page's completion; a dismissed dialog answers `cancelled`. One
+   * chooser shows at a time: opening another closes the one still up,
+   * whose call is answered `cancelled` — a bridge promise never hangs. */
+  void chooseThen(std::unique_ptr<juce::FileChooser> chooser, int flags,
+                  juce::var cancelled, Completion done, Picked picked);
+  std::unique_ptr<juce::FileChooser> chooser_;
+  // Answers the showing chooser's call as cancelled; empty when none is.
+  std::function<void()> cancel_open_chooser_;
+
+  // The window verbs' choosers. Each answers false (the projects root:
+  // "") when cancelled or refused.
+
+  /** A session bundle directory to create (SAVE) or open (OPEN). */
   enum class ChooserMode { SAVE, OPEN };
-  void chooseSessionPath(
-      ChooserMode mode,
-      juce::WebBrowserComponent::NativeFunctionCompletion done);
-  std::unique_ptr<juce::FileChooser> session_chooser_;
+  void chooseSessionPath(ChooserMode mode, Completion done, Picked picked);
 
-  // Bounce (Q19, docs/bounce.md): opens a native save chooser for the
-  // node's WAV — named after the node, in the project folder when one
-  // exists, else the user's music folder — then renders through
-  // AudioEngine::bounce from `start` (absolute samples; absent, the
-  // node's own top) and reports its verdict to the webview.
-  void bounceWithDialog(
-      const juce::String& uuid, std::optional<int64_t> start,
-      juce::WebBrowserComponent::NativeFunctionCompletion done);
-  std::unique_ptr<juce::FileChooser> bounce_chooser_;
+  /** Bounce (Q19, docs/bounce.md): a WAV to write — suggested as the
+   * node's name, in the project folder when one exists, else the user's
+   * music folder — then AudioEngine::bounce from `start` (absolute
+   * samples; absent, the node's own top). */
+  void bounceWithDialog(const juce::String& uuid, std::optional<int64_t> start,
+                        Completion done);
 
-  // Import (docs/import.md): opens a native open chooser filtered to
-  // WAV/AIFF/FLAC, then imports the pick at `origin_samples` (absolute;
-  // the engine snaps it to the Q grid) through AudioEngine::importAudio;
-  // false when cancelled or refused.
-  void importAudioWithDialog(
-      const juce::String& uuid, int64_t origin_samples,
-      juce::WebBrowserComponent::NativeFunctionCompletion done);
-  std::unique_ptr<juce::FileChooser> import_chooser_;
+  /** Import (docs/import.md): a WAV/AIFF/FLAC to read, then
+   * AudioEngine::importAudio at `origin_samples` (absolute; the engine
+   * snaps it to the Q grid). */
+  void importAudioWithDialog(const juce::String& uuid, int64_t origin_samples,
+                             Completion done);
 
-  // Preferences (docs/projects.md): a native directory chooser for the
-  // projects root; answers the chosen path ("" when cancelled).
-  void chooseProjectsRoot(
-      juce::WebBrowserComponent::NativeFunctionCompletion done);
-  std::unique_ptr<juce::FileChooser> root_chooser_;
+  /** Preferences (docs/projects.md): a directory for the projects
+   * root; answers the path now in force. */
+  void chooseProjectsRoot(Completion done);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

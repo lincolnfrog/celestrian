@@ -159,9 +159,15 @@ not smoothed here.
 
 **The transport only moves forward.** `masterPos` in `getGraphState` is
 a derived view: `t mod LCM` normally, frozen-base + linear growth while
-recording, so the cursor extends past the committed LCM. The clock
-itself is never wrapped, reset, or snapped — pinned by
-`tests/monotonic_clock_tests.cc`.
+recording, so the cursor extends past the committed LCM. The base is
+frozen as the take begins — the block's place in the audible cycle,
+folded with `posMod`, so it is a place in the cycle even when the clock
+stands before the frame top (a backward seek). **The island's first
+take has no cycle to continue:** until Q exists the cursor is the
+take's own position, the clock read from the island zero its arm block
+stores — whatever the clock read when it was armed (ui.md, the
+masterPos contract). The clock itself is never wrapped, reset, or
+snapped — pinned by `tests/monotonic_clock_tests.cc`.
 
 **Every start fades in.** Play resumes wherever the clock stands,
 usually mid-waveform, so the audio callback ramps the master output in
@@ -185,7 +191,7 @@ pins them.
 **The island zero is data, not the clock.** The first arm stores its
 moment provisionally and the first commit makes the take's origin the
 island zero (`islandZero` in code); stop freezes the view and play
-resumes the phase. No commit moves it (`StackNode::takeCommitted`):
+resumes the phase. No commit moves it:
 where a new take sits on screen is the view's seating from the lanes
 (frame.md), which puts it in the cycle it started in without anything
 here moving. Each take stores its heard frame (`contextCycle`) for
@@ -200,11 +206,38 @@ Idle → Armed(origin) → Capturing → PendingStop(boundary) → Committed
 ```
 
 The arm-target math is pure in `timing.h` (`armTarget`,
-`inAnticipatoryWindow` — both golden-vectored, both zero-frame), and
-stop boundaries are chosen by the audio thread from its own write
-position. The commit event carries `origin` + `length` and nothing
-else. recording.md's scenario tables map 1:1 onto golden vectors for
-it.
+golden-vectored, zero-frame), and stop boundaries are chosen by the
+audio thread from its own write position (`nextStopBoundary`).
+recording.md's scenario tables map 1:1 onto golden vectors for it.
+
+- **An arm starts in the run that reaches its target**
+  (`ClipNode::armReached`): the run — a whole block, or the stretch of
+  one a stack has split at a seam or a gate ramp's corner — that takes
+  the heard clock up to the target or past it. Judged per RUN, so a
+  split block or a small device buffer begins the take in the run that
+  holds the boundary, never in an earlier one that ends short of it.
+  Capture starts at the target sample exactly, either way.
+- **A take's end is published in one order** on the audio thread: its
+  facts (the duration; a new take's outcome), then `Idle`, then the
+  island's count (`takeCommitted()` / `takeCancelled()`, which carry
+  nothing). A first take's stop is a request like any other; with no
+  boundary to reach it commits at the block top that takes it up, at
+  its write head, and that block plays it (a commit a block CROSSES
+  renders its block silent). So "a node is armed or recording" implies "the
+  island counts a live take" at every instant: the message thread's settle
+  (`reconcileTakes`) waits on the count and can never read a commit
+  half-done, and the live-take gate is one statement
+  (`AudioEngine::refusedUnderLiveTake`).
+- **The arm validates before it changes anything** (recording.md "The
+  record verbs"): a refused arm leaves the graph, the transport and the
+  undo log exactly as they were.
+- **A take with no input runs by the clock** over silence, so every
+  take reaches its boundary and commits.
+- **One committed edge per take** (`ClipNode::takeReach(Q)`,
+  performance.md §3): the dense spans a take owns from its arm, plus
+  the run a stop needs ahead of the write head. The storage is
+  committed to it before any clear and by the grower every poll; every
+  write is cut at the writable edge.
 
 ### Sanity checks against the canonical examples
 
@@ -250,7 +283,7 @@ All four steps complete; the estimated end-state deletions all landed.
 | Step | What it did |
 |---|---|
 | 1 ✅ 2026-07-07 | **Q + zero stored at the island root** (`StackNode::quantum_samples_` / `zero_samples_`), set once at first commit and never derived again. Q survives its creator: a Q/2-snapped overdub no longer halves Q, and deleting the establishing clip leaves Q intact. Composite duration corrected from min-of-children to LCM-of-children. |
-| 2 ✅ 2026-07-07 | **`origin` introduced**, playback deriving launch per block via `timing::launchPointFor(origin, dur)`; rotation deleted entirely. Consolidation completed 2026-07-16: `launch_point_samples`, `anchor_phase_samples` and `trigger_master_position` deleted, `launchPoint` derived at read time, the pixel x/slot math out of C++ entirely. **One stored `origin` per clip**, as §2 specifies. |
+| 2 ✅ 2026-07-07 | **`origin` introduced**, playback deriving launch per block via `timing::launchPointFor(origin, dur)`; rotation deleted entirely. Consolidation completed 2026-07-16: `launch_point_samples`, `anchor_phase_samples` and `trigger_master_position` deleted, the launch point derived and never stored (`timing::launchPointFor`; it is not a published field), the pixel x/slot math out of C++ entirely. **One stored `origin` per clip**, as §2 specifies. |
 | 3 ✅ 2026-07-07 | **Monotonic master** — the LCM wrap, LCM-growth snap, polyrhythm suppression, first-clip-snap and the `lcm_before_recording_` / `last_recording_duration_` bookkeeping all deleted (~90 lines from the callback). Completed 2026-07-16: the last two clock mutations went, so §2's "never wraps, never resets, never mutated" holds without exception. |
 | 4 ✅ 2026-07-09/21/22 | **Time-maps** — phase 1 (loop windows, `internal_transport_` deleted), phase 2 (recording through an active map on the reified `TimeMap`), phase 3 (multi-segment maps, fully fractal). See time_maps.md. |
 

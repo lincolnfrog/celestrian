@@ -9,16 +9,17 @@
  * The reified time-map (time_maps.md §2) — ONE implementation shared by
  * clips and stacks.
  *
- * A map is an ordered list of segments over a node's inner timeline:
+ * A map is an ordered list of segments over a node's inner timeline,
+ * anchored at the node's origin O (timing::innerAt, timing.h):
  *
- *   m(t) = frame_top + walk_segments((t − frame_top) mod period)
+ *   inner(t) = walk_segments((t − O − a0) mod fold),  a0 = mapOffset(0)
  *
- * Segments select VIEW positions of the received cycle; the mapped time
- * stays in the received frame (the caller adds the zero — see the
- * one-frame warning in time_maps.md §2). A loop window is the
- * single-segment case (AudioNode::activeTimeMap builds it from the
- * window atomics); a multi-segment map is the node's mapOverride.
- * Every consumer of this type is segment-general.
+ * Segments select INNER positions (offsets from O); the caller re-bases
+ * the answer into absolute time by adding O (see the one-frame warning
+ * in time_maps.md §2). A loop window is the single-segment case and a
+ * cell/punch map the multi-segment one — both the same stored value
+ * (AudioNode::storedMap / activeTimeMap). Every consumer of this type
+ * is segment-general.
  *
  * Pure POD value math: no JUCE, no allocation, trivially copyable —
  * safe to carry by value in ProcessContext and to call on the audio
@@ -64,7 +65,7 @@ struct TimeMap {
    * walk_segments: a HEARD offset (any integer — folded mod period,
    * negatives included) → the inner-time offset it selects, relative to
    * the same frame the segments are expressed in. The caller re-bases
-   * into absolute time by adding the received frame_top.
+   * into absolute time by adding the node's origin.
    */
   int64_t mapOffset(int64_t heard_off) const {
     const int64_t p = period();
@@ -117,23 +118,19 @@ struct TimeMap {
   }
 };
 
-// --- THE TOP (↺, loop_selection.md §9; owner 2026-09-24) -------------
+// --- THE TOP (↺, loop_selection.md §9) -------------------------------
 // A loop's TOP is where it reads as starting: a RAW inner position T,
-// stored per clip (ClipNode::storedTop), sounding at
+// stored per node, clip or group (AudioNode::storedTop), sounding at
 // origin + a0 + heardOffsetOf(T). Region edits swap what plays and keep
 // the origin, so they never move the top's moment; they only decide
-// whether the top survives — and STORE the answer (the reconcile rule
-// below). Unset means only a take never edited — a fresh take, a
-// session saved before tops — whose top IS its region start until its
-// first map edit stores one. Pure value math like the map itself; the
-// JS twins are ui/js/time_map.js keepsTop / reconcileTop / regionStart /
-// effectiveTop, pinned together by the `top_reconcile_cases` and
-// `effective_top_cases` goldens.
+// whether the top survives — and STORE the answer (reconcileTop). Unset
+// means a take never edited, whose top IS its region start until its
+// first map edit stores one; no edit unsets a top. JS twins:
+// ui/js/time_map.js keepsTop / reconcileTop / regionStart /
+// effectiveTop; goldens: `top_reconcile_cases`, `effective_top_cases`.
 
-/** An UNSET top — a take never edited: the region start stands in. No
- * edit unsets a top (every map edit stores one, reconcileTop). A
- * sentinel no raw position can take (a dormant re-expressed top may be
- * negative — ClipNode::collapseContent). */
+/** An UNSET top. A sentinel no raw position can take: a dormant
+ * re-expressed top may be negative (ClipNode::collapseContent). */
 constexpr int64_t kNoTop = std::numeric_limits<int64_t>::min();
 
 /** THE KEPT SET: whether raw position `t` is one the node's STORED map
@@ -149,9 +146,7 @@ inline bool keepsTop(const TimeMap& stored, int64_t duration, int64_t t) {
 /** THE REGION START: the map's first start while the map is ACTIVE —
  * one window or many segments alike — else 0, the take's own start. A
  * bypassed map plays the whole take from its origin, so an unset top
- * reads there, exactly as a bypassed lane seated before tops existed
- * (a multi-segment map still PUBLISHES its segments while bypassed;
- * they do not play). */
+ * reads there (its segments are still published; they do not play). */
 inline int64_t regionStart(const TimeMap& stored, bool window_active) {
   return window_active && stored.n > 0 ? stored.segs[0].start : 0;
 }
@@ -164,20 +159,14 @@ inline int64_t effectiveTop(const TimeMap& stored, bool window_active,
                                          : regionStart(stored, window_active);
 }
 
-/** THE RECONCILE RULE (owner, 2026-09-24): after ANY map edit the top
- * is STORED — `top_before`, the EFFECTIVE top before the edit (the old
- * geometry's effectiveTop, or a live gesture's, AudioEngine::record),
- * while the new kept set (`stored`, the map AFTER the edit) still plays
- * it; otherwise the new region start, back on the splice. The top the
- * new geometry gives the old one, made a fact: never unset.
- *
- * Why materialize (owner's P2, 2026-09-24: an existing ↺ stays put
- * when the region moves, if it can): a top left unset IS the region
- * start, so it rode every later slide — slide bars 1–4 to 3–6 (the
- * reset), then back to 2–5, and the ↺ moved to bar 2 with the splice,
- * the rejected v5 "every slide moved the ↺". Stored at the reset, it
- * stays on bar 3; and a fresh loop's first slide left keeps its ↺
- * where it was, letting the splice come apart. */
+/** THE RECONCILE RULE: after ANY map edit the top is STORED —
+ * `top_before`, the EFFECTIVE top before the edit (the old geometry's
+ * effectiveTop, or a live gesture's, AudioEngine::record), while the
+ * new kept set (`stored`, the map AFTER the edit) still plays it;
+ * otherwise the new region start, back on the splice. It must be
+ * stored, never left unset: an unset top IS the region start, so it
+ * would ride every later slide of the region instead of staying where
+ * it was put. */
 inline int64_t reconcileTop(const TimeMap& stored, bool window_active,
                             int64_t duration, int64_t top_before) {
   return effectiveTop(stored, window_active, duration, top_before);

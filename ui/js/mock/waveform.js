@@ -3,22 +3,15 @@
  * Math.random, so screenshot/e2e assertions are stable poll to poll).
  */
 
-import { findNode } from './state.js';
-import { takesOf } from './recording.js';
+import { findNode, takesOf, takeLength, isLive } from './state.js';
 
-// Deterministic waveform peaks for a CLIP (no Math.random — stable for
-// tests): the ACTIVE take's (docs/takes.md; the take-list view is
-// getTakeWaveform). Stacks return nothing: the UI fetches peaks for
-// clips only (app.js) and composites a group from its children's peaks
-// (composite_waveform.js), the engine's shape.
+/** The ACTIVE take's peaks of a clip. Nothing for a stack (the view
+ * composites a group from its children's peaks), an empty clip, or a
+ * clip under a take (the view draws a live take from currentPeak). */
 export function getWaveform(id, numPeaks = 100) {
     const node = findNode(id);
-    if (!node || node.type === 'stack') return [];
-    // D3 parity: the engine gates getWaveform on the recording state
-    // machine — a non-Idle clip returns no peaks (the UI draws live
-    // takes from currentPeak, never from the buffer).
-    if (node.isRecording || node.isPendingStart) return [];
-    if (!node.duration || node.duration <= 0) return [];
+    if (!node || node.type === 'stack' || isLive(node)) return [];
+    if (!(takeLength(node) > 0)) return [];
     return takePeaks(node, node.activeTake || 0, numPeaks);
 }
 
@@ -53,7 +46,7 @@ function envelopeMax(start, end, total, seed) {
 }
 
 /** Deterministic peaks for take `index`: the max-pooled envelope over
- * each proportional bucket of the committed duration (engine parity
+ * each proportional bucket of the committed duration (engine
  * audioPeaks) — so a denser request is a refinement of the same
  * picture: peak i of n is the max of peaks 2i and 2i+1 of 2n. */
 export function takePeaks(node, index, numPeaks = 100) {

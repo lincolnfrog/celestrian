@@ -15,8 +15,10 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <set>
@@ -25,6 +27,7 @@
 #include "../src/audio_engine.h"
 #include "../src/heard_index.h"
 #include "../src/period_law.h"
+#include "../src/time_map.h"
 #include "test_utils.h"
 
 namespace celestrian::scenario {
@@ -42,6 +45,61 @@ inline float rampAt(int64_t t) {
 
 inline int64_t posmod(int64_t a, int64_t m) { return ((a % m) + m) % m; }
 
+/** The gate ramp at a song's step seam, in samples (10 ms at 44.1 kHz,
+ * each side of the seam). */
+constexpr int64_t GATE_FADE = 441;
+
+/** A time map of the given inner segments, in order. */
+inline timing::TimeMap mapOf(
+    std::initializer_list<timing::TimeMap::Segment> segments) {
+  timing::TimeMap map;
+  for (const auto& segment : segments) map.segs[map.n++] = segment;
+  return map;
+}
+
+/** A sequence payload for the engine's setSequence verb. */
+struct StepSpec {
+  int64_t len = 0;
+  bool cue = false;
+  std::vector<int> next;  // successor step indices (weight 1)
+};
+inline juce::var seqPayload(
+    const std::vector<StepSpec>& steps,
+    const std::map<juce::String, std::vector<bool>>& gates = {},
+    int seed = 0) {
+  auto* payload = new juce::DynamicObject();
+  juce::Array<juce::var> arr;
+  for (size_t i = 0; i < steps.size(); ++i) {
+    auto* s = new juce::DynamicObject();
+    s->setProperty("name", "s" + juce::String((int)i));
+    s->setProperty("len", (double)steps[i].len);
+    if (steps[i].cue) s->setProperty("cue", true);
+    if (!steps[i].next.empty()) {
+      juce::Array<juce::var> next;
+      for (int to : steps[i].next) {
+        auto* n = new juce::DynamicObject();
+        n->setProperty("to", to);
+        n->setProperty("w", 1);
+        next.add(juce::var(n));
+      }
+      s->setProperty("next", next);
+    }
+    arr.add(juce::var(s));
+  }
+  payload->setProperty("steps", arr);
+  if (!gates.empty()) {
+    auto* g = new juce::DynamicObject();
+    for (const auto& [uuid, bits] : gates) {
+      juce::Array<juce::var> b;
+      for (bool x : bits) b.add(x);
+      g->setProperty(uuid, b);
+    }
+    payload->setProperty("gates", juce::var(g));
+  }
+  if (seed != 0) payload->setProperty("seed", seed);
+  return juce::var(payload);
+}
+
 struct Island {
   // On the HEAP: an engine carries its MIDI rings inline (~130 KB), and
   // a suite's runTest holds dozens of islands in one frame — MSVC does
@@ -50,15 +108,19 @@ struct Island {
   std::unique_ptr<AudioEngine> engine_storage = std::make_unique<AudioEngine>();
   AudioEngine& engine = *engine_storage;
   int64_t clock = 0;  // mirror of the engine's monotonic transport
+  bool has_input = true;  // false: drive() runs a device with no inputs
   // What each committed take holds: content[k] == rampAt(captured[id] + k).
   std::map<juce::String, int64_t> captured;
   // Per-clip facts CACHED for the per-sample expectation lambdas (a
   // getGraphState per sample is minutes per check); refreshed at the
-  // top of every mismatches() run.
+  // top of every mismatches() run. An expectation reads these — or facts
+  // it captured before the run — never the live graph: mismatches()
+  // fails a check whose expectation fetched the state (state_fetches).
   struct ClipFacts {
-    int64_t origin = 0, dur = 0;
+    int64_t origin = 0, dur = 0, captured = 0;
   };
   std::map<juce::String, ClipFacts> cache;
+  int state_fetches = 0;  // getGraphState reads made through state()
 
   // ---- driving ----
   /** Drive `total` samples of ramp (or silent) input; append (clock, L)
@@ -75,7 +137,9 @@ struct Island {
       const int n = (int)std::min<int64_t>(remaining, BLOCK);
       const int64_t before = engine.transportClock();
       for (int i = 0; i < n; ++i) in[(size_t)i] = silent ? 0.0f : rampAt(clock + i);
-      engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+      engine.audioDeviceIOCallbackWithContext(has_input ? ins : nullptr,
+                                              has_input ? 1 : 0, outs, 2, n,
+                                              {});
       if (out != nullptr)
         for (int i = 0; i < n; ++i) out->push_back({clock + i, l[(size_t)i]});
       clock += engine.transportClock() - before;
@@ -85,7 +149,10 @@ struct Island {
   void blocks(int n) { drive((int64_t)n * BLOCK); }
 
   // ---- state ----
-  juce::var state() { return engine.getGraphState(); }
+  juce::var state() {
+    ++state_fetches;
+    return engine.getGraphState();
+  }
   static juce::var findVar(const juce::var& node, const juce::String& id) {
     if (node.getProperty("id", "").toString() == id) return node;
     if (auto* kids = node.getProperty("nodes", juce::var()).getArray())
@@ -202,15 +269,17 @@ struct Island {
     walk(s);
     return hot;
   }
-  /** Refresh the cached (origin, duration) of every clip. */
+  /** Refresh the cached (origin, duration, capture clock) of every clip. */
   void refresh() {
     cache.clear();
     const juce::var s = state();
     std::function<void(const juce::var&)> walk = [&](const juce::var& n) {
       if (n.getProperty("type", "").toString() == "clip") {
-        cache[n.getProperty("id", "").toString()] = {
-            (int64_t)(double)n.getProperty("origin", 0.0),
-            (int64_t)(double)n.getProperty("duration", 0.0)};
+        const juce::String id = n.getProperty("id", "").toString();
+        const auto take = captured.find(id);
+        cache[id] = {(int64_t)(double)n.getProperty("origin", 0.0),
+                     (int64_t)(double)n.getProperty("duration", 0.0),
+                     take != captured.end() ? take->second : 0};
         return;
       }
       if (auto* kids = n.getProperty("nodes", juce::var()).getArray())
@@ -241,6 +310,9 @@ struct Island {
       drive(BLOCK);
     }
   }
+  /** Drive to EXACTLY the next top of the island cycle, measured from
+   * the zero: two runs started here are aligned sample for sample. */
+  void driveToCycleTop() { drive(posmod(zero() - clock, cycle())); }
 
   // ---- recording ----
   /** Record a take of `len` samples into a fresh clip under `parent`
@@ -263,7 +335,7 @@ struct Island {
     // content[0] was captured when the capture began — the real Q
     // boundary. Measured from the clock, not read back from the origin,
     // so the scenarios can PIN that the stored origin is this boundary
-    // (no fold — owner ruling 2026-09-09, S3/S32).
+    // (never folded: S3, S32).
     captured[id] = clock - live;
     const int64_t more = len - live - (first ? 0 : BLOCK);
     if (more > 0) drive(more);
@@ -294,32 +366,54 @@ struct Island {
   /** The plain loop law for a whole take: content[(t − origin) mod D]
    * (cached facts — call inside an expectation lambda). */
   float loopVal(const juce::String& id, int64_t t) {
-    return val(id, posmod(t - o(id), d(id)));
+    const ClipFacts& f = cache.at(id);
+    return rampAt(f.captured + posmod(t - f.origin, f.dur));
   }
   /** Drive `span` samples and count samples whose output differs from
    * `expected(t)` by more than `tol`. Skips the first `skip` samples
-   * (a block of settle). Refreshes the fact cache first. */
+   * (a block of settle) and every sample `ignore` names (nearSeam: the
+   * gate ramps). Refreshes the fact cache first. An expectation that
+   * fetches the live graph fails the whole span at once. */
   int mismatches(int64_t span, const std::function<float(int64_t)>& expected,
-                 float tol = 2.0e-7f, int64_t skip = 0) {
+                 float tol = 2.0e-7f, int64_t skip = 0,
+                 const std::function<bool(int64_t)>& ignore = nullptr) {
     refresh();
+    const int64_t zero_now = zero();  // for the mismatch log only
     std::vector<std::pair<int64_t, float>> out;
     drive(span, &out);
+    const int fetches_before = state_fetches;
     int bad = 0;
     int logged = 0;
     for (const auto& [t, v] : out) {
       if (t < out.front().first + skip) continue;
+      if (ignore != nullptr && ignore(t)) continue;
       const float want = expected(t);
+      if (state_fetches != fetches_before) {
+        juce::Logger::writeToLog(
+            "  scenario: the expectation read the live graph per sample - "
+            "read each fact once, before the run (or use the cached o/d)");
+        return (int)out.size();
+      }
       if (std::abs(want - v) > tol) {
         if (logged++ < 3) {
           juce::Logger::writeToLog(
               "  scenario mismatch at t=" + juce::String(t) + " (t-zero=" +
-              juce::String(t - zero()) + "): want " + juce::String(want, 7) +
+              juce::String(t - zero_now) + "): want " + juce::String(want, 7) +
               " got " + juce::String(v, 7));
         }
         ++bad;
       }
     }
     return bad;
+  }
+  /** The samples within the gate ramp of a step seam, for a song whose
+   * steps are each `step` long and fold from `anchor`: an expectation
+   * that states the gates as on or off leaves these out. */
+  static std::function<bool(int64_t)> nearSeam(int64_t anchor, int64_t step) {
+    return [anchor, step](int64_t t) {
+      const int64_t into = posmod(t - anchor, step);
+      return std::min(into, step - into) <= GATE_FADE;
+    };
   }
   /** Σ of the plain loop law over `ids` — the expectation for an island
    * of untrimmed loops. */
@@ -338,7 +432,8 @@ struct Island {
   /** The windowed loop law: content[ws + ((t − origin − ws) mod len)]
    * (cached facts). */
   float windowVal(const juce::String& id, int64_t t, int64_t ws, int64_t len) {
-    return val(id, ws + posmod(t - o(id) - ws, len));
+    const ClipFacts& f = cache.at(id);
+    return rampAt(f.captured + ws + posmod(t - f.origin - ws, len));
   }
 };
 

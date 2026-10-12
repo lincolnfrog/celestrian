@@ -46,7 +46,9 @@ std::unique_ptr<TakeStorage> TakeStorage::reserve(int channels, int64_t capacity
   void* p = mmap(nullptr, s->total_bytes_, PROT_READ | PROT_WRITE, flags, -1, 0);
   if (p == MAP_FAILED) return nullptr;
   s->base_ = p;
-  s->lazy_backed_ = true;  // pages materialize on first touch
+  // Pages materialize on first touch; the seam keeps the eager
+  // platform's bookkeeping over them all the same.
+  s->lazy_backed_ = !commit_on_demand.load();
 #endif
   s->channel_ptrs_.resize((size_t)channels);
   for (int c = 0; c < channels; ++c) {
@@ -72,9 +74,8 @@ TakeStorage::~TakeStorage() {
 int64_t TakeStorage::commitTo(int64_t samples) {
   const int64_t have = committed_.load(std::memory_order_acquire);
   if (lazy_backed_ || samples <= have) return have;
-  int64_t want = std::min(capacity_, roundUp((size_t)samples, (size_t)kChunkSamples) > (size_t)capacity_
-                                        ? capacity_
-                                        : (int64_t)roundUp((size_t)samples, (size_t)kChunkSamples));
+  const int64_t want = std::min(
+      capacity_, (int64_t)roundUp((size_t)samples, (size_t)kChunkSamples));
   if (want <= have) return have;
 #if JUCE_WINDOWS
   const size_t from = (size_t)have * sizeof(float);

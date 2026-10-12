@@ -1,28 +1,21 @@
 #pragma once
 
 /**
- * Whole-graph immutable structure snapshot.
+ * Whole-graph immutable structure snapshot — the audio thread's only
+ * view of structure (AudioNode's threading note). The message thread
+ * builds one after every STRUCTURAL mutation (AudioEngine::publishGraph)
+ * and the audio thread loads ONE pointer per callback
+ * (ProcessContext::snap) and traverses integer indices, so structure is
+ * consistent for the whole callback: a load per stack could straddle a
+ * republish.
  *
- * The message thread builds a snapshot after every STRUCTURAL mutation
- * (AudioEngine::publishGraph); the audio thread loads ONE pointer per
- * callback (ProcessContext.snap) and traverses integer indices. This
- * gives:
+ * Lifetime: nodes referenced by a snapshot outlive it through the
+ * engine reclaimer — publish the successor first, then retire the old
+ * snapshot and the removed nodes.
  *
- *   - whole-callback structural consistency (one load, not one per
- *     stack per block),
- *   - no audio-thread parent walks (parent indices live here; island
- *     facts ride ProcessContext),
- *   - one lifetime domain: nodes referenced by a snapshot outlive it
- *     via the engine reclaimer (retire order: publish the successor
- *     first, then retire the old snapshot / removed nodes — the
- *     2-callback grace covers any in-flight reader).
- *
- * Node OBJECTS stay mutable in place: continuous facts (durations,
- * loop points, origins, fx params) are per-node atomics. The snapshot
- * pins STRUCTURE, not state — so a mid-version
- * commit (a clip's duration landing on the audio thread) needs no
- * republish, which is also the "live take stays outside the snapshot"
- * carve-out.
+ * The snapshot pins STRUCTURE, not state: durations, loop points,
+ * origins and fx params are per-node atomics, so a commit landing on
+ * the audio thread needs no republish.
  *
  * Everything in this header except buildGraphSnapshot is audio-thread
  * safe: plain reads, no allocation, bounded recursion over the tree.
@@ -33,16 +26,14 @@
 
 #include "period_law.h"
 #include "stack_node.h"
-#include "timing.h"
 
 namespace celestrian {
 
 struct GraphSnapshot {
   struct Entry {
     AudioNode* node = nullptr;
-    NodeType type = NodeType::Unknown;  // cached: no virtual on audio thread
-    int parent = -1;                    // entry index; -1 at the root
-    int childBegin = 0;                 // span into child_indices
+    int parent = -1;     // entry index; -1 at the root
+    int childBegin = 0;  // span into child_indices
     int childCount = 0;
   };
   std::vector<Entry> entries;      // entries[0] is the root
@@ -58,12 +49,11 @@ struct GraphSnapshot {
  * result and retires superseded snapshots through the reclaimer. */
 inline GraphSnapshot* buildGraphSnapshot(AudioNode& root) {
   auto* snap = new GraphSnapshot();
-  // Recursive lambda via explicit stack-free structure: simple DFS.
   struct Builder {
     GraphSnapshot& s;
     int visit(AudioNode& n, int parentIdx) {
       const int idx = (int)s.entries.size();
-      s.entries.push_back({&n, n.getNodeType(), parentIdx, 0, 0});
+      s.entries.push_back({&n, parentIdx, 0, 0});
       if (n.getNodeType() == NodeType::Stack) {
         auto& stack = static_cast<StackNode&>(n);
         // Two passes: children spans must be contiguous in
@@ -86,26 +76,6 @@ inline GraphSnapshot* buildGraphSnapshot(AudioNode& root) {
   return snap;
 }
 
-/** Composite duration of the subtree at `idx` (clips: stored duration;
- * stacks: LCM of children — recording.md "Nested Stacks and Composite
- * Duration"). The snapshot-space twin of the node virtuals, safe on the
- * audio thread. */
-inline int64_t snapIntrinsicDuration(const GraphSnapshot& s, int idx) {
-  const auto& e = s.entries[(size_t)idx];
-  if (e.type == NodeType::Clip) return e.node->getIntrinsicDuration();
-  int64_t composite = 0;
-  for (int k = 0; k < e.childCount; ++k) {
-    const int child = s.childAt(idx, k);
-    // ONE-SHOTS are excluded from composition (Q5): their period is the
-    // context cycle, so they adopt the scope's cycle rather than extend
-    // it — a composite stays honestly periodic in the fold of its
-    // LOOPING content (I1).
-    if (s.entries[(size_t)child].node->periodFromContext()) continue;
-    composite = timing::foldPeriod(composite, snapIntrinsicDuration(s, child));
-  }
-  return composite;
-}
-
 /** THE PERIOD LAW's snapshot provider (period_law.h): handles are entry
  * indices, children come from the packed spans; `quantum` is the island
  * Q the drift clause judges against (0 = no grid, nothing drifts).
@@ -123,35 +93,29 @@ struct SnapProvider {
 };
 
 /** The OWN period of the subtree at `idx` (period_law::ownPeriod over
- * the snapshot): an active map's period, else the song, else a clip's
- * duration or a stack's LCM of its children's contributions — judged
- * against the island `quantum` (a drifting child contributes nothing;
- * 0 judges nothing). */
+ * the snapshot), judged against the island `quantum` (0 judges
+ * nothing). */
 inline int64_t snapEffectivePeriod(const GraphSnapshot& s, int idx,
                                    int64_t quantum = 0) {
   return period_law::ownPeriod(SnapProvider{s, quantum}, idx);
 }
 
-/** What the subtree at `idx` hands its parent's fold (0 for a one-shot,
- * and for a node that drifts against the island `quantum`). */
+/** What the subtree at `idx` hands its parent's fold
+ * (period_law::contribution over the snapshot). */
 inline int64_t snapPeriodContribution(const GraphSnapshot& s, int idx,
                                       int64_t quantum = 0) {
   return period_law::contribution(SnapProvider{s, quantum}, idx);
 }
 
-/** The audible island cycle the transport wraps on (E-C):
- * lcm(quantum, own period of the root), `fallback` standing in for Q
- * before it exists. Drifting nodes extend nothing (Q22). */
+/** The island cycle the transport wraps on (period_law::islandCycle
+ * over the snapshot), `fallback` standing in for Q before it exists. */
 inline int64_t snapEffectiveCycle(const GraphSnapshot& s, int64_t quantum,
                                   int64_t fallback) {
   return period_law::islandCycle(SnapProvider{s, quantum}, 0, quantum, fallback);
 }
 
-/** Solo audibility (Q16 canon — island-wide, additive, fractal): is
- * the entry, or any ancestor, soloed? Index walk over parent indices
- * (the audio thread never walks parent pointers — the message thread
- * reparents); the per-node flag is an atomic, so no republish rides a
- * solo toggle. */
+/** Solo audibility (Q16, AudioNode::is_soloed): is the entry, or any
+ * ancestor, soloed? */
 inline bool snapIsUnderSolo(const GraphSnapshot& s, int idx) {
   for (int i = idx; i >= 0; i = s.entries[(size_t)i].parent) {
     if (s.entries[(size_t)i].node->is_soloed.load()) return true;
@@ -159,11 +123,8 @@ inline bool snapIsUnderSolo(const GraphSnapshot& s, int idx) {
   return false;
 }
 
-/** Any solo anywhere in the island (the any_solo context flag): a
- * per-callback scan of the entry list — entries are tens, not
- * thousands, and the flags are atomics, so this stays allocation- and
- * lock-free. Additive by construction: the scan doesn't care how many
- * solos are lit. */
+/** Any solo anywhere in the island (ProcessContext::any_solo): one scan
+ * of the entry list per callback. */
 inline bool snapAnySolo(const GraphSnapshot& s) {
   for (const auto& e : s.entries) {
     if (e.node->is_soloed.load()) return true;

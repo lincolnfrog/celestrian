@@ -11,35 +11,28 @@
 
 namespace celestrian {
 
+using test_utils::committedClip;
+using test_utils::makeSine;
+using test_utils::peakOf;
 using test_utils::contextFor;
 using test_utils::NodeContext;
 
 /**
  * Built-in effects (src/dsp/effects.h): canonical-behavior tests.
  * Each effect is checked for its DEFINING audible property plus the
- * disabled-is-identity contract; the rack is checked in the real
- * clip/stack process paths.
+ * disabled-is-identity contract, on the mono path and — where the
+ * stereo path promises the same numbers — on processStereo too; the
+ * rack is checked in the real clip/stack process paths. The laws only
+ * the stereo path has are in effects_stereo_tests.cc.
  */
 class EffectsTests : public juce::UnitTest {
  public:
   EffectsTests() : juce::UnitTest("Effects", "DSP") {}
 
-  static float peakOf(const std::vector<float>& v, size_t from, size_t to) {
-    float p = 0.0f;
-    for (size_t i = from; i < to && i < v.size(); ++i) {
-      p = std::max(p, std::abs(v[i]));
-    }
-    return p;
-  }
-
   /** RMS of a sine processed through fn, after a settle period. */
   template <typename Fn>
   static float sineRms(double freq, double sr, int n, Fn&& fn) {
-    std::vector<float> x((size_t)n);
-    for (int i = 0; i < n; ++i) {
-      x[(size_t)i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi *
-                                     freq * i / sr);
-    }
+    std::vector<float> x = makeSine(freq, sr, n);
     fn(x.data(), n);
     double acc = 0.0;
     const int settle = n / 2;
@@ -86,11 +79,7 @@ class EffectsTests : public juce::UnitTest {
       comp.attack_ms.store(1.0f);
       comp.release_ms.store(100.0f);
       // 0 dBFS sine → out ≈ thr + (0 − thr)/ratio = −15 dB ≈ 0.178 amp
-      std::vector<float> x(16384);
-      for (size_t i = 0; i < x.size(); ++i) {
-        x[i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi * 440.0 *
-                               (double)i / sr);
-      }
+      std::vector<float> x = makeSine(440.0, sr, 16384);
       comp.process(x.data(), (int)x.size());
       const float p = peakOf(x, x.size() / 2, x.size());
       expect(p > 0.12f && p < 0.26f,
@@ -106,43 +95,68 @@ class EffectsTests : public juce::UnitTest {
                                 "below threshold passes through");
     }
 
-    beginTest("Echo: delayed copies at time*sr, scaled by mix then feedback");
-    {
+    beginTest("Echo: delayed copies at time*sr, scaled by mix then feedback "
+              "(mono; stereo, where an L impulse does not echo on R)");
+    for (const bool stereo : {false, true}) {
+      const juce::String path = stereo ? " (stereo L)" : " (mono)";
       dsp::FxEcho echo;
       echo.prepare(sr);
       echo.time_s.store(0.1f);  // 4410 samples
       echo.feedback.store(0.5f);
       echo.mix.store(0.8f);
-      std::vector<float> x(16384, 0.0f);
+      std::vector<float> x(16384, 0.0f), right(16384, 0.0f);
       x[0] = 1.0f;
-      echo.process(x.data(), (int)x.size());
-      expectWithinAbsoluteError(x[0], 1.0f, 0.001f, "dry passes through");
-      expectWithinAbsoluteError(x[4410], 0.8f, 0.001f, "first echo = mix");
+      if (stereo) {
+        echo.processStereo(x.data(), right.data(), (int)x.size());
+        expectWithinAbsoluteError(peakOf(right), 0.0f, 1.0e-6f,
+                                  "R stays silent: its line is its own");
+      } else {
+        echo.process(x.data(), (int)x.size());
+      }
+      expectWithinAbsoluteError(x[0], 1.0f, 0.001f,
+                                "dry passes through" + path);
+      expectWithinAbsoluteError(x[4410], 0.8f, 0.001f,
+                                "first echo = mix" + path);
       expectWithinAbsoluteError(x[8820], 0.4f, 0.001f,
-                                "second echo = mix*feedback");
+                                "second echo = mix*feedback" + path);
     }
 
-    beginTest("Reverb: an impulse grows a tail that decays");
+    beginTest("Reverb: an impulse grows a tail that decays (mono; stereo, "
+              "on both channels)");
     {
-      dsp::FxReverb rv;
-      rv.prepare(sr);
-      rv.mix.store(0.5f);
-      std::vector<float> x(44100, 0.0f);
-      x[0] = 1.0f;
-      rv.process(x.data(), (int)x.size());
-      const float early = peakOf(x, 2000, 12000);
-      const float late = peakOf(x, 30000, 44100);
-      expectGreaterThan(early, 0.001f, "tail exists");
-      expectLessThan(late, early, "tail decays");
+      const auto expectTail = [this](const std::vector<float>& x,
+                                     const juce::String& channel) {
+        const float early = peakOf(x, 2000, 12000);
+        const float late = peakOf(x, 30000, 44100);
+        expectGreaterThan(early, 0.001f, channel + " tail exists");
+        expectLessThan(late, early, channel + " tail decays");
+      };
+      std::vector<float> impulse(44100, 0.0f);
+      impulse[0] = 1.0f;
+
+      dsp::FxReverb mono_reverb;
+      mono_reverb.prepare(sr);
+      mono_reverb.mix.store(0.5f);
+      std::vector<float> x = impulse;
+      mono_reverb.process(x.data(), (int)x.size());
+      expectTail(x, "mono");
+
+      dsp::FxReverb stereo_reverb;
+      stereo_reverb.prepare(sr);
+      stereo_reverb.mix.store(0.5f);
+      std::vector<float> left = impulse, right = impulse;
+      stereo_reverb.processStereo(left.data(), right.data(), (int)left.size());
+      expectTail(left, "L");
+      expectTail(right, "R");
     }
 
     beginTest("Reverb: mix law is unity-preserving (no +6 dB dry boost)");
     {
-      // Field 2026-08-18: enabling the reverb made the track LOUDER —
-      // juce::Reverb scales dry ×2 internally and we passed dry = 1.0.
-      // Pin the law: mix 0 is bit-exact dry; a steady sine at any mix
-      // never comes out hotter than ~+1 dB of unity (equal-power sums
-      // of a dry tone and its own diffuse tail sit near unity).
+      // juce::Reverb scales the dry level x2 internally, so the slot
+      // divides that back out: mix 0 is bit-exact dry, and a steady sine
+      // at any mix never comes out hotter than ~+1 dB of unity
+      // (equal-power sums of a dry tone and its own diffuse tail sit
+      // near unity).
       const float dry_rms = sineRms(440.0, sr, 44100, [](float*, int) {});
       {
         dsp::FxReverb rv;
@@ -171,16 +185,22 @@ class EffectsTests : public juce::UnitTest {
       }
     }
 
-    beginTest("Chain: disabled is bit-identical passthrough; default order");
+    beginTest("Chain: disabled is bit-identical passthrough, mono and "
+              "stereo; default order; slot params reject and clamp");
     {
       auto chain = dsp::FxChain::makeDefault();
       chain->prepare(sr);
-      std::vector<float> x(4096), ref(4096);
+      std::vector<float> x(4096), ref(4096), right(4096);
       for (size_t i = 0; i < x.size(); ++i) {
         ref[i] = x[i] = (float)std::sin(0.01 * (double)i);
+        right[i] = (float)std::cos(0.017 * (double)i);
       }
       chain->process(x.data(), (int)x.size());
       expect(x == ref, "all-disabled chain is identity");
+      const std::vector<float> right_ref = right;
+      chain->processStereo(x.data(), right.data(), (int)x.size());
+      expect(x == ref, "all-disabled chain leaves L untouched");
+      expect(right == right_ref, "all-disabled chain leaves R untouched");
 
       // Default chain: the four built-ins in canonical signal order.
       expectEquals((int)chain->slots().size(), 4);
@@ -204,6 +224,17 @@ class EffectsTests : public juce::UnitTest {
       comp_slot->setParam("makeup", -40.0);
       expectWithinAbsoluteError(comp->compressor.makeup_db.load(), -12.0f,
                                 0.001f, "makeup clamps at -12");
+      // A value past a bound is accepted and lands on the bound.
+      expect(comp_slot->setParam("ratio", 999.0), "valid param accepted");
+      expectWithinAbsoluteError(comp->compressor.ratio.load(), 20.0f, 0.001f,
+                                "ratio clamps to 20");
+      auto* echo = dynamic_cast<dsp::EchoSlot*>(echo_slot);
+      expect(echo_slot->setParam("time", 99.0));
+      expectWithinAbsoluteError(echo->echo.time_s.load(), 2.0f, 0.001f,
+                                "echo time clamps to 2.0");
+      expect(echo_slot->setParam("feedback", 5.0));
+      expectWithinAbsoluteError(echo->echo.feedback.load(), 0.9f, 0.001f,
+                                "echo feedback clamps to 0.9");
       expectEquals(chain->enabledCount(), 1);
       auto meta = chain->getMetadata();
       expect((bool)meta[2].getProperty("enabled", false));
@@ -252,11 +283,7 @@ class EffectsTests : public juce::UnitTest {
 
       // Feed a loud LOW sine (100 Hz) through capture + chain (the node
       // fx pass: AudioNode::fxProcess).
-      std::vector<float> x(4096);
-      for (size_t i = 0; i < x.size(); ++i) {
-        x[i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi * 100.0 *
-                               (double)i / sr);
-      }
+      std::vector<float> x = makeSine(100.0, sr, 4096);
 
       // NO WATCHER: processing captures nothing, publishes nothing
       scope_obj.capture(x.data(), nullptr, 2048);
@@ -268,10 +295,7 @@ class EffectsTests : public juce::UnitTest {
       // with ZERO enabled slots (line up the threshold, then commit).
       scope_obj.setActive(true);
       expect(scope_obj.watching());
-      for (size_t i = 0; i < x.size(); ++i) {
-        x[i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi * 100.0 *
-                               (double)i / sr);
-      }
+      x = makeSine(100.0, sr, 4096);
       scope_obj.capture(x.data(), nullptr, 2048);
       chain->process(x.data(), 2048);
       scope_obj.capture(x.data() + 2048, nullptr, 2048);
@@ -294,18 +318,56 @@ class EffectsTests : public juce::UnitTest {
              "gain reduction ~15 dB, got " + juce::String(gr));
     }
 
+    beginTest("Scope: the spectrum is read at the rate the scope follows");
+    {
+      // A full-scale tone exactly on one bin's frequency AT 48 kHz, in a
+      // scope prepared at 44.1 kHz: read at that rate the bin misses
+      // the tone by several analysis widths; once the scope follows the
+      // device to 48 kHz the bin is full.
+      const int bin = 13;
+      const double device_rate = 48000.0;
+      const double low_hz = 40.0, high_hz = 16000.0;  // the display range
+      const double tone_hz =
+          low_hz * std::pow(high_hz / low_hz,
+                            (double)bin / (dsp::FxScope::kSpectrumBins - 1));
+      dsp::FxScope scope;
+      scope.prepare(44100.0);
+      scope.setActive(true);
+      std::vector<float> x =
+          makeSine(tone_hz, device_rate, (int)dsp::FxScope::kScopeSize);
+      scope.capture(x.data(), nullptr, (int)x.size());
+      const auto binLevel = [&] {
+        const juce::var spectrum =
+            scope.metadataVar(0.0f).getProperty("spectrum", juce::var());
+        return (double)spectrum[bin];
+      };
+
+      const double at_prepared_rate = binLevel();
+      scope.followRate(device_rate);
+      const double at_device_rate = binLevel();
+      expectGreaterThan(at_device_rate, 0.95,
+                        "at the device's rate the bin holds the tone");
+      expectLessThan(at_prepared_rate, at_device_rate - 0.1,
+                     "read at the rate it was prepared at, it did not");
+
+      // A scope nobody prepared has no ring to read and stays so.
+      dsp::FxScope unprepared;
+      unprepared.setActive(true);
+      unprepared.followRate(device_rate);
+      expect(unprepared.metadataVar(0.0f).isVoid(),
+             "following a rate prepares nothing");
+    }
+
+    // An impulse-then-silence take of 8820 samples (0.2 s).
+    const auto impulseClip = [sr](const char* name) {
+      return committedClip(name, sr, 8820,
+                           [](int64_t i) { return i == 0 ? 1.0f : 0.0f; });
+    };
+
     beginTest("Clip playback runs its chain (echo audible in the output)");
     {
-      ClipNode clip("FxClip", sr);
-      // Record an impulse-then-silence take of 8820 samples (0.2 s)
-      std::vector<float> in(8820, 0.0f);
-      in[0] = 1.0f;
-      float* const ins[] = {in.data()};
-      NodeContext rec = contextFor(clip, (int)in.size());
-      clip.startRecording();
-      clip.process(ins, nullptr, 1, 0, rec.ctx);
-      clip.stopRecording();
-      clip.startPlayback();
+      const auto clip_owner = impulseClip("FxClip");
+      ClipNode& clip = *clip_owner;
 
       clip.fxChain()->prepare(sr);
       auto* clip_echo = clip.fxChain()->slots()[2].get();
@@ -328,16 +390,7 @@ class EffectsTests : public juce::UnitTest {
     beginTest("Stack chain shapes the SUMMED group");
     {
       StackNode stack("FxStack");
-      auto clip = std::make_unique<ClipNode>("Child", sr);
-      std::vector<float> in(8820, 0.0f);
-      in[0] = 1.0f;
-      float* const ins[] = {in.data()};
-      NodeContext rec = contextFor(*clip, (int)in.size());
-      clip->startRecording();
-      clip->process(ins, nullptr, 1, 0, rec.ctx);
-      clip->stopRecording();
-      clip->startPlayback();
-      stack.addChild(std::move(clip));
+      stack.addChild(impulseClip("Child"));
 
       stack.fxChain()->prepare(sr);
       auto* stack_echo = stack.fxChain()->slots()[2].get();

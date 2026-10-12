@@ -1,30 +1,23 @@
 /**
- * THE REGION PANEL'S VIEW (loop-region phase 1, owner-ruled
- * 2026-09-23) — pure geometry, no DOM.
+ * THE REGION PANEL'S VIEW — pure geometry, no DOM.
  *
  * The panel draws raw-take coordinates through its OWN per-lane view
  * `{ q0, spanQ }`: the raw Q at the detail strip's left edge and the raw
  * Qs across it. It is not the main view's zoom (a 5Q frame at lane
- * scale cannot show a 56Q take) and it is not in the view model (the
- * 50 ms poll must never undo a zoom). Until 2026-09-23 the panel was
- * hard-wired to `{ 0, totalQ }` — a 56Q take got 12 px/Q, a ⌥ ⅛Q nudge
- * moved 1.5 px, and a small loop's box was all bracket (diagnosis
- * N1/N4).
+ * scale cannot show a 56Q take); where it lives and what moves it is
+ * region_nav.js.
  *
- * The rules that live here, so region_panel.js only wires them:
+ * The rules that live here:
  *   - DEFAULT = FIT REGION: the loop fills ~55% of the strip, centred,
  *     clamped to the take; the whole take when that span would be most
  *     of it anyway (≥ 80%) — a near-fit is not worth a hidden edge.
- *   - After that, ZOOM CHANGES ONLY ON EXPLICIT INPUT (+/− about the
- *     playhead while the panel shows, wheel, pinch, Z / ⇧Z, the label
- *     terms, the navigator box's edges). Commits and nudges
- *     only PAN, and only as far as it takes to keep the region in view
- *     (keepInView) — an auto re-fit after a commit rescales the box
- *     right after release, the "jump" the owner already dislikes.
- *   - The grid is WHOLE Qs only (owner ruling 2026-09-23: a sub-Q grid
- *     is arbitrary relative to the music — a 3/4 loop has no quarters
- *     of a Q; a meter setting may come later, unsure). gridStep only
- *     thins the whole-Q lines when zoomed out.
+ *   - After that, ZOOM CHANGES ONLY ON EXPLICIT INPUT. Commits and
+ *     nudges only PAN, and only as far as it takes to keep the region in
+ *     view (keepInView): a re-fit after a commit would rescale the box
+ *     right after release.
+ *   - The grid is WHOLE Qs only: a sub-Q grid is arbitrary relative to
+ *     the music (a 3/4 loop has no quarters of a Q). gridStep only thins
+ *     the whole-Q lines when zoomed out.
  */
 
 /* The deepest zoom: a quarter of a Q across the strip. */
@@ -39,13 +32,11 @@ export const KEEP_IN_VIEW_MARGIN = 0.08;
 export const GRID_MIN_PX = 7;
 /* Whole-Q numbers appear on the detail strip from this scale up. */
 export const Q_LABEL_MIN_PX_PER_Q = 40;
-/* Wheel zoom: ONE continuous, monotonic curve (review 2026-09-23 — a
- * switch between two constants at |deltaY| = 20 made a slightly faster
- * pinch zoom up to 5× LESS). A pinch-sized delta zooms by
- * WHEEL_ZOOM_K_PINCH per px (tracking the fingers); larger deltas
- * saturate toward WHEEL_ZOOM_MAX_STEP, so a mouse notch (≈ 100 px)
- * scales the span by ≈ e^0.25 ≈ 1.28. Line-mode deltas are converted
- * at WHEEL_LINE_PX per line. */
+/* Wheel zoom: ONE continuous, MONOTONIC curve (a faster pinch must never
+ * zoom less). A pinch-sized delta zooms by WHEEL_ZOOM_K_PINCH per px
+ * (tracking the fingers); larger deltas saturate toward
+ * WHEEL_ZOOM_MAX_STEP, so a mouse notch (≈ 100 px) scales the span by
+ * ≈ e^0.25 ≈ 1.28. Line-mode deltas convert at WHEEL_LINE_PX per line. */
 const WHEEL_ZOOM_K_PINCH = 0.012;
 const WHEEL_ZOOM_MAX_STEP = 0.25;
 const WHEEL_LINE_PX = 16;
@@ -127,8 +118,7 @@ export function keepInView(v, a, b, totalQ, margin = KEEP_IN_VIEW_MARGIN) {
 }
 
 /** The whole-Q gridline step for `pxPerQ`: the smallest of 1, 2, 4,
- * 8 … Q whose lines sit at least `minPx` apart. Never below 1Q (no
- * sub-Q grid — owner ruling 2026-09-23). */
+ * 8 … Q whose lines sit at least `minPx` apart. Never below 1Q. */
 export function gridStep(pxPerQ, minPx = GRID_MIN_PX) {
     if (!(pxPerQ > 0)) return 1;
     let step = 1;
@@ -176,8 +166,8 @@ export function wheelPanQ(e, v, w) {
     return w > 0 ? (d / w) * v.spanQ : 0;
 }
 
-/** THE +/− KEYS with a panel shown (owner 2026-09-29): one step in
- * (`dir` > 0) or out about the PLAYHEAD's raw Q. A playhead in view
+/** THE +/− KEYS with a panel shown: one step in (`dir` > 0) or out
+ * about the PLAYHEAD's raw Q. A playhead in view
  * keeps its place on the strip; one outside it (or none — `playheadQ`
  * not finite: the view's middle) is centred, so the keys always zoom
  * toward where the sound is. */

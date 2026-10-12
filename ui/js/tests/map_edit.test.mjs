@@ -1,6 +1,6 @@
 /**
- * Map-editor algebra (time_maps.md §4 — CUT BANDS, owner-chosen
- * 2026-07-22): the sequencer's pure math.
+ * Map-editor algebra (time_maps.md §4 — CUT BANDS): the sequencer's pure
+ * math.
  */
 
 import test from 'node:test';
@@ -10,20 +10,23 @@ import {
     normalizeSegments, coveredSet, cutsOf, innerCuts, applyCut, healCut,
     cellCutAt, resizeCutTarget, slideCutTarget,
     segsPeriod, trimBoundTo, trimBoundForPeriod, cutBounds,
-    slideSeam, slideSeamWhole, lengthAtSeam, SEAM_MIN_Q,
+    slideSeam, slideSeamWhole, lengthAtSeam, slideSegs, SEAM_MIN_Q,
 } from '../map_edit.js';
 
 const near = (a, b) => Math.abs(a - b) < 1e-9;
 const sameSegs = (a, b) => a.length === b.length &&
     a.every((s, i) => near(s[0], b[i][0]) && near(s[1], b[i][1]));
+/** A seam move `r` landed on `segs`, having travelled `deltaQ`. */
+const landed = (r, segs, deltaQ, msg) => {
+    assert.deepEqual(r.segs, segs, msg);
+    assert.equal(r.deltaQ, deltaQ, msg);
+};
 
 /* THE SPLICE SWAP (loop_selection.md §4.1, P2.3): slideSeam slides one
  * splice with the period held. */
 test('slideSeam: the WRAP on one segment IS the region slide, clamped to the take', () => {
-    let r = slideSeam([[6, 10]], 0, 1, 12);
-    assert.deepEqual(r.segs, [[7, 11]]);
-    assert.equal(r.deltaQ, 1);
-    r = slideSeam([[6, 10]], 0, -2.5, 12);
+    landed(slideSeam([[6, 10]], 0, 1, 12), [[7, 11]], 1);
+    const r = slideSeam([[6, 10]], 0, -2.5, 12);
     assert.deepEqual(r.segs, [[3.5, 7.5]], '⌥: any amount');
     // Clamped to the take's two ends.
     assert.equal(slideSeam([[6, 10]], 0, 5, 12).deltaQ, 2);
@@ -57,10 +60,8 @@ test('slideSeam: the WRAP on a cut map moves only the outer bounds — the cuts 
 
 test('slideSeam: an inner CUT slides between its neighbours, length held', () => {
     const segs = [[2, 5], [6, 10]];
-    let r = slideSeam(segs, 1, 1, 12);
-    assert.deepEqual(r.segs, [[2, 6], [7, 10]]);
-    assert.equal(r.deltaQ, 1);
-    r = slideSeam(segs, 1, -0.25, 12);
+    landed(slideSeam(segs, 1, 1, 12), [[2, 6], [7, 10]], 1);
+    let r = slideSeam(segs, 1, -0.25, 12);
     assert.deepEqual(r.segs, [[2, 4.75], [5.75, 10]], '⌥: any amount');
     // Neither neighbour shrinks below the floor.
     r = slideSeam(segs, 1, 99, 12);
@@ -73,35 +74,26 @@ test('slideSeam: an inner CUT slides between its neighbours, length held', () =>
     assert.deepEqual(slideSeam(segs, 2, 1, 12), { segs, deltaQ: 0 });
 });
 
-/* THE PLAIN DRAG moves by WHOLE Qs only (owner ruling 2026-09-23) —
- * never by slideSeam's fractional clamp bound (field audit 2026-10-01:
- * a cut dragged 1Q toward a 1Q neighbour landed 1/64 Q short and left a
- * 1/64 Q sliver playing at the splice). */
+/* THE PLAIN DRAG moves by WHOLE Qs only — never by slideSeam's
+ * fractional clamp bound, which would leave a sliver of a neighbour
+ * playing at the splice. */
 test('slideSeamWhole: a whole-Q drag never lands on the clamp\'s fractional bound', () => {
     // Inside the bounds it IS slideSeam on the rounded delta.
     assert.deepEqual(slideSeamWhole([[6, 10]], 0, 1.3, 12), slideSeam([[6, 10]], 0, 1, 12));
     assert.deepEqual(slideSeamWhole([[2, 5], [6, 10]], 1, -1.6, 12),
         slideSeam([[2, 5], [6, 10]], 1, -2, 12));
-    // THE FIELD CASE: [7, 9) ∪ [10, 11), the cut dragged +1Q toward its
-    // 1Q neighbour. slideSeam answers the floor (a sliver) …
-    const field = [[7, 9], [10, 11]];
-    const sliver = slideSeam(field, 1, 1, 16);
-    assert.ok(near(sliver.segs[1][1] - sliver.segs[1][0], SEAM_MIN_Q), 'the old landing');
+    // [7, 9) ∪ [10, 11), the cut dragged +1Q toward its 1Q neighbour:
+    // slideSeam answers the floor (a sliver) …
+    const tight = [[7, 9], [10, 11]];
+    const sliver = slideSeam(tight, 1, 1, 16);
+    assert.ok(near(sliver.segs[1][1] - sliver.segs[1][0], SEAM_MIN_Q), 'slideSeam: the floor');
     // … the whole-Q drag stays put: no whole Q fits.
-    let r = slideSeamWhole(field, 1, 1, 16);
-    assert.equal(r.deltaQ, 0);
-    assert.deepEqual(r.segs, field);
+    landed(slideSeamWhole(tight, 1, 1, 16), tight, 0);
     // With room for two of three Qs asked, it takes the two.
-    r = slideSeamWhole([[2, 5], [6, 9]], 1, 3, 12);
-    assert.equal(r.deltaQ, 2);
-    assert.deepEqual(r.segs, [[2, 7], [8, 9]]);
-    r = slideSeamWhole([[2, 5], [6, 9]], 1, -3, 12);
-    assert.equal(r.deltaQ, -2);
-    assert.deepEqual(r.segs, [[2, 3], [4, 9]]);
+    landed(slideSeamWhole([[2, 5], [6, 9]], 1, 3, 12), [[2, 7], [8, 9]], 2);
+    landed(slideSeamWhole([[2, 5], [6, 9]], 1, -3, 12), [[2, 3], [4, 9]], -2);
     // The wrap of a cut map: the first segment keeps whole Qs of itself.
-    r = slideSeamWhole([[2, 5], [6, 10]], 0, 10, 20);
-    assert.equal(r.deltaQ, 2);
-    assert.deepEqual(r.segs, [[4, 5], [6, 12]]);
+    landed(slideSeamWhole([[2, 5], [6, 10]], 0, 10, 20), [[4, 5], [6, 12]], 2);
     // Every landing keeps the period, and every segment at least the floor.
     for (const want of [-4, -3, -2, -1, 1, 2, 3, 4]) {
         for (const j of [0, 1]) {
@@ -128,21 +120,18 @@ test('slideSeamWhole: a free offset set earlier is kept — at the take\'s edges
     assert.equal(r.deltaQ, 0);
     // Less than half a Q of travel is no move at all.
     assert.deepEqual(slideSeamWhole([[6, 10]], 0, 0.4, 12), { segs: [[6, 10]], deltaQ: 0 });
-    // A segment ALREADY under the floor (a legacy sliver): a zero-Q drag
+    // A segment ALREADY under the floor (a stored sliver): a zero-Q drag
     // moves nothing — slideSeam would push it out to the floor.
-    const legacy = [[2, 5], [6, 6.004]];
-    assert.equal(slideSeamWhole(legacy, 1, 0.2, 12).deltaQ, 0);
-    assert.deepEqual(slideSeamWhole(legacy, 1, 0.2, 12).segs, legacy);
-    assert.equal(slideSeamWhole(legacy, 1, 1, 12).deltaQ, 0, 'nor toward it');
-    assert.equal(slideSeamWhole(legacy, 1, -1, 12).deltaQ, -1, 'away from it: fine');
+    const sliver = [[2, 5], [6, 6.004]];
+    landed(slideSeamWhole(sliver, 1, 0.2, 12), sliver, 0);
+    assert.equal(slideSeamWhole(sliver, 1, 1, 12).deltaQ, 0, 'nor toward it');
+    assert.equal(slideSeamWhole(sliver, 1, -1, 12).deltaQ, -1, 'away from it: fine');
 });
 
 /* ⇧ AT A SPLICE = THE LENGTH THERE (P2.4). */
 test('lengthAtSeam: at the WRAP the loop end moves by whole Qs, right = more', () => {
-    let r = lengthAtSeam([[6, 10]], 0, 1.3, 12);
-    assert.deepEqual(r.segs, [[6, 11]]);
-    assert.equal(r.deltaQ, 1, 'whole Q');
-    r = lengthAtSeam([[6, 10]], 0, -2.6, 12);
+    landed(lengthAtSeam([[6, 10]], 0, 1.3, 12), [[6, 11]], 1, 'whole Q');
+    let r = lengthAtSeam([[6, 10]], 0, -2.6, 12);
     assert.deepEqual(r.segs, [[6, 7]]);
     // Never under 1Q, never past the take.
     assert.deepEqual(lengthAtSeam([[6, 10]], 0, -9, 12).segs, [[6, 7]]);
@@ -162,9 +151,7 @@ test('lengthAtSeam: at a CUT the material before it grows or shrinks; to nothing
     r = lengthAtSeam(segs, 1, -2, 12);
     assert.deepEqual(r.segs, [[2, 3], [7, 10]], 'less material: the cut grows');
     // The cut closes: the touching segments merge — healed.
-    r = lengthAtSeam(segs, 1, 2, 12);
-    assert.deepEqual(r.segs, [[2, 10]]);
-    assert.equal(r.deltaQ, 2);
+    landed(lengthAtSeam(segs, 1, 2, 12), [[2, 10]], 2);
     assert.equal(lengthAtSeam(segs, 1, 5, 12).deltaQ, 2, 'no further than the cut');
     // The segment before keeps some material (never emptied).
     assert.deepEqual(lengthAtSeam(segs, 1, -9, 12).segs, [[2, 3], [7, 10]]);
@@ -174,6 +161,22 @@ test('lengthAtSeam: at a CUT the material before it grows or shrinks; to nothing
 
 test('lengthAtSeam: a sub-Q period has no whole-Q length to change', () => {
     assert.deepEqual(lengthAtSeam([[1, 1.5]], 0, 2, 12), { segs: [[1, 1.5]], deltaQ: 0 });
+});
+
+test('slideSegs (⌥ free slide): any fractional delta, period held, clamped to the take', () => {
+    // A 3Q window slid by +0.4Q: fractional bounds, still a 3Q period.
+    let r = slideSegs([[6, 9]], 0.4, 10);
+    landed(r, [[6.4, 9.4]], 0.4);
+    assert.equal(segsPeriod(r.segs, 10), 3);
+    // Clamps at the take's end / start — a slide never trims.
+    landed(slideSegs([[6, 9]], 2, 10), [[7, 10]], 1);
+    landed(slideSegs([[6, 9]], -10, 10), [[0, 3]], -6);
+    // Multi-segment maps slide as one body (inner cut geometry held).
+    r = slideSegs([[1, 2], [4, 6]], 0.5, 10);
+    assert.deepEqual(r.segs, [[1.5, 2.5], [4.5, 6.5]]);
+    assert.equal(segsPeriod(r.segs, 10), 3);
+    // Full span: nothing to slide against.
+    landed(slideSegs(null, 3, 10), [[0, 10]], 0);
 });
 
 test('covered/cuts/inner helpers', () => {
@@ -225,8 +228,7 @@ test('resizeCutTarget: linked kQ edges, always whole (no free mode)', () => {
     // Start-edge resize snaps against the held END edge (1.6Q → 2Q).
     t = resizeCutTarget({ cut: [2, 3], edge: 'start', rawQ: 1.4, maxQ: 4 });
     assert.ok(Math.abs(t.inQ - 1) < 1e-9, 'raw 1.6Q rounds to 2Q; end holds');
-    // Owner ruling 2026-08-09: the ⌥-free escape hatch is GONE — a raw
-    // 1.37Q pull snaps to 1Q, coherent, always.
+    // No free lengths: a raw 1.37Q pull snaps to 1Q, coherent, always.
     t = resizeCutTarget({ cut: [2, 3], edge: 'end', rawQ: 3.37, maxQ: 4 });
     assert.ok(Math.abs(t.lenQ - 1) < 1e-9, 'no free lengths, ever');
     assert.equal(t.coherent, true);
@@ -243,10 +245,10 @@ test('slideCutTarget: free position, length held, clamped', () => {
     assert.deepEqual([t.inQ, t.outQ], [3, 4], 'clamped at the far edge');
 });
 
-/* Owner ruling 2026-08-09 (categorical coherence): a cut may only meet
- * a neighbouring gap at EXACT adjacency — fractional overlap minted
- * fractional periods (removing 0.8Q of kept material from a whole
- * grid). cutBounds is the clamp; these pin it. */
+/* CATEGORICAL COHERENCE: a cut may only meet a neighbouring gap at EXACT
+ * adjacency — a fractional overlap would mint a fractional period
+ * (removing 0.8Q of kept material from a whole grid). cutBounds is the
+ * clamp; these pin it. */
 test('cutBounds + collision clamps keep periods whole', () => {
     // A window'd take: leading gap [0,1), cut [1.5,2.5), totalQ 4.
     const segs = [[1, 1.5], [2.5, 4]];
@@ -287,11 +289,10 @@ test('trimBoundTo: outer bounds heal reveals / cut consumes', () => {
         'nothing would sound: refusal');
 });
 
-/* THE 2026-08-08 FIELD VIDEO (LCM explosion): a 1Q cut slid off-grid
- * to [1.35, 2.35) in a 3Q take, then the loop end trimmed. Snapping
- * the BOUND to whole Qs committed a fractional PERIOD (0.65Q…), and
- * lcm(quantum, period) exploded the cycle to 66187Q. The law: trims
- * snap the PERIOD; the bound lands wherever that period lives. */
+/* TRIMS SNAP THE PERIOD; the bound lands wherever that period lives. A
+ * 1Q cut slid off-grid to [1.35, 2.35) in a 3Q take, then the loop end
+ * trimmed: snapping the BOUND to whole Qs would commit a fractional
+ * PERIOD (0.65Q…) and lcm(quantum, period) would explode the cycle. */
 test('trimBoundForPeriod: period-coherent trim over a free-slid cut', () => {
     const segs = [[0, 1.35], [2.35, 3]];  // 1Q cut slid to 1.35
 
@@ -308,8 +309,8 @@ test('trimBoundForPeriod: period-coherent trim over a free-slid cut', () => {
 
     // Start edge, target 1Q: walked from the right (the 0.65Q tail
     // counts first), the bound lands at 1.0 — kept [1, 1.35] ∪ [2.35, 3]
-    // = 0.35 + 0.65 = exactly 1Q. A whole-BOUND snap would have given
-    // 1.65Q or 0.65Q; only the period walk finds this.
+    // = 0.35 + 0.65 = exactly 1Q. A whole-BOUND snap would give 1.65Q
+    // or 0.65Q; only the period walk finds this.
     b = trimBoundForPeriod(segs, 'start', 1, 3);
     const got = segsPeriod(trimBoundTo(segs, 'start', b, 3), 3);
     assert.ok(Math.abs(got - 1) < 1e-9,

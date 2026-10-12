@@ -4,6 +4,20 @@
 #include "session_io.h"
 #include "track_template.h"
 
+// IDENTITY. The current project is three fields, set together:
+//   folder_        empty = unborn (nothing is mirrored)
+//   display_name_  the name inside session.json; rename() sets it alone
+//   created_       the creation stamp inside session.json
+// by birth() (flush at the first committed take, or saveNow: the next
+// serial folder, named after it, stamped now), openProject (the folder
+// and what its session.json says), newFromTemplate and closeProject (all
+// three empty: unborn again) and duplicateProject (the folder alone — the
+// copy keeps its name and stamp).
+//
+// ONE SIDE FILE, outside any project:
+//   <app data>/Celestrian/projects_root.json  {"base": path}
+//       the base folder the user chose (setBase)
+
 namespace celestrian {
 
 juce::File ProjectManager::baseChoiceFile() {
@@ -13,6 +27,10 @@ juce::File ProjectManager::baseChoiceFile() {
       .getChildFile("projects_root.json");
 }
 
+// The base folder, in this order: the test override; the user's
+// persisted choice (read from disk once); ~/Music/Celestrian. The
+// override SHADOWS the choice: while it stands, setBase answers true
+// and moves nothing (the headless server always sets one).
 juce::File ProjectManager::base() const {
   if (base_override_ != juce::File()) return base_override_;
   if (!chosen_base_read_) {
@@ -33,7 +51,9 @@ bool ProjectManager::setBase(const juce::File& dir) {
   if (dir == juce::File() || !dir.createDirectory()) return false;
   chosen_base_ = dir;
   chosen_base_read_ = true;
-  if (base_override_ != juce::File()) return true;  // tests never persist
+  // Under the test override nothing is persisted, and base() keeps
+  // answering the override.
+  if (base_override_ != juce::File()) return true;
   auto* o = new juce::DynamicObject();
   o->setProperty("base", dir.getFullPathName());
   const juce::File f = baseChoiceFile();
@@ -44,6 +64,9 @@ bool ProjectManager::setBase(const juce::File& dir) {
   return true;
 }
 
+// The three root getters (this, templatesRoot, trackTemplatesRoot) make
+// sure their directory exists on EVERY call — and the UI's project-info
+// poll calls two of them every couple of seconds.
 juce::File ProjectManager::projectsRoot() const {
   auto d = base().getChildFile("Projects");
   d.createDirectory();
@@ -68,6 +91,11 @@ juce::File ProjectManager::nextSerialFolder() const {
       date + "-" + juce::String(juce::Time::currentTimeMillis() % 100000));
 }
 
+// THE ONE WRITER of the project folder. False when the session is
+// unborn (nothing is written) or session.json or a take's wav could
+// not be written — the failed take stays dirty on its clip and the next
+// mirror retries it. saveNow hands the answer to the user; flush (the
+// heartbeat) drops it.
 bool ProjectManager::mirror(MirrorMode mode) {
   if (!born()) return false;
   session_io::SaveOptions opts;
@@ -75,6 +103,14 @@ bool ProjectManager::mirror(MirrorMode mode) {
   opts.created = created_;
   opts.incremental = mode == MirrorMode::INCREMENTAL;
   return engine_.saveSessionTo(folder_, opts);
+}
+
+void ProjectManager::birth() {
+  folder_ = nextSerialFolder();
+  display_name_ = folder_.getFileName();
+  created_ = juce::Time::getCurrentTime().toISO8601(true);
+  juce::Logger::writeToLog("ProjectManager: project born - " +
+                           folder_.getFullPathName());
 }
 
 void ProjectManager::tick() {
@@ -85,27 +121,25 @@ void ProjectManager::tick() {
   // takes only; cheap no-op when there is nothing to do).
   engine_.compactIdleTakes();
 
+  flush();
+}
+
+void ProjectManager::flush() {
+  // Transient capture state is never saved.
+  if (engine_.hasActiveTake()) return;
   if (!born()) {
     // BIRTH at the first committed take (docs/projects.md): the moment there
     // is a performance worth keeping, it is on disk — crash-safe from
     // the seed take on. Junk sessions are a delete, not a lost save.
     if (engine_.islandCommittedClipCount() == 0) return;
-    folder_ = nextSerialFolder();
-    display_name_ = folder_.getFileName();
-    created_ = juce::Time::getCurrentTime().toISO8601(true);
-    juce::Logger::writeToLog("ProjectManager: project born - " +
-                             folder_.getFullPathName());
+    birth();
   }
   mirror(MirrorMode::INCREMENTAL);
 }
 
 bool ProjectManager::saveNow() {
-  if (!born()) {
-    // Explicit save before the first take: intent enough to birth.
-    folder_ = nextSerialFolder();
-    display_name_ = folder_.getFileName();
-    created_ = juce::Time::getCurrentTime().toISO8601(true);
-  }
+  // Explicit save before the first take: intent enough to birth.
+  if (!born()) birth();
   return mirror(MirrorMode::INCREMENTAL);
 }
 
@@ -115,6 +149,7 @@ void ProjectManager::rename(const juce::String& name) {
 }
 
 bool ProjectManager::openProject(const juce::File& dir) {
+  flush();  // the session about to be replaced reaches its folder first
   if (!engine_.loadSession(dir.getFullPathName())) return false;
   folder_ = dir;
   const auto info = session_io::readBundleInfo(dir);
@@ -123,49 +158,39 @@ bool ProjectManager::openProject(const juce::File& dir) {
   return true;
 }
 
-bool ProjectManager::newFromTemplate(const juce::String& template_name) {
-  const auto dir = templatesRoot().getChildFile(template_name);
+bool ProjectManager::newFromTemplate(const juce::String& template_id) {
+  flush();  // the session about to be replaced reaches its folder first
+  const auto dir = templatesRoot().getChildFile(template_id);
   if (!engine_.loadSession(dir.getFullPathName())) return false;
   // Unborn: the seed take births (and dates) the project.
-  folder_ = juce::File();
-  display_name_ = "";
-  created_ = "";
-  rememberLastTemplate(template_name);
+  forgetIdentity();
   return true;
 }
 
-void ProjectManager::rememberLastTemplate(const juce::String& name) {
-  auto* o = new juce::DynamicObject();
-  o->setProperty("lastTemplate", name);
-  base().createDirectory();
-  base()
-      .getChildFile("state.json")
-      .replaceWithText(juce::JSON::toString(juce::var(o), true));
+void ProjectManager::closeProject() {
+  flush();  // the session being let go reaches its folder first
+  forgetIdentity();
 }
 
-juce::String ProjectManager::lastTemplateName() const {
-  const auto f = base().getChildFile("state.json");
-  if (!f.existsAsFile()) return {};
-  const auto v = juce::JSON::parse(f.loadFileAsString());
-  return v.getProperty("lastTemplate", "").toString();
+void ProjectManager::forgetIdentity() {
+  folder_ = juce::File();
+  display_name_ = "";
+  created_ = "";
 }
-
-// The app boots EMPTY (Q17): no launch session is seeded and no template
-// auto-loads. Every + is a template picker, `R` on an empty project
-// creates + arms the default track, and session templates are an
-// explicit save-as / new-from choice.
 
 bool ProjectManager::saveAsTemplate(const juce::String& template_name) {
+  // The folder is an ID, never the name (rule 1): the typed name lives
+  // inside session.json, the folder is its legal-file-name form. A name
+  // with nothing legal in it, or one that is only a path step ("."
+  // / ".."), names no folder of its own and is refused.
   const auto name = template_name.trim();
-  if (name.isEmpty()) return false;
+  const auto folder_name = juce::File::createLegalFileName(name);
+  if (folder_name.isEmpty() || folder_name.containsOnly(".")) return false;
   session_io::SaveOptions opts;
   opts.display_name = name;
   opts.created = juce::Time::getCurrentTime().toISO8601(true);
   opts.strip_performances = true;
-  const bool ok =
-      engine_.saveSessionTo(templatesRoot().getChildFile(name), opts);
-  if (ok) rememberLastTemplate(name);  // bookkeeping (Q17: no auto-load)
-  return ok;
+  return engine_.saveSessionTo(templatesRoot().getChildFile(folder_name), opts);
 }
 
 // --- Track templates (Q17 — the Q7 companion) ------------------------
@@ -255,6 +280,8 @@ std::vector<ProjectManager::Info> ProjectManager::listTemplates() const {
   return listBundles(templatesRoot());
 }
 
+// Only <base>/Projects is listed: a project opened from anywhere else
+// is never "recent".
 std::vector<ProjectManager::Info> ProjectManager::listRecents(int max) const {
   auto all = listBundles(projectsRoot());
   // IDs are date-serial, so lexicographic descending = newest first.

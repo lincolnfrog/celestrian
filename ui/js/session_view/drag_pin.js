@@ -15,7 +15,7 @@
  * the middle of a re-seat tween (reseat_tween.js) that is the tween's
  * target, never the passing value, so a hand always edits a grid-true
  * frame (the tween completes as the hand comes down). The pin outranks
- * the tween and the seat (view_model resolveFrameZero).
+ * the tween and the seat (vm/frame.js resolveFrameZero).
  */
 
 let dragPinQ = null;

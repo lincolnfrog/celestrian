@@ -3,17 +3,29 @@
 // input and MIDI-input lists, the device lifecycle callbacks
 // (audioDeviceAboutToStart / audioDeviceStopped), and latency
 // calibration with its per-device persistence (docs/performance.md
-// §4, §7). Message thread only, except handleIncomingMidiMessage
-// (the MIDI input thread, queue push only).
+// §4, §7). Message thread only, with two exceptions:
+//   - handleIncomingMidiMessage runs on the MIDI input thread (a queue
+//     push, nothing else);
+//   - the lifecycle callbacks run on whichever thread starts or stops
+//     the device — the message thread for everything the device manager
+//     drives here (open, a setup change, add / removeAudioCallback).
+//     Both run with NO block in flight: the manager holds its callback
+//     lock around them, or this engine is not (yet, any longer) in its
+//     callback list. That is what lets them touch message-thread state.
 
 #include "../audio_engine.h"
 
 #include <algorithm>
 #include <cmath>
 
-void AudioEngine::initialiseAudioDevice() { init(1, 2); }
+#include "engine_internal.h"
 
-void AudioEngine::init(int inputs, int outputs) {
+using celestrian::engine_internal::forEachClip;
+using celestrian::engine_internal::forEachNode;
+
+void AudioEngine::initialiseAudioDevice() { init(2); }
+
+void AudioEngine::init(int outputs) {
   // Restore the last chosen device before falling back to the OS default.
   // The default is the wrong answer on a music machine: on Windows it is a
   // 2-channel WASAPI endpoint, and a multi-channel interface's own driver
@@ -30,8 +42,9 @@ void AudioEngine::init(int inputs, int outputs) {
     }
   }
 
-  // Ask for the ring's full width, not 8: `initialise` negotiates DOWN to
-  // what the hardware has, so the request is a ceiling, not a demand.
+  // The input request is the ring's full width: `initialise` negotiates
+  // DOWN to what the hardware has, so the request is a ceiling, not a
+  // demand.
   device_error_ = device_manager.initialise(kPreRecordRingChannels, outputs,
                                             saved.get(), true);
 
@@ -66,6 +79,12 @@ void AudioEngine::init(int inputs, int outputs) {
   }
   device_manager.addAudioCallback(this);
   device_callback_registered_ = true;
+}
+
+bool AudioEngine::blocksRunElsewhere() const {
+  return device_callback_registered_ ||
+         callback_thread_.load(std::memory_order_relaxed) !=
+             juce::Thread::getCurrentThreadId();
 }
 
 void AudioEngine::enableAllInputChannels() {
@@ -267,9 +286,18 @@ void AudioEngine::handleIncomingMidiMessage(juce::MidiInput*,
 
 // --- Latency Calibration (docs/performance.md §7) ---
 
-void AudioEngine::startLatencyCalibration() {
-  // Preallocate the capture buffer on the message thread BEFORE flipping
-  // the phase — the audio thread only ever writes into existing storage.
+bool AudioEngine::startLatencyCalibration() {
+  // THE CAPTURE BUFFER'S OWNER FOLLOWS THE PHASE: calibration_capture_
+  // and its write position belong to the message thread, except while
+  // the phase is Capturing — then the audio thread alone writes them.
+  // The Capturing store below hands them over; the audio thread's Done
+  // store hands them back. So a run in flight is left to finish, and the
+  // buffer is sized BEFORE the phase flips: the audio thread only ever
+  // writes into existing storage.
+  if (calibration_phase_.load() == (int)CalibrationPhase::Capturing) {
+    return false;
+  }
+
   const double sr = cached_sample_rate_.load();
   const int capture_len = (int)(sr * 2.0);  // 2 s window
   calibration_capture_.setSize(1, capture_len, /*keepExistingContent=*/false,
@@ -286,6 +314,7 @@ void AudioEngine::startLatencyCalibration() {
       juce::String(calibration_click_pos_) + ")");
 
   calibration_phase_.store((int)CalibrationPhase::Capturing);
+  return true;
 }
 
 juce::var AudioEngine::getLatencyCalibration() {
@@ -312,6 +341,9 @@ juce::var AudioEngine::getLatencyCalibration() {
           "AudioEngine: Latency calibration FAILED - no loopback signal "
           "detected (peak=" +
           juce::String(peak) + ", floor=" + juce::String(floor_level) + ")");
+      // A run that measured nothing changes nothing: the value stored
+      // for this device (none, if it was never calibrated) is in force.
+      restoreCalibrationForCurrentDevice();
     } else {
       const float threshold = std::max(floor_level * 4.0f, peak * 0.3f);
       for (int i = click; i < len; ++i) {
@@ -346,14 +378,31 @@ juce::var AudioEngine::getLatencyCalibration() {
 }
 
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
-  // No callback is in flight here (the device manager calls this before
-  // the first block): the xrun detector's gap reference restarts, so a
-  // re-attach after a bounce does not read the detachment as a gap.
+  // No block is in flight (the file header): audio-thread state may be
+  // reset and sized here. The xrun detector's gap reference restarts, so
+  // a re-attach after a bounce does not read the detachment as a gap,
+  // and the live MIDI buffer is reserved for the most one drain can
+  // deliver, so the callback never grows it.
   last_entry_ticks_ = 0;
+  live_midi_buffer_.ensureSize(celestrian::engine_internal::kLiveMidiDrainBytes);
+  slice_midi_buffer_.ensureSize(celestrian::engine_internal::kLiveMidiDrainBytes);
   if (device) {
     cached_input_latency_.store(device->getInputLatencyInSamples());
     cached_output_latency_.store(device->getOutputLatencyInSamples());
     cached_sample_rate_.store(device->getCurrentSampleRate());
+
+    // The racks follow the device's rate HERE, the one moment no
+    // callback can be running them: a slot prepared at another rate
+    // reallocates what its process reads (the echo lines, the reverb's
+    // combs, a plugin's prepareToPlay). Every prepare after this meets
+    // a slot never prepared or one already at the rate
+    // (dsp::FxSlot::prepare).
+    if (const double rate = device->getCurrentSampleRate(); rate > 0.0) {
+      forEachNode(*root_node, [rate](celestrian::AudioNode& node) {
+        node.fxChain()->followRate(rate);
+        node.fxScope().followRate(rate);
+      });
+    }
 
     // Latency self-report (docs/performance.md §6.3): if the reported
     // latencies are zero, recording compensation is a no-op and empirical
@@ -448,17 +497,12 @@ void AudioEngine::restoreCalibrationForCurrentDevice() {
 }
 
 void AudioEngine::audioDeviceStopped() {
-  // The callback is no longer running; everything pending is safe to free.
+  // No block is in flight and none follows (the file header):
+  // everything pending is safe to free.
   flushGraveyard();
   // A device stop is a closing edge for every instrument (docs/vst3.md
   // §11): no block can carry the sound-off now, so each MIDI clip sends
   // its pair at the first block the device runs again.
-  std::function<void(celestrian::AudioNode&)> request =
-      [&](celestrian::AudioNode& node) {
-        if (auto* clip = dynamic_cast<celestrian::ClipNode*>(&node))
-          clip->requestMidiSoundOff();
-        if (auto* stack = dynamic_cast<celestrian::StackNode*>(&node))
-          for (const auto& child : stack->ownedChildren()) request(*child);
-      };
-  request(*root_node);
+  forEachClip(*root_node,
+              [](celestrian::ClipNode& clip) { clip.requestMidiSoundOff(); });
 }

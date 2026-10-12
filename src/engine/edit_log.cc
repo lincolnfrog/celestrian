@@ -1,1245 +1,188 @@
-// AudioEngine — the EDIT LOG: applyEdit / applyEditImpl (one mutation
-// per Edit kind, returning its inverse), the window-domain and window
-// riders, the group lock-collapse pair, retirement of detached
-// payloads, and the undo / redo stacks (record, pushUndo, undo, redo,
-// deleteNode). Message thread only.
+// AudioEngine — the EDIT LOG. Every undoable change is an Edit
+// (src/edit.h): applyEdit performs one and answers its INVERSE; the undo
+// stack is a list of inverses, the redo stack a list of forwards, and
+// applying either yields the other. This file is the log itself — the
+// per-kind table and dispatch, record with its gesture tracking, undo,
+// redo, cancel, the arm's deferred entries and retirement. The appliers
+// live beside it, one file per family (engine/edit_*.cc). Message thread
+// only: the audio thread sees the atomics and snapshots an edit leaves
+// behind, never the edit.
 
 #include "../audio_engine.h"
 
 #include <algorithm>
 
 #include "../clip_node.h"
-#include "../dsp/vst3_slot.h"
 #include "../stack_node.h"
-#include "../timing.h"
+#include "edit_internal.h"
 #include "engine_internal.h"
-
-
-// ===================================================================
-// Edits-as-events: apply / undo / redo (unification_audit.md §2.2)
-// Message thread only. applyEdit performs one mutation and returns its
-// INVERSE (Nop if it could not apply); the undo stack is a list of
-// inverses, redo a list of forwards. Symmetric per kind, so applying an
-// inverse reproduces the forward (that is redo). The audio thread sees
-// only the resulting atomics and snapshots, never the edits.
-// ===================================================================
 
 namespace {
 using celestrian::Edit;
 
-/** An edit kind's name, for the origin-drift log. */
-const char* kindName(Edit::Kind k) {
-  using K = Edit::Kind;
-  switch (k) {
-    case K::Nop: return "Nop";
-    case K::Insert: return "Insert";
-    case K::Remove: return "Remove";
-    case K::Move: return "Move";
-    case K::Combine: return "Combine";
-    case K::Explode: return "Explode";
-    case K::Rename: return "Rename";
-    case K::Mute: return "Mute";
-    case K::LoopPoints: return "LoopPoints";
-    case K::LoopBypass: return "LoopBypass";
-    case K::Segments: return "Segments";
-    case K::PeriodSource: return "PeriodSource";
-    case K::Input: return "Input";
-    case K::InputR: return "InputR";
-    case K::Collapse: return "Collapse";
-    case K::MoveSlot: return "MoveSlot";
-    case K::AddSlot: return "AddSlot";
-    case K::RemoveSlot: return "RemoveSlot";
-    case K::Sequence: return "Sequence";
-    case K::SequenceBypass: return "SequenceBypass";
-    case K::Take: return "Take";
-    case K::Untake: return "Untake";
-    case K::SelectTake: return "SelectTake";
-    case K::DeleteTake: return "DeleteTake";
-    case K::Comp: return "Comp";
-    case K::Timing: return "Timing";
-    case K::Definer: return "Definer";
-  }
-  return "?";
-}
-
 /** "edit LoopPoints on Drums [7e1090]" — the origin-drift log's cause. */
 juce::String driftCause(celestrian::AudioNode* root, const char* verb,
-                        Edit::Kind k, const juce::String& uuid) {
-  juce::String s = juce::String(verb) + " " + kindName(k);
-  if (uuid.isEmpty()) return s;
-  const celestrian::AudioNode* n = root ? root->findByUuid(uuid) : nullptr;
-  return s + " on " + (n ? n->getName() + " [" + uuid.substring(0, 6) + "]"
-                         : "[" + uuid.substring(0, 6) + "]");
+                        const char* kind_name, const juce::String& uuid) {
+  juce::String cause = juce::String(verb) + " " + kind_name;
+  if (uuid.isEmpty()) return cause;
+  const celestrian::AudioNode* node = root ? root->findByUuid(uuid) : nullptr;
+  const juce::String tag = "[" + uuid.substring(0, 6) + "]";
+  return cause + " on " + (node ? node->getName() + " " + tag : tag);
 }
 
-// A LIVE drag collapses into ONE undo step: seam/grip drags stream
-// throttled map commits so the splice is AUDIBLE while dragging
-// (time_maps.md), and every commit after the gesture's first arrives
-// with Edit::live. When such a commit joins its gesture's logged entry
-// (the top of the stack), the older inverse already restores further
-// back, so the new one is dropped. OWNER RULING 2026-09-10: only live
-// commits coalesce — two separate cut gestures on one lane, however
-// close in time, are two undo steps (they used to merge
-// unconditionally). A gesture's commits may change kind midway (a
-// window becoming a segment override), so both map kinds pair. A
-// re-time drag (the ↺, the panel's start marker — setTiming) streams
-// the same way: Timing pairs with Timing, never with a map kind (swap
-// and shift are different gestures, loop_selection.md §9.2).
-// THE GESTURE IS TRACKED (AudioEngine::gesture_), never read off the
-// stack's top: a whole-Q drag's first commit is usually an IDENTITY —
-// the pointer engaged but crossed no whole Q yet — which records
-// nothing, so the top may be the PREVIOUS gesture's entry on the same
-// lane (joining it made two drags one step and reconciled the ↺ from
-// the wrong start). A non-live commit opens its gesture whatever it
-// records (openGesture); the gesture's first live commit to APPLY logs
-// its entry, pushed as usual — nothing changed since the gesture began,
-// so the top base it records is the gesture's own; the live commits
-// after it coalesce. A live commit that records nothing (an identity, a
-// refusal) keeps the gesture: a drag that dwells, or returns to its
-// start, is still one step. Any other entry logged — another node or
-// kind, a take — and an undo or redo end the gesture, so a stray live
-// commit logs its own step and never merges into an unrelated entry.
-bool isMapKind(Edit::Kind k) {
-  return k == Edit::Kind::Segments || k == Edit::Kind::LoopPoints;
-}
-bool isGestureKind(Edit::Kind k) {
-  return isMapKind(k) || k == Edit::Kind::Timing;
-}
-/** Do commits of kinds `a` and `b` belong to one gesture? */
-bool sameGesture(Edit::Kind a, Edit::Kind b) {
-  return (isMapKind(a) && isMapKind(b)) ||
-         (a == Edit::Kind::Timing && b == Edit::Kind::Timing);
+/** A gesture's entry restores the gesture's START. It is the first
+ * commit's inverse, so a rider that commit did not carry — an origin a
+ * later commit re-anchors, the grid, a member's window — is one it
+ * lacks; the `later` inverse captured that fact while it still held the
+ * start's value, and the entry takes it. What the entry already holds is
+ * older, and stays. */
+void completeGestureEntry(Edit& entry, Edit& later) {
+  if (later.setsOrigin && !entry.setsOrigin) {
+    entry.setsOrigin = true;
+    entry.iorg = later.iorg;
+    entry.liftsAncestors = later.liftsAncestors;
+  }
+  if (later.setsIsland && !entry.setsIsland) {
+    entry.setsIsland = true;
+    entry.iq = later.iq;
+    entry.izero = later.izero;
+    entry.seq_riders = std::move(later.seq_riders);  // the songs at that grid
+  }
+  for (auto& rider : later.windows) {
+    const bool held = std::any_of(
+        entry.windows.begin(), entry.windows.end(),
+        [&](const Edit::WindowRider& r) { return r.uuid == rider.uuid; });
+    if (!held) entry.windows.push_back(std::move(rider));
+  }
 }
 }  // namespace
 
-void AudioEngine::liftAncestorsGated(celestrian::AudioNode& node,
-                                     int64_t delta, uint32_t gate) {
-  for (auto* p = node.getParent(); p != nullptr; p = p->getParent()) {
-    if (p->isAnchored()) {
-      p->setOriginGated(p->origin_samples.load() + delta, gate);
-    }
+// --- The kinds --------------------------------------------------------
+
+AudioEngine::KindTraits AudioEngine::traitsOf(Edit::Kind kind) {
+  using K = Edit::Kind;
+  using E = AudioEngine;
+  using T = KindTraits::Touches;
+  using U = KindTraits::UnderTake;
+  using G = KindTraits::Gesture;
+  // ONE ROW PER KIND: its name, its applier, what applyEdit owes the
+  // graph once it applied, whether it stays live under a take, and the
+  // gesture family its live commits coalesce in.
+  switch (kind) {
+    case K::Nop:
+      return {"Nop", nullptr, T::FACTS, U::WAITS, G::NONE};
+    case K::Insert:
+      return {"Insert", &E::applyInsert, T::STRUCTURE, U::LIVE, G::NONE};
+    case K::Remove:
+      return {"Remove", &E::applyRemove, T::STRUCTURE, U::WAITS, G::NONE};
+    case K::Move:
+      return {"Move", &E::applyMove, T::STRUCTURE, U::WAITS, G::NONE};
+    case K::Combine:
+      return {"Combine", &E::applyCombine, T::STRUCTURE, U::WAITS, G::NONE};
+    case K::Explode:
+      return {"Explode", &E::applyExplode, T::STRUCTURE, U::WAITS, G::NONE};
+    case K::Rename:
+      return {"Rename", &E::applyRename, T::FACTS, U::LIVE, G::NONE};
+    case K::Mute:
+      return {"Mute", &E::applyMute, T::FACTS, U::LIVE, G::NONE};
+    case K::LoopPoints:
+      return {"LoopPoints", &E::applyLoopPoints, T::FACTS, U::WAITS, G::MAP};
+    case K::LoopBypass:
+      return {"LoopBypass", &E::applyLoopBypass, T::FACTS, U::WAITS, G::NONE};
+    case K::Segments:
+      return {"Segments", &E::applySegments, T::FACTS, U::WAITS, G::MAP};
+    case K::PeriodSource:
+      return {"PeriodSource", &E::applyPeriodSource, T::FACTS, U::WAITS,
+              G::NONE};
+    case K::Input:
+      return {"Input", &E::applyInput, T::FACTS, U::LIVE, G::NONE};
+    case K::InputR:
+      return {"InputR", &E::applyInputR, T::FACTS, U::LIVE, G::NONE};
+    case K::Collapse:
+      return {"Collapse", &E::applyCollapse, T::FACTS, U::WAITS, G::NONE};
+    case K::MoveSlot:
+      return {"MoveSlot", &E::applyMoveSlot, T::FACTS, U::LIVE, G::NONE};
+    case K::AddSlot:
+      return {"AddSlot", &E::applyAddSlot, T::FACTS, U::LIVE, G::NONE};
+    case K::RemoveSlot:
+      return {"RemoveSlot", &E::applyRemoveSlot, T::FACTS, U::LIVE, G::NONE};
+    case K::Sequence:
+      return {"Sequence", &E::applySequence, T::ROOT_ANCHOR, U::WAITS,
+              G::NONE};
+    case K::SequenceBypass:
+      return {"SequenceBypass", &E::applySequenceBypass, T::FACTS, U::WAITS,
+              G::NONE};
+    case K::Take:
+      return {"Take", &E::applyTake, T::CONTENT, U::WAITS, G::NONE};
+    case K::Untake:
+      return {"Untake", &E::applyTake, T::CONTENT, U::WAITS, G::NONE};
+    case K::SelectTake:
+      return {"SelectTake", &E::applySelectTake, T::FACTS, U::WAITS, G::NONE};
+    case K::DeleteTake:
+      return {"DeleteTake", &E::applyDeleteTake, T::FACTS, U::WAITS, G::NONE};
+    case K::Comp:
+      return {"Comp", &E::applyComp, T::FACTS, U::WAITS, G::NONE};
+    case K::Timing:
+      return {"Timing", &E::applyTiming, T::FACTS, U::WAITS, G::TIMING};
+    case K::Definer:
+      return {"Definer", &E::applyDefiner, T::FACTS, U::WAITS, G::NONE};
   }
+  return {"?", nullptr, T::FACTS, U::WAITS, G::NONE};
 }
 
-celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
-  using K = celestrian::Edit::Kind;
-  const K kind = e.kind;
-  // Anchor riders (Q18): an undo/redo carries the exact anchoring the
-  // settle below produced the first time.
-  const bool content_edit =
-      kind == K::Insert || kind == K::Remove || kind == K::Move ||
-      kind == K::Combine || kind == K::Explode || kind == K::Take ||
-      kind == K::Untake;
-  const bool had_anchor_riders = !e.anchors.empty();
-  celestrian::Edit anchor_riders_in;
-  if (had_anchor_riders) anchor_riders_in.anchors = std::move(e.anchors);
-  celestrian::Edit inv = applyEditImpl(std::move(e));
-  // A Sequence edit carries the ROOT's anchor rider (a song authored on
-  // the root anchors it at the seated zero; clearing un-anchors —
-  // docs/frame.md §4): the rider applies, but nothing settles — the
-  // root's anchor is owned by its song, not by content.
-  if (inv.kind != K::Nop && (content_edit || kind == K::Sequence)) {
-    if (had_anchor_riders) applyAnchorRiders(anchor_riders_in, inv);
-    if (content_edit) settleAnchors(inv);
+Edit AudioEngine::applyEdit(Edit e) {
+  // A COMPOSED step (Edit::then): this edit, then the next, each applied
+  // whole; the inverse leads with the later edit's. An edit that does
+  // not apply ends the step there — what did apply is what the inverse
+  // undoes.
+  if (std::unique_ptr<Edit> next = std::move(e.then)) {
+    Edit inv = applyEdit(std::move(e));
+    if (inv.kind == Edit::Kind::Nop) {
+      retireEdit(std::move(*next));
+      return inv;
+    }
+    Edit next_inv = applyEdit(std::move(*next));
+    if (next_inv.kind == Edit::Kind::Nop) return inv;
+    Edit* last = &next_inv;
+    while (last->then != nullptr) last = last->then.get();
+    last->then = std::make_unique<Edit>(std::move(inv));
+    return next_inv;
   }
-  // Structural mutations re-publish the whole-graph snapshot:
-  // record/undo/redo all funnel through here, so this is the one place
-  // topology changes become visible to the audio thread.
-  if (inv.kind != K::Nop &&
-      (kind == K::Insert || kind == K::Remove || kind == K::Move ||
-       kind == K::Combine || kind == K::Explode)) {
-    publishGraph();
+  const KindTraits traits = traitsOf(e.kind);
+  if (traits.apply == nullptr) return {};
+  // Every path here has passed the live-take gate, and the appliers rely
+  // on it: none looks for a take of its own.
+  jassert(traits.under_take == KindTraits::UnderTake::LIVE ||
+          !root_node->hasActiveTake());
+  // The anchoring an undo or redo carries is the one the settle below
+  // produced the first time (Q18): it is applied, never derived again.
+  Edit anchor_riders;
+  anchor_riders.anchors = std::move(e.anchors);
+  Edit inv = (this->*traits.apply)(std::move(e));
+  if (inv.kind == Edit::Kind::Nop) return inv;
+  using Touches = KindTraits::Touches;
+  if (traits.touches != Touches::FACTS) {
+    if (!anchor_riders.anchors.empty()) applyAnchorRiders(anchor_riders, inv);
+    if (traits.touches != Touches::ROOT_ANCHOR) settleAnchors(inv);
   }
+  // The one place a change of topology reaches the audio thread.
+  if (traits.touches == Touches::STRUCTURE) publishGraph();
   return inv;
 }
 
-namespace {
-/** S16 (docs/sequencer.md §11.8): a window edit on a STACK stamps the
- * window's domain — sequence when authored over an active sequence
- * timeline (explicit on inverses) — and the inverse captures the old
- * stamp. Clips have no sequence: no-op. */
-void stampWindowDomain(celestrian::AudioNode* node, const celestrian::Edit& e,
-                       celestrian::Edit& inv) {
-  auto* stack = dynamic_cast<celestrian::StackNode*>(node);
-  if (stack == nullptr) return;
-  inv.window_domain = (int)stack->windowDomain();
-  const int fresh = e.window_domain >= 0
-                        ? e.window_domain
-                        : (stack->activeSequence() != nullptr ? 1 : 0);
-  stack->setWindowDomain((celestrian::StackNode::WindowDomain)fresh);
-}
+// --- Retirement -------------------------------------------------------
 
-/** THE TOP A MAP EDIT STARTS FROM (loop_selection.md §9): the clip's
- * EFFECTIVE top — the stored one while its map plays it, else the
- * region start — read BEFORE the edit moves the geometry, so a top never
- * set (a fresh take, an old session) reconciles from where it showed.
- * Every loop node keeps a top, clip or group (fractal, 2026-09-29). */
-int64_t topBeforeEdit(const celestrian::AudioNode* node) {
-  return node != nullptr ? node->effectiveTop() : celestrian::timing::kNoTop;
-}
-
-/** THE TOP RIDES THE MAP (loop_selection.md §9, owner 2026-09-24):
- * call right after a map edit has set `node`'s new geometry, with the
- * top it started from (topBeforeEdit, read before). The old stored top
- * goes into the inverse; then the top is set exactly (an inverse
- * restoring its own old top, `setsTop`) or RECONCILED and STORED — kept
- * while the new kept set plays it, else the new region start — from the
- * gesture's base when a live commit carries one. The inverse records
- * that base: the gesture's later live commits reconcile from it
- * (AudioEngine::record). Clip or group alike. */
-void reconcileTopRider(celestrian::AudioNode* node, const celestrian::Edit& e,
-                       celestrian::Edit& inv, int64_t top_before) {
-  if (node == nullptr) return;
-  inv.setsTop = true;
-  inv.itop = node->storedTop();
-  if (e.setsTop) {
-    node->setStoredTop(e.itop);
-    return;
-  }
-  const int64_t base = e.hasTopBase ? e.topBase : top_before;
-  inv.hasTopBase = true;
-  inv.topBase = base;
-  node->setStoredTop(celestrian::timing::reconcileTop(
-      node->storedMap(), node->isLoopWindowActive(),
-      node->getIntrinsicDuration(), base));
-}
-
-/** Apply an edit's WINDOW RIDERS (Edit::windows): set each named node's
- * single-window loop points, capturing the old ones into the inverse
- * so the riders undo with the edit. A node with a multi-segment
- * override is left alone (its map is not a single window). A clip
- * member's top rides its geometry like the edit's own. */
-void applyWindowRiders(
-    const std::function<celestrian::AudioNode*(const juce::String&)>& find,
-    const celestrian::Edit& e, celestrian::Edit& inv) {
-  for (const auto& r : e.windows) {
-    auto* node = find(r.uuid);
-    if (node == nullptr) continue;
-    celestrian::Edit::WindowRider back;
-    back.uuid = r.uuid;
-    back.start = node->getLoopStart();
-    back.end = node->getLoopEnd();
-    // The inverse rider carries the member's RAW geometry, whatever its
-    // shape — a cell map goes whole with the rest and comes back on undo.
-    back.setsMap = true;
-    back.tmap = node->storedMap();
-    const int64_t top_before = topBeforeEdit(node);  // before it moves
-    back.setsTop = true;
-    back.top = node->storedTop();
-    inv.windows.push_back(std::move(back));
-    if (r.setsMap && r.tmap.n >= 2) {
-      node->setMap(r.tmap);
-    } else {
-      node->setLoopPoints(r.start, r.end);
-    }
-    node->setStoredTop(r.setsTop ? r.top
-                                 : celestrian::timing::reconcileTop(
-                                       node->storedMap(),
-                                       node->isLoopWindowActive(),
-                                       node->getIntrinsicDuration(),
-                                       top_before));
-  }
-}
-
-/** A take left the list at index k (docs/takes.md): comp cells naming
- * it fall back to the active take, cells above it renumber; a comp
- * naming nothing anymore clears. */
-void dropTakeFromComp(celestrian::ClipNode& clip, int k) {
-  std::vector<int> cells = clip.compCells();
-  if (cells.empty()) return;
-  bool any = false;
-  for (int& c : cells) {
-    if (c == k) c = -1;
-    else if (c > k) --c;
-    if (c >= 0) any = true;
-  }
-  if (any) clip.setCompCells(cells, clip.compCellLength());
-  else clip.setCompCells({}, 0);
-}
-
-/** The definer STACK's committed direct members (one take). */
-std::vector<celestrian::ClipNode*> stackMembers(celestrian::StackNode& stack) {
-  std::vector<celestrian::ClipNode*> out;
-  for (const auto& child : stack.ownedChildren()) {
-    auto* clip = dynamic_cast<celestrian::ClipNode*>(child.get());
-    if (clip != nullptr && clip->getIntrinsicDuration() > 0) out.push_back(clip);
-  }
-  return out;
-}
-
-/** The LEAVES a lock-collapse acts on: a clip is its own leaf; a
- * stack's are its direct clip members (the one take they were
- * recorded as). */
-std::vector<celestrian::ClipNode*> collapseLeaves(celestrian::AudioNode& node) {
-  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(&node)) return {clip};
-  if (auto* stack = dynamic_cast<celestrian::StackNode*>(&node)) {
-    return stackMembers(*stack);
-  }
-  return {};
-}
-
-/** A Q HAND-OFF RE-OPENS a lock-collapsed node (Q22) exactly when its
- * leaves carry the collapse marker and nothing was authored on the node
- * or its leaves since (the collapse consumed every window): the re-open
- * then plays the identical loop, audio-neutral. A node given new
- * geometry after its lock keeps its collapse — re-opening would replace
- * that geometry with the old trim. */
-bool reopensCollapsed(celestrian::AudioNode& node) {
-  const auto leaves = collapseLeaves(node);
-  if (leaves.empty() || !leaves[0]->isCollapsed()) return false;
-  if (node.storedMap().n > 0) return false;
-  for (auto* leaf : leaves) {
-    if (leaf->storedMap().n > 0) return false;
-  }
-  return true;
-}
-}  // namespace
-
-bool AudioEngine::collapseNode(celestrian::AudioNode& node, CollapseFacts& f) {
-  // RAW window atomics only: activeTimeMap() is overridden by a STEP
-  // AUDITION's derived map — collapsing to that would make a monitoring
-  // gesture the take and destroy the authored window. A multi-segment
-  // map is not a single window: a clip's SPLICES (the applier's other
-  // branch), a stack's is nothing to collapse.
-  if (node.isLoopWindowBypassed() || node.hasSegmentMap()) return false;
-  const auto leaves = collapseLeaves(node);
-  if (leaves.empty()) return false;
-  const int64_t D = leaves[0]->getIntrinsicDuration();
-  for (auto* leaf : leaves) {
-    if (leaf->getIntrinsicDuration() != D) return false;  // not one take
-  }
-  const int64_t s = std::max<int64_t>(0, node.getLoopStart());
-  const int64_t e = std::min(node.getLoopEnd(), D);
-  const int64_t len = e - s;
-  // Full-span (or invalid) window: nothing to collapse.
-  if (len <= 0 || (s == 0 && e >= D)) return false;
-  // THE ONE ROW (composition.md §5): leaves keep the window's material
-  // as their whole content; window top → origin for the node AND its
-  // subtree (Q18 — a window anchors at its node's origin, so the
-  // subtree moves together, no per-member riders); anchored ancestors
-  // follow. Audio-neutral: inner s + ((t − O − s) mod len) before ==
-  // base s + ((t − (O + s)) mod len) after.
-  for (auto* leaf : leaves) leaf->collapseContent(s, len);
-  // A GROUP's own top rides the collapse the way a clip's does inside
-  // collapseContent: the same raw sample, `s` earlier in the new take.
-  if (node.getNodeType() == celestrian::NodeType::Stack) {
-    if (const int64_t t = node.storedTop(); t != celestrian::timing::kNoTop)
-      node.setStoredTop(t - s);
-  }
-  shiftOriginsGated(node, s, 0);
-  liftAncestorsGated(node, s, 0);
-  // The window is consumed (the take IS the window now) — clip or stack.
-  node.setLoopPoints(0, 0);
-  f.shift = s;
-  f.old_duration = D;
-  f.win_start = s;
-  f.win_end = e;
-  return true;
-}
-
-void AudioEngine::uncollapseNode(celestrian::AudioNode& node, int64_t shift,
-                                 int64_t old_duration, int64_t win_start,
-                                 int64_t win_end) {
-  const bool is_stack = node.getNodeType() == celestrian::NodeType::Stack;
-  for (auto* leaf : collapseLeaves(node)) {
-    if (!leaf->isCollapsed()) continue;
-    leaf->uncollapseContent(shift, old_duration);
-    // Members stay whole (no window); the restored window is the stack's.
-    if (is_stack) leaf->setLoopPoints(0, 0);
-  }
-  if (is_stack) {
-    if (const int64_t t = node.storedTop(); t != celestrian::timing::kNoTop)
-      node.setStoredTop(t + shift);
-  }
-  shiftOriginsGated(node, -shift, 0);
-  liftAncestorsGated(node, -shift, 0);
-  node.setLoopPoints(win_start, win_end);
-}
-
-void AudioEngine::collapseDefinerAtArm(const celestrian::AudioNode* exclude) {
-  // Q13 LOCK-COLLAPSE at arm: a provisionally trimmed definer — clip or
-  // stack, one law — collapses to its window BEFORE the arm, so every
-  // boundary computation (context loop, cycle snapshots, LCMs) sees an
-  // ordinary whole-Q looper; an incommensurate buffer left alive would
-  // poison them all (the next take anchors at origin − zero ∉ Q·Z).
-  // Undoable — ⌘Z restores the full buffer and the trim. The applier
-  // records nothing when there is nothing to collapse.
-  auto* d = celestrian::engine_internal::definer(*root_node);
-  if (d == nullptr || d == exclude) return;
-  celestrian::Edit e(celestrian::Edit::Kind::Collapse);
-  e.uuid = d->getUuid();
-  record(std::move(e));
-}
-
-void AudioEngine::releaseDesignationAtArm(
-    const std::vector<celestrian::ClipNode*>* retakes) {
-  // Q22 LOCK AT THE NEXT ARM (owner ruling (b)): recording new content
-  // ends a hand-off exactly as it ends a first take's trim — the
-  // designated definer was collapsed just before (collapseDefinerAtArm
-  // still saw it), and the designation clears as its own undoable step.
-  // A designation naming a node no longer in the island is left alone:
-  // only undoing past this arm can bring the node back, and then the
-  // designation it had is the right one.
-  const juce::String id = root_node->definerDesignation();
-  if (id.isEmpty()) return;
-  auto* designated = findNodeByUuid(root_node.get(), id);
-  if (designated == nullptr) return;
-  if (retakes != nullptr && !retakes->empty()) {
-    // A NEW TAKE of the designated node itself, or of its members,
-    // re-records the definer: the hand-off stands.
-    const bool all_inside = std::all_of(
-        retakes->begin(), retakes->end(), [designated](const auto* clip) {
-          for (const celestrian::AudioNode* n = clip; n != nullptr;
-               n = n->getParent()) {
-            if (n == designated) return true;
-          }
-          return false;
-        });
-    if (all_inside) return;
-  }
-  // The designation alone: no node, nothing else changes.
-  record(celestrian::Edit(celestrian::Edit::Kind::Definer));
-}
-
-celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
-  using celestrian::AudioNode;
-  using celestrian::StackNode;
-  using K = Edit::Kind;
-  auto find = [&](const juce::String& u) {
-    return findNodeByUuid(root_node.get(), u);
-  };
-  auto asStack = [&](const juce::String& u) {
-    return dynamic_cast<StackNode*>(find(u));
-  };
-
-  switch (e.kind) {
-    case K::Insert: {
-      auto* parent = asStack(e.parentUuid);
-      if (!parent || !e.node) return {};
-      const juce::String uid = e.node->getUuid();
-      const bool restoreIsland = e.setsIsland;
-      const int64_t iq = e.iq, izero = e.izero;
-      parent->insertChildAt(std::move(e.node), e.index);
-      // Restore the island grid this insert carries (undo of a
-      // provisional-Q-revert delete). The Remove inverse re-derives the
-      // revert on redo, so it needs no island payload.
-      Edit inv(K::Remove);
-      inv.uuid = uid;
-      if (restoreIsland) setIslandQuantum(iq, izero, inv);
-      // Undo of a clearing revert: the sequences come back with the clip.
-      reinstallSequenceRiders(e);
-      // Undo of a RE-OPENING delete (uuid2 = the definer that delete
-      // uncollapsed): re-collapse it so the locked island is exactly as
-      // it was. Same derivation as the forward Collapse (clip or stack,
-      // one law); redo's Remove re-derives the uncollapse, so no
-      // payload rides back.
-      if (e.uuid2.isNotEmpty()) {
-        if (auto* definer_node = find(e.uuid2)) {
-          CollapseFacts f;
-          collapseNode(*definer_node, f);
-        }
-      }
-      return inv;
-    }
-    case K::Remove: {
-      auto* node = find(e.uuid);
-      if (!node || node == root_node.get()) return {};
-      if (node->isArmedOrRecording()) return {};  // cancel is the verb
-      int idx = -1;
-      auto* parent = parentOf(node, &idx);
-      if (!parent || idx < 0) return {};
-      Edit inv(K::Insert);
-      inv.parentUuid = parent->getUuid();
-      inv.index = idx;
-      const int committed_before = islandCommittedClipCount();
-      inv.node = parent->removeChild(idx);  // non-retiring detach; owned here
-      // A RE-OPEN happens only when this delete actually REMOVED
-      // committed content and no take is in flight: deleting an
-      // unrelated EMPTY clip mid-take must not uncollapse the definer
-      // under the recorder (the arm-time cycle snapshots and the live
-      // take's placement run against the definer's intrinsic length).
-      const bool reopened = islandCommittedClipCount() < committed_before &&
-                            !root_node->hasActiveTake();
-      // Provisional Q revert (Q13 non-sticky): if this delete emptied the
-      // island of committed content, Q is no longer defined by anything —
-      // revert it, carrying the old (Q, zero) so undo restores the grid
-      // together with the clip. A delete that only drops 2→1 leaves Q
-      // untouched (it just becomes re-mutable again — derived, no state).
-      if (islandCommittedClipCount() == 0 && root_node->getQuantum() != 0) {
-        inv.setsIsland = true;
-        inv.iq = root_node->getQuantum();
-        inv.izero = root_node->getZero();
-        setIslandQuantum(0, 0, inv);  // + clears sequences into inv
-      }
-      // RE-OPEN ⟹ UNCOLLAPSE (companion of collapse-at-arm, Q13): if
-      // this delete brought the island back down
-      // to its sole take and that take was lock-collapsed (there is
-      // trimmed-away material beyond its duration), restore the full
-      // buffer with the old trim as the window — audio-neutral by
-      // construction (the windowed playback of the restored buffer is
-      // sample-identical), and the user can trim LONGER again. The
-      // inverse Insert carries uuid2 so undo re-collapses with the
-      // re-inserted take; redo re-derives the uncollapse right here.
-      // "Was collapsed" is an explicit marker (ClipNode::isCollapsed),
-      // never the `write_position > duration` overshoot — every snapped
-      // take overshoots by up to a block, so that heuristic would
-      // un-collapse ORDINARY takes to an off-grid recorded length.
-      // One branch over THE DEFINER NODE (clip or stack — engine_internal::
-      // definer): its leaves were lock-collapsed, so unwind ALL levels
-      // from the markers — the full takes return with the old trim as
-      // the node's window (audio-neutral; trimming longer possible
-      // again).
-      if (auto* d = reopened ? celestrian::engine_internal::definer(*root_node) : nullptr) {
-        const auto leaves = collapseLeaves(*d);
-        if (!leaves.empty() && leaves[0]->isCollapsed()) {
-          const int64_t unwound = leaves[0]->getContentBase();
-          uncollapseNode(*d, unwound, leaves[0]->collapsedFrom(), unwound,
-                         unwound + leaves[0]->getIntrinsicDuration());
-          inv.uuid2 = d->getUuid();
-        }
-      }
-      return inv;
-    }
-    case K::Move: {
-      auto* node = find(e.uuid);
-      auto* newParent = asStack(e.parentUuid);
-      if (!node || !newParent || node == root_node.get()) return {};
-      // A hot clip (armed or capturing) is not movable: the detach/insert
-      // pair would cycle the island's take counter through zero under the
-      // live take (Remove refuses for the same reason — cancel is the verb).
-      if (node->isArmedOrRecording()) return {};
-      // The destination must not lie inside the moved subtree: inserting
-      // a stack into its own descendant makes a self-owning cycle, and the
-      // parent walks (rootNode, the origin lift) never terminate.
-      for (const celestrian::AudioNode* p = newParent; p != nullptr;
-           p = p->getParent()) {
-        if (p == node) return {};
-      }
-      int oldIdx = -1;
-      auto* oldParent = parentOf(node, &oldIdx);
-      if (!oldParent || oldIdx < 0) return {};
-      auto owned = oldParent->removeChild(oldIdx);
-      newParent->insertChildAt(std::move(owned), e.index);
-      Edit inv(K::Move);
-      inv.uuid = e.uuid;
-      inv.parentUuid = oldParent->getUuid();
-      inv.index = oldIdx;
-      return inv;
-    }
-    case K::Combine: {
-      auto* dragged = find(e.uuid);
-      auto* target = find(e.uuid2);
-      if (!dragged || !target || dragged == target) return {};
-      // Hot clips are not combinable (see Move): the detach would run the
-      // island take counter through zero and register the live take on
-      // the new stack's own counter, which nothing scrubs.
-      if (dragged->isArmedOrRecording() || target->isArmedOrRecording()) {
-        return {};
-      }
-      int draggedIdx = -1, targetIdx = -1;
-      auto* draggedParent = parentOf(dragged, &draggedIdx);
-      auto* targetParent = parentOf(target, &targetIdx);
-      if (!draggedParent || !targetParent) return {};
-      auto draggedOwned = draggedParent->removeChild(draggedIdx);
-      // Target index may have shifted if it shared a parent with dragged.
-      int tIdx = -1;
-      auto* tParent = parentOf(target, &tIdx);
-      auto targetOwned = tParent->removeChild(tIdx);
-      // Combine/Explode are an inverse PAIR: a redo of a Combine (the
-      // inverse of an Explode) reuses the very stack the Explode emptied
-      // (carried in `e.node`, the Remove discipline) so the group keeps
-      // its uuid, name, sequence, fx, mute and window — and every later
-      // redo entry addressed to that uuid still resolves. Only a fresh
-      // user Combine builds a new stack.
-      std::unique_ptr<StackNode> newStack;
-      if (e.node) {
-        auto* raw = e.node.release();
-        if (auto* reused = dynamic_cast<StackNode*>(raw)) {
-          newStack.reset(reused);
-        } else {
-          delete raw;  // never a stack here; defensive
-        }
-      }
-      if (!newStack) newStack = std::make_unique<StackNode>("Combined Stack");
-      newStack->addChild(std::move(targetOwned));   // target first (index 0)
-      newStack->addChild(std::move(draggedOwned));  // dragged second (index 1)
-      const juce::String newUuid = newStack->getUuid();
-      tParent->insertChildAt(std::move(newStack), tIdx);
-      Edit inv(K::Explode);
-      inv.uuid = newUuid;
-      inv.parentUuid = targetParent->getUuid();  // child[0] restore
-      inv.index = targetIdx;
-      inv.parentUuid2 = draggedParent->getUuid();  // child[1] restore
-      inv.index2 = draggedIdx;
-      return inv;
-    }
-    case K::Explode: {
-      auto* stack = asStack(e.uuid);
-      if (!stack || stack->getNumChildren() != 2) return {};
-      if (stack->isArmedOrRecording()) return {};  // a hot member (see Move)
-      auto child0 = stack->removeChild(0);  // target
-      auto child1 = stack->removeChild(0);  // dragged (now at 0)
-      const juce::String draggedUuid = child1->getUuid();
-      const juce::String targetUuid = child0->getUuid();
-      auto* tParent = asStack(e.parentUuid);
-      auto* dParent = asStack(e.parentUuid2);
-      if (!tParent || !dParent) return {};
-      // Reinsert in ascending index order so a shared parent reproduces
-      // the exact original arrangement (inserting the lower slot first).
-      const bool targetFirst = e.index <= e.index2;
-      if (targetFirst) {
-        tParent->insertChildAt(std::move(child0), e.index);
-        dParent->insertChildAt(std::move(child1), e.index2);
-      } else {
-        dParent->insertChildAt(std::move(child1), e.index2);
-        tParent->insertChildAt(std::move(child0), e.index);
-      }
-      // Detach the now-empty combined stack and hand it to the inverse
-      // (the Remove discipline): the Combine that undoes this Explode
-      // re-installs the SAME object, so the pair is a true inverse. The
-      // subtree is retired only when its log entry is dropped — never
-      // here, where an in-flight callback may still traverse it via the
-      // outgoing graph snapshot.
-      Edit inv(K::Combine);
-      inv.uuid = draggedUuid;
-      inv.uuid2 = targetUuid;
-      int stackIdx = -1;
-      if (auto* stackParent = parentOf(stack, &stackIdx);
-          stackParent && stackIdx >= 0) {
-        inv.node = stackParent->removeChild(stackIdx);
-      }
-      return inv;
-    }
-    case K::Rename: {
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      Edit inv(K::Rename);
-      inv.uuid = e.uuid;
-      inv.s1 = node->getName();
-      node->setName(e.s1);
-      return inv;
-    }
-    case K::Mute: {
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      Edit inv(K::Mute);
-      inv.uuid = e.uuid;
-      inv.b1 = node->is_muted.load();
-      node->is_muted.store(e.b1);
-      return inv;
-    }
-    case K::PeriodSource: {
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      Edit inv(K::PeriodSource);
-      inv.uuid = e.uuid;
-      inv.b1 = node->period_from_context_.load();
-      node->period_from_context_.store(e.b1);
-      return inv;
-    }
-    case K::LoopPoints: {
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      Edit inv(K::LoopPoints);
-      inv.uuid = e.uuid;
-      inv.d1 = (double)node->getLoopStart();
-      inv.d2 = (double)node->getLoopEnd();
-      // An explicit single-window edit REPLACES a multi-segment
-      // override (time_maps.md phase 3); the inverse carries the
-      // removed map back (setsMap) so undo restores it.
-      inv.setsMap = true;
-      inv.tmap = node->storedMap();  // the RAW old geometry, any shape
-      const int64_t top_before = topBeforeEdit(node);
-      const bool clearing = !(e.setsMap && e.tmap.n >= 2) && (int64_t)e.d2 <= (int64_t)e.d1;
-      if (e.setsMap && e.tmap.n >= 2) {
-        node->setMap(e.tmap);  // undo path: the cell map comes back
-      } else {
-        node->setLoopPoints((int64_t)e.d1, (int64_t)e.d2);
-      }
-      reconcileTopRider(node, e, inv, top_before);  // the top rides the map
-      // A CLEAR drops a stale bypass with the geometry (Edit::restoresBypass):
-      // "whole" is no window, so nothing remains to bypass, and the next
-      // window drawn must sound. The inverse puts the flag back.
-      if (clearing && node->isLoopWindowBypassed()) {
-        node->setLoopWindowBypassed(false);
-        inv.restoresBypass = true;
-      }
-      if (e.restoresBypass) node->setLoopWindowBypassed(true);
-      stampWindowDomain(node, e, inv);
-      applyWindowRiders(find, e, inv);
-      // Origins and zero land in the SAME block (island generation) —
-      // a setsOrigin re-anchor gates the same way.
-      const uint32_t gen = e.setsOrigin ? root_node->nextIslandGeneration() : 0;
-      applySetsOrigin(*node, e, inv, gen);
-      // Q13 re-trim: if the forward edit carries an island re-establishment
-      // (built by setLoopPoints when the target is the sole committed
-      // clip), apply it and capture the old (Q, zero) into the inverse so
-      // undo restores the grid, not just the window.
-      if (e.setsIsland) {
-        inv.setsIsland = true;
-        inv.iq = root_node->getQuantum();
-        inv.izero = root_node->getZero();
-        setIslandQuantum(e.iq, e.izero, inv, gen);
-      } else if (gen != 0) {
-        // Origins moved without the zero: publish the generation so
-        // the gated origins are adopted at the next block top.
-        root_node->setIslandFacts(root_node->getQuantum(), root_node->getZero(), gen);
-      }
-      return inv;
-    }
-    case K::Collapse: {
-      // Q13 LOCK-COLLAPSE (design_language.md Q13, composition.md §5 —
-      // ONE row for clip and stack): the trim is a PRE-LOCK affordance.
-      // When a take arms against a provisionally trimmed island, the
-      // trimmed region BECOMES the take, as if it had been performed
-      // exactly: the leaves under the definer node keep the window's
-      // material as their whole content, the node's subtree moves by the
-      // window start (window top → origin = the zero), its ancestors
-      // follow, the window is consumed. (Q, zero) do not move: the
-      // collapse lands exactly on the grid the trim established.
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
-      Edit inv(K::Collapse);
-      inv.uuid = e.uuid;
-      if (!e.b1) {
-        // MULTI-SEGMENT clip definer (phase 3): the collapse is a
-        // SPLICE — the kept cells become the take; the inverse owns the
-        // pre-splice buffer + map + facts (write-once safety, the
-        // owned-subtree argument).
-        if (const celestrian::timing::TimeMap mm =
-                clip != nullptr ? clip->storedMap() : celestrian::timing::TimeMap();
-            clip != nullptr && mm.n >= 2) {
-          const celestrian::timing::TimeMap* m = &mm;
-          // A referring (reserved-storage) buffer must not be the one
-          // the inverse comes to own: compact to the heap first.
-          compactClipToHeap(*clip);
-          inv.b1 = true;
-          inv.setsMap = true;
-          inv.tmap = *m;
-          // The pre-splice ORIGIN is an absolute: it rides `iorg` under
-          // `setsOrigin`, the one slot shiftHistoryAbsolutes re-frames on
-          // a seek. `iq` never holds an absolute.
-          inv.setsOrigin = true;
-          inv.iorg = clip->origin_samples.load();
-          inv.old_duration = clip->getIntrinsicDuration();
-          inv.d1 = (double)clip->getContentBase();
-          inv.d2 = (double)clip->recordedLength();
-          inv.collapsed_from = clip->collapsedFrom();  // the splice clears it
-          // The top rides the splice (spliceToMap re-expresses it, and
-          // may drop one the map does not play): the un-splice puts
-          // the raw one back.
-          inv.setsTop = true;
-          inv.itop = clip->storedTop();
-          // Every other take of the slot splices the same way (one
-          // period, one base — docs/takes.md); the inverse owns their
-          // pre-splice records. BEFORE spliceToMap rewrites the base.
-          inv.other_takes = clip->spliceOtherTakesToMap(*m);
-          // MIDI content splices its note sequence too (phase 5) —
-          // BEFORE spliceToMap rewrites the shared facts (base).
-          if (clip->contentKind() == celestrian::ClipNode::ContentKind::Midi)
-            inv.midi = clip->spliceMidiToMap(*m);
-          inv.buffer = clip->spliceToMap(*m);
-          liftAncestorsGated(*clip, m->mapOffset(0), 0);  // Q18: origin += a0
-          // spliceToMap left the geometry at the full span of the new take.
-          return inv;
-        }
-        CollapseFacts f;
-        if (!collapseNode(*node, f)) return {};
-        inv.b1 = true;  // inverse = uncollapse, carrying the raw facts
-        inv.shift = f.shift;
-        inv.old_duration = f.old_duration;
-        inv.win_start = f.win_start;
-        inv.win_end = f.win_end;
-      } else if (e.setsMap) {
-        if (clip == nullptr) return {};
-        // Un-splice: reinstall the pre-splice buffer + facts, retire
-        // the displaced spliced buffer, and put the map back.
-        const int64_t before_origin = clip->origin_samples.load();
-        retireOwned(clip->unspliceFromMap(
-            std::move(e.buffer), e.iorg, e.old_duration, (int64_t)e.d1,
-            (int64_t)e.d2, e.collapsed_from,
-            e.setsTop ? e.itop : clip->storedTop()));
-        liftAncestorsGated(*clip, clip->origin_samples.load() - before_origin,
-                           0);
-        if (e.midi) retireOwned(clip->unspliceMidi(std::move(e.midi)));
-        for (auto& d : clip->unspliceOtherTakes(std::move(e.other_takes))) {
-          retireOwned(std::move(d.buffer));
-          retireOwned(std::move(d.midi));
-        }
-        clip->setMap(e.tmap);
-        // Inverse of the inverse: the parameterless forward re-derives
-        // (the override is present again).
-      } else {
-        // Level undo: unwind exactly this collapse's shift.
-        uncollapseNode(*node, e.shift, e.old_duration, e.win_start,
-                       e.win_end);
-        // inverse of the inverse: the parameterless forward re-derives.
-      }
-      return inv;
-    }
-    case K::LoopBypass: {
-      // The stored top stays (loop_selection.md §9): bypass toggles
-      // whether the region applies, not what it keeps.
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      Edit inv(K::LoopBypass);
-      inv.uuid = e.uuid;
-      inv.b1 = node->isLoopWindowBypassed();
-      node->setLoopWindowBypassed(e.b1);
-      return inv;
-    }
-    case K::Segments: {
-      // Multi-segment map (time_maps.md phase 3). Applied by
-      // NORMALIZATION so undo round-trips through every state pair:
-      // n≥2 installs an immutable override; n==1 writes the
-      // single-window atomics (clearing the override); n==0 clears
-      // both. The inverse captures the RAW old storage — never
-      // activeTimeMap(), which reads empty under bypass and would
-      // lose a bypassed node's geometry on undo.
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      Edit inv(K::Segments);
-      inv.uuid = e.uuid;
-      inv.setsMap = true;
-      inv.tmap = node->storedMap();  // the RAW old geometry, any shape
-      const int64_t top_before = topBeforeEdit(node);
-      stampWindowDomain(node, e, inv);
-      node->setMap(e.tmap);
-      reconcileTopRider(node, e, inv, top_before);  // the top rides the map
-      // Q13 riders (multi-segment definer re-trim): identical shape to
-      // LoopPoints — the grid, the members and the phase re-anchor undo
-      // atomically with the map (window/origin riders serve the
-      // DEFINER-STACK twin).
-      applyWindowRiders(find, e, inv);
-      const uint32_t seg_gen =
-          e.setsOrigin ? root_node->nextIslandGeneration() : 0;
-      applySetsOrigin(*node, e, inv, seg_gen);
-      if (e.setsIsland) {
-        inv.setsIsland = true;
-        inv.iq = root_node->getQuantum();
-        inv.izero = root_node->getZero();
-        setIslandQuantum(e.iq, e.izero, inv, seg_gen);
-      } else if (seg_gen != 0) {
-        root_node->setIslandFacts(root_node->getQuantum(),
-                                  root_node->getZero(), seg_gen);
-      }
-      return inv;
-    }
-    case K::Sequence: {
-      // The SEQUENCER (docs/sequencer.md): install/replace/clear the
-      // stack's sequence by copy-swap-retire (the Segments/map
-      // discipline). The inverse owns a copy of the RAW old sequence —
-      // bypassed geometry survives undo, like Segments.
-      auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid));
-      if (!stack) return {};
-      Edit inv(K::Sequence);
-      inv.uuid = e.uuid;
-      if (const celestrian::Sequence* old = stack->sequencePtr()) {
-        inv.seq = std::make_unique<celestrian::Sequence>(*old);
-      }
-      const celestrian::Sequence* fresh =
-          e.seq ? new celestrian::Sequence(*e.seq) : nullptr;
-      // The step audition names a step by INDEX: it follows a resize
-      // (same count) but cannot survive a shape change (a delete
-      // would silently re-aim it at the neighbour) — clear it then.
-      {
-        const int before = inv.seq ? inv.seq->numSteps() : 0;
-        const int after = fresh ? fresh->numSteps() : 0;
-        if (before != after) stack->setAuditionStep(-1);
-      }
-      if (const celestrian::Sequence* old = stack->exchangeSequence(fresh)) {
-        retireOwned(old);
-      }
-      return inv;
-    }
-    case K::Take:
-    case K::Untake: {
-      // TAKES ARE UNDOABLE (docs/sequencer.md §11.5). Untake strips the
-      // named clips to empty, the inverse Take OWNING their content;
-      // Take reinstalls it. Island (Q, zero) ride via setsIsland in
-      // both directions (the first take's establishment, a growth
-      // re-base), captured into the inverse. An optional sequence rider
-      // (`seq` + `b1`, the step-record auto-gate) swaps with the same
-      // copy-swap-retire discipline so take + gates undo as one.
-      if (root_node->hasActiveTake()) return {};  // never under a live take
-      const bool strip = e.kind == K::Untake;
-      Edit inv(strip ? K::Take : K::Untake);
-      // Every named clip must exist and be idle, or the edit is a Nop
-      // (a deleted clip's take is gone with it — Remove owns that).
-      // A payload with a take index names a take of a multi-take slot
-      // (docs/takes.md): Untake removes the LAST take, Take appends —
-      // the slot itself keeps its content either way.
-      std::vector<celestrian::ClipNode*> clips;
-      for (const auto& tp : e.takes) {
-        auto* clip = dynamic_cast<celestrian::ClipNode*>(find(tp.uuid));
-        if (!clip || clip->isArmedOrRecording()) return {};
-        if (tp.take_index >= 0) {
-          if (clip->duration_samples.load() <= 0) return {};
-          if (strip && (tp.take_index < 1 ||
-                        clip->takeCount() != tp.take_index + 1))
-            return {};
-          if (!strip && clip->takeCount() != tp.take_index) return {};
-        } else {
-          if (strip && (clip->duration_samples.load() <= 0 ||
-                        clip->takeCount() > 1))
-            return {};
-          if (!strip && clip->duration_samples.load() > 0) return {};
-        }
-        clips.push_back(clip);
-      }
-      // Island facts: capture current, then set the payload's.
-      inv.setsIsland = true;
-      inv.iq = root_node->getQuantum();
-      inv.izero = root_node->getZero();
-      for (size_t i = 0; i < clips.size(); ++i) {
-        Edit::TakePayload& in = e.takes[i];
-        Edit::TakePayload out;
-        out.uuid = in.uuid;
-        out.take_index = in.take_index;
-        out.prev_active = in.prev_active;
-        if (in.take_index >= 0) {
-          celestrian::ClipNode& clip = *clips[i];
-          // The re-time rides the take (TakePayload::setsRetime): the
-          // inverse captures the current one, the payload's lands after
-          // the list change — undo puts the older takes' shift back,
-          // redo zeroes it again.
-          out.setsRetime = true;
-          out.retime = clip.retime();
-          if (strip) {
-            // The comp rides the inverse; cells naming the removed
-            // take fall back to the active one meanwhile.
-            out.setsComp = true;
-            out.cells = clip.compCells();
-            out.cell_len = clip.compCellLength();
-            if (in.prev_active >= 0 && in.prev_active != clip.activeTake())
-              clip.selectTake(in.prev_active);
-            out.state = clip.removeTake(in.take_index);
-            dropTakeFromComp(clip, in.take_index);
-          } else {
-            if (!in.state.buffer) return {};
-            clip.insertTake(in.take_index, std::move(in.state));
-            clip.selectTake(in.take_index);
-            if (in.setsComp) clip.setCompCells(in.cells, in.cell_len);
-          }
-          if (in.setsRetime) clip.setRetime(in.retime);
-        } else if (strip) {
-          out.state = clips[i]->stripTake();
-        } else {
-          if (!in.state.buffer) return {};
-          auto displaced = clips[i]->restoreTake(std::move(in.state));
-          retireOwned(displaced.first.release());
-          retireOwned(displaced.second.release());
-        }
-        // The instrument rider (docs/vst3.md §11): the inverse takes
-        // the state current now, the payload's state goes live. A slot
-        // no longer on the chain drops the rider.
-        if (in.instrument_slot.isNotEmpty()) {
-          if (auto* instrument = dynamic_cast<celestrian::dsp::Vst3Slot*>(
-                  clips[i]->fxChain()->findSlot(in.instrument_slot))) {
-            out.instrument_slot = in.instrument_slot;
-            out.instrument_state = instrument->stateBlob();
-            if (in.instrument_state.getSize() > 0)
-              instrument->restoreState(in.instrument_state);
-          }
-        }
-        inv.takes.push_back(std::move(out));
-      }
-      if (e.setsIsland) setIslandQuantum(e.iq, e.izero, inv);
-      // Undo of a FIRST take reverts Q to 0, which clears every
-      // sequence into the inverse's riders; redo reinstalls them.
-      reinstallSequenceRiders(e);
-      // The group-window lift rides the take (see reconcileTakes):
-      // undo puts the members' commit-time windows back and clears the
-      // stack's; redo lifts again.
-      applyWindowRiders(find, e, inv);
-      // The sequence rider (auto-gate).
-      if (e.b1 && e.uuid.isNotEmpty()) {
-        if (auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid))) {
-          inv.b1 = true;
-          inv.uuid = e.uuid;
-          if (const celestrian::Sequence* old = stack->sequencePtr()) {
-            inv.seq = std::make_unique<celestrian::Sequence>(*old);
-          }
-          const celestrian::Sequence* fresh =
-              e.seq ? new celestrian::Sequence(*e.seq) : nullptr;
-          if (const celestrian::Sequence* old = stack->exchangeSequence(fresh)) {
-            retireOwned(old);
-          }
-        }
-      }
-      return inv;
-    }
-    case K::SelectTake: {
-      // Takes (docs/takes.md): an atomic content-pointer swap; the
-      // inverse names the take that was active.
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
-      if (!clip || clip->isArmedOrRecording()) return {};
-      if (root_node->hasActiveTake()) return {};
-      if (e.index < 0 || e.index >= clip->takeCount() ||
-          e.index == clip->activeTake())
-        return {};
-      Edit inv(K::SelectTake);
-      inv.uuid = e.uuid;
-      inv.index = clip->activeTake();
-      if (!clip->selectTake(e.index)) return {};
-      return inv;
-    }
-    case K::DeleteTake: {
-      // Forward (no payload): detach take `index` — never the last one;
-      // the inverse OWNS the record (the owned-subtree argument) with
-      // the activity and comp to restore. With a payload: reinsert.
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
-      if (!clip || clip->isArmedOrRecording()) return {};
-      if (root_node->hasActiveTake()) return {};
-      Edit inv(K::DeleteTake);
-      inv.uuid = e.uuid;
-      if (e.takes.empty()) {
-        const int k = e.index;
-        if (clip->takeCount() < 2 || k < 0 || k >= clip->takeCount()) return {};
-        Edit::TakePayload tp;
-        tp.uuid = e.uuid;
-        tp.take_index = k;
-        tp.prev_active = clip->activeTake();
-        tp.setsComp = true;
-        tp.cells = clip->compCells();
-        tp.cell_len = clip->compCellLength();
-        tp.state = clip->removeTake(k);
-        if (!tp.state.buffer) return {};
-        dropTakeFromComp(*clip, k);
-        inv.takes.push_back(std::move(tp));
-        return inv;
-      }
-      Edit::TakePayload& tp = e.takes[0];
-      if (!tp.state.buffer || tp.take_index < 0 ||
-          tp.take_index > clip->takeCount())
-        return {};
-      clip->insertTake(tp.take_index, std::move(tp.state));
-      if (tp.prev_active >= 0) clip->selectTake(tp.prev_active);
-      if (tp.setsComp) clip->setCompCells(tp.cells, tp.cell_len);
-      inv.index = tp.take_index;
-      return inv;
-    }
-    case K::Comp: {
-      // The comp (docs/takes.md): the full cell array replaces the
-      // old one whole (seqlocked inline); the inverse carries the old.
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
-      if (!clip || clip->isArmedOrRecording()) return {};
-      if (root_node->hasActiveTake()) return {};
-      Edit inv(K::Comp);
-      inv.uuid = e.uuid;
-      inv.cells = clip->compCells();
-      inv.cell_len = clip->compCellLength();
-      clip->setCompCells(e.cells, e.cell_len);
-      return inv;
-    }
-    case K::SequenceBypass: {
-      auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid));
-      if (!stack) return {};
-      Edit inv(K::SequenceBypass);
-      inv.uuid = e.uuid;
-      inv.b1 = stack->isSequenceBypassed();
-      stack->setSequenceBypassed(e.b1);
-      return inv;
-    }
-    case K::Input: {
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
-      if (!clip) return {};
-      Edit inv(K::Input);
-      inv.uuid = e.uuid;
-      inv.d1 = (double)clip->getInputChannel();
-      clip->setInputChannel((int)e.d1);
-      return inv;
-    }
-    case K::InputR: {
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
-      if (!clip) return {};
-      Edit inv(K::InputR);
-      inv.uuid = e.uuid;
-      inv.d1 = (double)clip->getInputChannelRight();
-      clip->setInputChannelRight((int)e.d1);
-      return inv;
-    }
-    case K::MoveSlot: {
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      celestrian::dsp::FxChain* chain = node->fxChain();
-      const int from = chain->indexOfSlot(e.s1);
-      const int slot_count = (int)chain->slots().size();
-      const int to = juce::jlimit(0, slot_count - 1, e.index);
-      if (from < 0 || from == to) return {};
-      Edit inv(K::MoveSlot);
-      inv.uuid = e.uuid;
-      inv.s1 = e.s1;
-      inv.index = from;
-      // Successor chain sharing the slot objects (DSP state survives);
-      // publish, then retire the predecessor (an in-flight render may
-      // read it for ≤2 more callbacks).
-      auto slots = chain->slots();
-      auto moved = slots[(size_t)from];
-      slots.erase(slots.begin() + from);
-      slots.insert(slots.begin() + to, std::move(moved));
-      retireOwned(std::unique_ptr<celestrian::dsp::FxChain>(
-          node->exchangeFxChain(
-              celestrian::dsp::FxChain::makeFromSlots(std::move(slots))
-                  .release())));
-      return inv;
-    }
-    case K::AddSlot: {
-      auto* node = find(e.uuid);
-      if (!node || e.slot == nullptr) return {};
-      celestrian::dsp::FxChain* chain = node->fxChain();
-      auto slots = chain->slots();
-      const int slot_count = (int)slots.size();
-      const int to =
-          e.index < 0 ? slot_count : juce::jlimit(0, slot_count, e.index);
-      Edit inv(K::RemoveSlot);
-      inv.uuid = e.uuid;
-      inv.s1 = e.slot->slotUuid();
-      slots.insert(slots.begin() + to, e.slot);
-      retireOwned(std::unique_ptr<celestrian::dsp::FxChain>(
-          node->exchangeFxChain(
-              celestrian::dsp::FxChain::makeFromSlots(std::move(slots))
-                  .release())));
-      return inv;
-    }
-    case K::RemoveSlot: {
-      auto* node = find(e.uuid);
-      if (!node) return {};
-      celestrian::dsp::FxChain* chain = node->fxChain();
-      const int from = chain->indexOfSlot(e.s1);
-      if (from < 0) return {};
-      auto slots = chain->slots();
-      Edit inv(K::AddSlot);
-      inv.uuid = e.uuid;
-      inv.index = from;
-      inv.slot = slots[(size_t)from];  // the undo entry OWNS the slot
-      slots.erase(slots.begin() + from);
-      retireOwned(std::unique_ptr<celestrian::dsp::FxChain>(
-          node->exchangeFxChain(
-              celestrian::dsp::FxChain::makeFromSlots(std::move(slots))
-                  .release())));
-      return inv;
-    }
-    case K::Timing: {
-      // THE RE-TIME (loop_selection.md §9, setTiming): the clip's origin,
-      // re-time and (optionally) top land as one edit; the inverse
-      // captures all three, absolute, so undo restores them together.
-      // The origin takes the continuity rider's gated path (a named
-      // island generation, published with the unchanged (Q, zero)) — a
-      // SHIFT, never re-folded: no continuity solve, no ancestor lift,
-      // no island fact moves.
-      // Clip or group (fractal): a group's origin moves with its whole
-      // subtree (applySetsOrigin shifts it), so its members keep their
-      // placement inside it and the group re-times as one.
-      AudioNode* node = find(e.uuid);
-      if (!node || node == root_node.get() || node->isArmedOrRecording())
-        return {};
-      Edit inv(K::Timing);
-      inv.uuid = e.uuid;
-      inv.setsTop = true;
-      inv.itop = node->storedTop();
-      inv.setsRetime = true;
-      inv.iretime = node->retime();
-      const uint32_t gen = e.setsOrigin ? root_node->nextIslandGeneration() : 0;
-      applySetsOrigin(*node, e, inv, gen);
-      if (gen != 0) {
-        root_node->setIslandFacts(root_node->getQuantum(), root_node->getZero(),
-                                  gen);
-      }
-      if (e.setsRetime) node->setRetime(e.iretime);
-      if (e.setsTop) node->setStoredTop(e.itop);
-      return inv;
-    }
-    case K::Definer: {
-      // THE Q HAND-OFF (Q22, setDefiner) and the lock that ends it
-      // (releaseDesignationAtArm). The node half (`uuid`) re-opens a
-      // lock-collapsed definer so its region can grow again, or — the
-      // inverse — re-collapses it; the designation and the grid ride
-      // along, each captured into the inverse.
-      AudioNode* node = nullptr;
-      if (e.uuid.isNotEmpty()) {
-        node = find(e.uuid);
-        if (node == nullptr || node == root_node.get()) return {};
-      }
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
-      Edit inv(K::Definer);
-      inv.uuid = e.uuid;
-      // THE TOP (the definer's "1" is its region start, Q13): swapped on
-      // the take the re-open exposes, so it is read and restored in the
-      // re-opened content's coordinates.
-      const auto swapTop = [&] {
-        if (clip == nullptr || !e.setsTop) return;
-        inv.setsTop = true;
-        inv.itop = clip->storedTop();
-        clip->setStoredTop(e.itop);
-      };
-      if (node != nullptr && e.b1) {
-        // Undo of a re-opening hand-off: the top first, then the node
-        // re-collapses to the window the re-open restored (collapseNode's
-        // derivation — the Insert/uuid2 precedent); redo re-derives the
-        // re-open, so no payload rides back.
-        swapTop();
-        CollapseFacts f;
-        collapseNode(*node, f);
-      } else if (node != nullptr) {
-        // RE-OPEN ⟹ UNCOLLAPSE, exactly as the Remove re-open does: every
-        // collapse level unwinds from the markers, the full takes return
-        // with the old trim as the node's window (audio-neutral).
-        if (reopensCollapsed(*node)) {
-          const auto leaves = collapseLeaves(*node);
-          const int64_t unwound = leaves[0]->getContentBase();
-          uncollapseNode(*node, unwound, leaves[0]->collapsedFrom(), unwound,
-                         unwound + leaves[0]->getIntrinsicDuration());
-          inv.b1 = true;
-        }
-        swapTop();
-      }
-      inv.s1 = root_node->definerDesignation();
-      root_node->setDefinerDesignation(e.s1);
-      // The grid: no origin moves with it (the re-open's are ungated, as
-      // in the Remove re-open), so the facts publish on the current
-      // generation.
-      if (e.setsIsland) {
-        inv.setsIsland = true;
-        inv.iq = root_node->getQuantum();
-        inv.izero = root_node->getZero();
-        setIslandQuantum(e.iq, e.izero, inv);
-      }
-      return inv;
-    }
-    case K::Nop:
-      return {};
-  }
-  return {};
-}
-
-void AudioEngine::retireEdit(celestrian::Edit&& e) {
-  // Never free a detached subtree inline — an in-flight callback may read
-  // it for ≤2 more callbacks. Hand it to the same graveyard the graph
-  // mutations use.
+void AudioEngine::retireEdit(Edit&& e) {
+  // NEVER FREED INLINE: what an edit owns — a detached subtree, a take's
+  // buffer, notes and reserved storage, a chain slot — was reachable from
+  // a graph the audio thread may still be walking, so a dropped edit
+  // hands all of it to the reclaimer (retire).
+  using celestrian::engine_internal::retireTake;
+  if (e.then != nullptr) retireEdit(std::move(*e.then));
   retireOwned(std::move(e.buffer));
   retireOwned(std::move(e.node));
-  retireOwned(std::move(e.node2));
-  // Take content (Kind::Take payloads, detached takes of a slot, the
-  // pre-splice records of a slot's other takes) rides the same grace.
-  auto retireTake = [this](celestrian::ClipNode::TakeState& s) {
-    retireOwned(std::move(s.buffer));
-    retireOwned(std::move(s.midi));
-    // TakeStorage rides the same grace: dropping it inline would
-    // munmap/VirtualFree pages an in-flight callback may still be
-    // reading through storage_rt_.
-    if (s.storage != nullptr) {
-      // shared_ptr wrapper: retire() takes a copyable std::function.
-      retire([st = std::shared_ptr<celestrian::TakeStorage>(
-                  std::move(s.storage))] {});
-    }
-  };
-  for (auto& tp : e.takes) retireTake(tp.state);
-  for (auto& ot : e.other_takes) retireTake(ot.second);
-  // A chain slot rides the same grace: the chain that referenced it was
-  // itself just retired, so an in-flight callback may still process the
-  // slot. The deleter holds the shared_ptr until the grace passes.
+  for (auto& payload : e.takes) retireTake(*this, std::move(payload.state));
+  for (auto& other : e.other_takes) retireTake(*this, std::move(other.second));
   if (e.slot != nullptr) {
     retire([slot = std::move(e.slot)] {});
   }
@@ -1250,15 +193,6 @@ void AudioEngine::clearRedo() {
   redo_.clear();
 }
 
-void AudioEngine::endGesture() {
-  // The redo branch the gesture's entry invalidated can no longer come
-  // back (only cancelGesture restores it): retired like any dropped
-  // edit, never freed inline.
-  for (auto& e : gesture_redo_) retireEdit(std::move(e));
-  gesture_redo_.clear();
-  gesture_ = {};
-}
-
 void AudioEngine::clearHistory() {
   for (auto& e : undo_) retireEdit(std::move(e));
   undo_.clear();
@@ -1267,178 +201,215 @@ void AudioEngine::clearHistory() {
   endGesture();
 }
 
-void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
+void AudioEngine::pushUndo(Edit&& inverse) {
   undo_.push_back(std::move(inverse));
   while (undo_.size() > kUndoDepth) {
     retireEdit(std::move(undo_.front()));
     undo_.erase(undo_.begin());
   }
   clearRedo();
-  endGesture();  // any entry logged ends the open gesture (record() re-opens)
+  endGesture();
 }
 
+// --- The live-take gate -----------------------------------------------
+
 bool AudioEngine::refusedUnderLiveTake(const char* verb) const {
-  if (root_node == nullptr || !root_node->hasActiveTake()) return false;
+  if (!root_node->hasActiveTake()) return false;
   juce::Logger::writeToLog(
       juce::String("AudioEngine: ") + verb +
       " refused - a take is armed or capturing (edits wait for the take)");
   return true;
 }
 
-namespace {
-/** The kinds that stay live under a take: wiring and mixer facts that
- * change nothing about what sounds WHEN (rename, mute, the input
- * channels for the NEXT arm, fx slot structure) and inserting EMPTY
- * nodes (a new track) — every other kind moves time or content. */
-bool liveUnderTake(celestrian::Edit::Kind k) {
-  using K = celestrian::Edit::Kind;
-  return k == K::Rename || k == K::Mute || k == K::Input || k == K::InputR ||
-         k == K::MoveSlot || k == K::AddSlot || k == K::RemoveSlot ||
-         k == K::Insert;
+bool AudioEngine::refusedUnderLiveTake(Edit::Kind kind,
+                                       const char* verb) const {
+  return traitsOf(kind).under_take == KindTraits::UnderTake::WAITS &&
+         refusedUnderLiveTake(verb);
 }
-}  // namespace
 
-void AudioEngine::openGesture(const juce::String& uuid,
-                              celestrian::Edit::Kind kind) {
+// --- The gesture ------------------------------------------------------
+//
+// A drag streams throttled commits, so the edit is audible while it
+// moves, and the whole drag is ONE undo step (loop_selection.md §14).
+// Its first commit arrives non-live and opens the gesture (openGesture)
+// whatever it goes on to record; every later commit carries Edit::live.
+// The first of them all to APPLY logs the gesture's entry, and the live
+// commits after it coalesce into that entry: it already restores the
+// gesture's start, so a later inverse only completes it
+// (completeGestureEntry) and is dropped. A commit that records nothing —
+// an identity, a refusal — keeps the gesture open: a drag that dwells, or
+// returns to its start, is still one step.
+//
+// The gesture is TRACKED (gesture_), never read off the stack's top: a
+// first commit that recorded nothing leaves the PREVIOUS gesture's entry
+// there. While the gesture is `logged` its entry is the top; any other
+// entry logged, an undo and a redo end it, so a stray live commit logs a
+// step of its own. Commits pair within one family
+// (KindTraits::Gesture) — a window may become a cell map mid-drag, a
+// re-time never joins a map edit — and only live commits coalesce: two
+// gestures on one lane, however close in time, are two steps.
+
+void AudioEngine::openGesture(const juce::String& uuid, Edit::Kind kind) {
   endGesture();  // the previous gesture can no longer be cancelled
   gesture_ = {uuid, kind, false};
 }
 
-void AudioEngine::record(celestrian::Edit forward) {
-  reconcileTakes();  // a settled take logs BEFORE any later edit
-  if (!liveUnderTake(forward.kind) && refusedUnderLiveTake("edit")) return;
+void AudioEngine::endGesture() {
+  // The redo branch the gesture's entry invalidated can no longer come
+  // back (only cancelGesture restores it).
+  for (auto& e : gesture_redo_) retireEdit(std::move(e));
+  gesture_redo_.clear();
+  gesture_ = {};
+}
+
+bool AudioEngine::record(Edit forward) {
+  reconcileTakes();  // a settled take is logged before any later edit
+  if (refusedUnderLiveTake(forward.kind, "edit")) return false;
+  const KindTraits traits = traitsOf(forward.kind);
   const bool live = forward.live;
   const juce::String uuid = forward.uuid;
-  const celestrian::Edit::Kind kind = forward.kind;
-  // A live commit coalesces only into its OWN gesture's logged entry —
-  // the top of the stack, since anything else logged would have ended
-  // the gesture.
+  const Edit::Kind kind = forward.kind;
+  using Gesture = KindTraits::Gesture;
   const bool coalesces = live && gesture_.logged && gesture_.uuid == uuid &&
-                         sameGesture(gesture_.kind, kind) && !undo_.empty();
-  // THE GESTURE'S TOP (loop_selection.md §9): a live map commit that
-  // will coalesce into its gesture's undo entry reconciles the top from
-  // the EFFECTIVE top the gesture STARTED with — the base that entry
-  // (the gesture's first inverse) recorded, reconcileTopRider — never
-  // from the previous live commit's. A splice drag that sweeps past the
-  // ↺ and back keeps it, exactly as the drag previewed it (the
-  // prototype's reconcileTop(segs0, …, top0)); the gesture's one undo
-  // step still restores the old stored top exactly.
-  if (coalesces && isMapKind(kind) && !forward.setsTop &&
+                         traits.gesture != Gesture::NONE &&
+                         traitsOf(gesture_.kind).gesture == traits.gesture &&
+                         !undo_.empty();
+  // A coalescing map commit reconciles the top from the base its
+  // gesture STARTED with — the one the gesture's entry recorded
+  // (reconcileTopRider) — never from the previous live commit's.
+  if (coalesces && traits.gesture == Gesture::MAP && !forward.setsTop &&
       undo_.back().hasTopBase) {
     forward.hasTopBase = true;
     forward.topBase = undo_.back().topBase;
   }
-  celestrian::Edit inv = applyEdit(std::move(forward));
-  if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
+  Edit inv = applyEdit(std::move(forward));
+  if (inv.kind == Edit::Kind::Nop) return false;
   noteOriginDrift(driftCause(root_node.get(), live ? "live edit" : "edit",
-                             kind, uuid));
+                             traits.name, uuid));
   if (coalesces) {
-    clearRedo();  // a fresh user action still invalidates the redo branch
-    return;       // keep the older inverse (restores further back)
+    completeGestureEntry(undo_.back(), inv);
+    return true;
   }
-  // A map or re-time entry is its gesture's FIRST — the gesture a
-  // non-live commit opened, or a stray live commit's own: its later
-  // live commits coalesce into it. The redo branch it invalidates is
-  // KEPT with the gesture for as long as the gesture can be cancelled
-  // (cancelGesture): a cancelled drag must leave the log as it found
-  // it, redo and all.
-  const bool gesture_entry = isGestureKind(kind);
-  std::vector<celestrian::Edit> kept_redo;
+  // A map or re-time entry is its gesture's first. The redo branch it
+  // invalidates is KEPT for as long as the gesture can be cancelled: a
+  // cancelled drag leaves the log as it found it, redo and all.
+  const bool gesture_entry = traits.gesture != Gesture::NONE;
+  std::vector<Edit> kept_redo;
   if (gesture_entry) kept_redo.swap(redo_);
   pushUndo(std::move(inv));
   if (gesture_entry) {
     gesture_ = {uuid, kind, true};
     gesture_redo_ = std::move(kept_redo);
   }
+  return true;
 }
 
-void AudioEngine::cancelGesture(const juce::String& uuid) {
+bool AudioEngine::cancelGesture(const juce::String& uuid) {
   reconcileTakes();
-  if (gesture_.uuid != uuid) return;  // not this node's gesture
+  // Not this node's gesture: whatever a drag logged here stands.
+  if (gesture_.uuid != uuid || gesture_.kind == Edit::Kind::Nop) return false;
   if (!gesture_.logged || undo_.empty()) {
-    // It logged nothing (identities, refusals): there is nothing to put
-    // back — and nothing was invalidated.
-    endGesture();
-    return;
+    endGesture();  // it logged nothing: the node is as the drag found it
+    return true;
   }
-  // THE LIVE-TAKE GATE, as for undo: refuse and KEEP the entry.
-  if (refusedUnderLiveTake("cancelGesture")) return;
-  // While `logged`, the gesture's entry is the top of the stack: apply
-  // it — the graph is the gesture's start again — and DROP the forward
-  // it yields (a cancelled drag is not redo-able).
-  celestrian::Edit inv = std::move(undo_.back());
+  // Refused under a take like undo, and the entry is kept.
+  if (refusedUnderLiveTake("cancelGesture")) return false;
+  // The gesture's entry is the top of the stack: apply it — the graph is
+  // the gesture's start again — and drop the forward it yields.
+  Edit inv = std::move(undo_.back());
   undo_.pop_back();
-  const juce::String cause =
-      driftCause(root_node.get(), "cancel", inv.kind, inv.uuid);
-  celestrian::Edit fwd = applyEdit(std::move(inv));
+  const juce::String cause = driftCause(root_node.get(), "cancel",
+                                        traitsOf(inv.kind).name, inv.uuid);
+  Edit forward = applyEdit(std::move(inv));
   noteOriginDrift(cause);
-  if (fwd.kind == celestrian::Edit::Kind::Nop) {
+  if (forward.kind == Edit::Kind::Nop) {
     endGesture();  // it did not apply: the kept branch is no longer valid
-    return;
+    return false;
   }
-  retireEdit(std::move(fwd));
-  // The redo branch the gesture's first entry invalidated was recorded
-  // against exactly this graph: it stands again.
+  retireEdit(std::move(forward));
+  // The redo branch the entry invalidated was recorded against exactly
+  // this graph: it stands again.
   clearRedo();
   redo_ = std::move(gesture_redo_);
   gesture_redo_.clear();
   gesture_ = {};
+  return true;
 }
 
-namespace {
-// Any edit that moves island facts — (Q, zero), origins, or the
-// windows that select against them — is refused under a live take:
-// the performer is recording against that grid, and a mid-take undo
-// of a trim (window + origin riders, or a lock-collapse) shifts the
-// cycle under the take exactly like a take edit would.
-bool movesIslandFacts(const celestrian::Edit& e) {
-  // Take-list edits (docs/takes.md) join the set: their appliers
-  // refuse under a live take, and a refusal must KEEP the entry.
-  return e.kind == celestrian::Edit::Kind::Take ||
-         e.kind == celestrian::Edit::Kind::Untake ||
-         e.kind == celestrian::Edit::Kind::SelectTake ||
-         e.kind == celestrian::Edit::Kind::DeleteTake ||
-         e.kind == celestrian::Edit::Kind::Comp ||
-         e.kind == celestrian::Edit::Kind::Collapse || e.setsIsland ||
-         e.setsOrigin || !e.anchors.empty() || !e.windows.empty();
-}
+// --- Undo and redo ----------------------------------------------------
 
-}  // namespace
-
-void AudioEngine::undo() {
+bool AudioEngine::replay(std::vector<Edit>& from, std::vector<Edit>& onto,
+                         const char* verb) {
   reconcileTakes();
-  if (undo_.empty()) return;
-  // THE LIVE-TAKE GATE: no undo under a take (it could move the grid
-  // the performer records against, or restructure around the take).
-  // Refuse and KEEP the entry (a Nop would drop it from the log).
-  if (refusedUnderLiveTake("undo")) return;
-  juce::ignoreUnused(&movesIslandFacts);
-  endGesture();  // a later live commit logs its own step
-  celestrian::Edit inv = std::move(undo_.back());
-  undo_.pop_back();
-  const juce::String cause =
-      driftCause(root_node.get(), "undo", inv.kind, inv.uuid);
-  celestrian::Edit fwd = applyEdit(std::move(inv));
+  // Under a take the entry is refused and KEPT: applied, it could move
+  // the grid the performer records against.
+  if (from.empty() || refusedUnderLiveTake(verb)) return false;
+  endGesture();  // a later live commit logs a step of its own
+  Edit edit = std::move(from.back());
+  from.pop_back();
+  const juce::String cause = driftCause(root_node.get(), verb,
+                                        traitsOf(edit.kind).name, edit.uuid);
+  Edit back = applyEdit(std::move(edit));
   noteOriginDrift(cause);
-  if (fwd.kind != celestrian::Edit::Kind::Nop) redo_.push_back(std::move(fwd));
+  if (back.kind == Edit::Kind::Nop) return false;  // it no longer applies
+  onto.push_back(std::move(back));
+  return true;
 }
 
-void AudioEngine::redo() {
-  reconcileTakes();
-  if (redo_.empty()) return;
-  if (refusedUnderLiveTake("redo")) return;
-  endGesture();  // a later live commit logs its own step
-  celestrian::Edit fwd = std::move(redo_.back());
-  redo_.pop_back();
-  const juce::String cause =
-      driftCause(root_node.get(), "redo", fwd.kind, fwd.uuid);
-  celestrian::Edit inv = applyEdit(std::move(fwd));
-  noteOriginDrift(cause);
-  if (inv.kind != celestrian::Edit::Kind::Nop) undo_.push_back(std::move(inv));
+bool AudioEngine::undo() { return replay(undo_, redo_, "undo"); }
+
+bool AudioEngine::redo() { return replay(redo_, undo_, "redo"); }
+
+// --- The arm's own edits ----------------------------------------------
+
+AudioEngine::ArmEdits AudioEngine::applyArmEdits(
+    const celestrian::AudioNode* exclude,
+    const std::vector<celestrian::ClipNode*>* retakes) {
+  ArmEdits edits;
+  // The definer's trim locks at the arm (collapseNode); the applier
+  // answers Nop when there is nothing to collapse.
+  if (auto* definer_node = celestrian::engine_internal::definer(*root_node);
+      definer_node != nullptr && definer_node != exclude) {
+    Edit collapse(Edit::Kind::Collapse);
+    collapse.uuid = definer_node->getUuid();
+    edits.collapse_inverse = applyEdit(std::move(collapse));
+  }
+  // Recording new content ends a hand-off (Q22) as it ends a first
+  // take's trim: the designated definer collapsed just above — still the
+  // definer then — and the designation clears.
+  const auto endsHandOff = [&] {
+    const juce::String& designation = root_node->definerDesignation();
+    auto* designated = findNodeByUuid(designation);
+    if (designation.isEmpty() || designated == nullptr) return false;
+    if (retakes == nullptr || retakes->empty()) return true;
+    // A new take of the designated node, or of its members, re-records
+    // the definer: the hand-off stands.
+    return !std::all_of(retakes->begin(), retakes->end(),
+                        [designated](const celestrian::ClipNode* clip) {
+                          return celestrian::edit_internal::isWithin(
+                              clip, designated);
+                        });
+  };
+  if (endsHandOff()) {
+    edits.release_inverse = applyEdit(Edit(Edit::Kind::Definer));
+  }
+  return edits;
 }
 
-void AudioEngine::deleteNode(const juce::String& uuid) {
-  celestrian::Edit e(celestrian::Edit::Kind::Remove);
-  e.uuid = uuid;
-  record(std::move(e));
+void AudioEngine::logArmEdits(ArmEdits&& edits) {
+  for (Edit* inverse : {&edits.collapse_inverse, &edits.release_inverse}) {
+    if (inverse->kind == Edit::Kind::Nop) continue;
+    noteOriginDrift(driftCause(root_node.get(), "edit",
+                               traitsOf(inverse->kind).name, inverse->uuid));
+    pushUndo(std::move(*inverse));
+  }
+}
+
+void AudioEngine::revertArmEdits(ArmEdits&& edits) {
+  // Last applied, first put back. Nothing was logged, so the forwards
+  // the inverses yield are dropped: a refused arm is not redo-able.
+  for (Edit* inverse : {&edits.release_inverse, &edits.collapse_inverse}) {
+    if (inverse->kind == Edit::Kind::Nop) continue;
+    retireEdit(applyEdit(std::move(*inverse)));
+  }
 }

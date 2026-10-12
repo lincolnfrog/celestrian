@@ -33,12 +33,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { spliceSpots, topSpots, inTakeTile, inTakePass, predictTop,
-         pairHandles, wantsSpliceChrome, wantsTopHandle, wantsLaneTop,
+import { spliceSpots, topSpots, inTakeTile, inTakePass, pairHandles }
+    from '../session_view/splice_spots.js';
+import { predictTop, wantsSpliceChrome, wantsTopHandle, wantsLaneTop,
          isPlainLoop }
     from '../session_view/splice_handles.js';
 import { panelOffersTop, showsTiming } from '../session_view/region_panel.js';
 import { deriveViewModel } from '../view_model.js';
+import { posMod } from '../math_utils.js';
+import { SCENE_Q as Q, clipAt as clip, windowed, groupAt, island as scene, laneOf }
+    from './helpers.mjs';
 
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 const xs = spots => spots.map(s => +s.x.toFixed(9));
@@ -195,23 +199,8 @@ test('(e) the grabbed handle keeps its element and takes the nearest repeat', ()
 
 /* ---------- (f) who wears what ---------- */
 
-const Q = 1000;
-const clip = (id, originQ, durationQ, extra = {}) => ({
-    id, name: id, type: 'clip', origin: Math.round(originQ * Q),
-    duration: Math.round(durationQ * Q), effectiveQuantum: Q,
-    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-    isMuted: false, isRecording: false, isPendingStart: false,
-    periodSource: 'own', ...extra,
-});
-const windowed = (id, originQ, durationQ, [a, b], extra = {}) =>
-    clip(id, originQ, durationQ, { loopStart: a * Q, loopEnd: b * Q,
-                                   windowActive: true, ...extra });
-const island = nodes => ({
-    id: 'root', type: 'stack', quantum: Q, islandZero: 0, definerId: '',
-    isPlaying: false, masterPos: 0, islandPos: 0,
-    perf: { sampleRate: Q }, nodes,
-});
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
+/** A stopped island at the scene's Q, one Q a second. */
+const island = nodes => scene(nodes, { isPlaying: false, perf: { sampleRate: Q } });
 
 test('(f) a heard clip or group wears splices and the ↺ (fractal); a one-shot neither; a raw lane no splice', () => {
     const vm = deriveViewModel(island([
@@ -219,23 +208,21 @@ test('(f) a heard clip or group wears splices and the ↺ (fractal); a one-shot 
         windowed('B', 1, 12, [6, 10], { loopTop: 7 * Q }),
         windowed('O', 0, 8, [2, 4], { periodSource: 'context' }),
         clip('R', 0, 8),
-        {
-            id: 'G', name: 'G', type: 'stack', anchored: true, origin: 0,
+        groupAt('G', 0, [clip('g1', 0, 4)], {
             windowActive: true, loopStart: 0, loopEnd: 2 * Q,
-            loopBypassed: false, effectiveQuantum: Q, duration: 0,
-            nodes: [clip('g1', 0, 4)],
-        },
+            loopBypassed: false, duration: 0,
+        }),
     ]));
     const B = laneOf(vm, 'B');
     assert.equal(wantsSpliceChrome(B), true);
     assert.equal(wantsTopHandle(B), true);
     assert.equal(B.canRetime, true);
     // Its ↺ is the stored top (7Q) — 1Q after the region start.
-    assert.ok(near(posModQ(B.topHeardQ - B.takeStartQ, B.periodQ), 1));
+    assert.ok(near(posMod(B.topHeardQ - B.takeStartQ, B.periodQ), 1));
     const G = laneOf(vm, 'G');
     assert.equal(wantsSpliceChrome(G), true, 'a group\'s map swaps too');
-    // A group is a loop like any other (fractal, 2026-09-29): its ↺ and
-    // its re-time are the clip's.
+    // A group is a loop like any other (fractal): its ↺ and its re-time
+    // are the clip's.
     assert.equal(wantsTopHandle(G), true, 'a group re-times like a clip');
     assert.equal(G.canRetime, true);
     assert.equal(wantsLaneTop(G), true, '…and wears the ↺ on its heard lane');
@@ -349,7 +336,3 @@ test('(g) the start marker walks a plain loop\'s whole take; the timing shows wh
     // Never where no re-time can reach: a one-shot, however shifted.
     assert.equal(showsTiming(S, Q), false);
 });
-
-function posModQ(a, m) {
-    return ((a % m) + m) % m;
-}

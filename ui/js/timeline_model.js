@@ -1,35 +1,39 @@
 /**
- * Timeline Model — single source of truth for Celestrian timing math (JS side).
+ * Timeline Model — the JS mirror of src/timing.h. What is DEFINED here
+ * is pinned to the same golden vectors as the C++ side
+ * (shared/timing_golden.json: ui/js/tests/timeline_model_golden.test.mjs
+ * and tests/timing_golden_tests.cc) — all but driftsByRoundingOnly,
+ * which reads a published node and lives here because Q's subdivisions
+ * do. Pure functions; samples are integers, and Math.floor matches C++
+ * integer division.
  *
- * Mirrors `src/timing.h`; both are pinned to the same golden vectors in
- * `shared/timing_golden.json` (see ui/js/tests/timeline_model_golden.test.mjs
- * and tests/timing_golden_tests.cc).
- *
- * Rules for this module:
- *  - Pure functions only. No DOM, no backend calls, no state.
- *  - Sample-domain values are integers; use Math.floor to match C++ integer
- *    division. Pixel-domain values are suffixed `Px`.
- *  - The UI renderer AND the mock backend both import from here, so the mock
- *    cannot drift from the math the UI (and, via golden vectors, the C++
- *    engine) uses.
+ * The other names this module exports are RE-EXPORTS kept for its
+ * importers, and none is a timing.h mirror: the period law
+ * (period_law.js, twin of src/period_law.h), the published-sequence
+ * readers (sequence_program.js), and the law's providers over published
+ * nodes (vm/published.js — no C++ twin, no golden).
  */
 
 import { lcm, posMod } from './math_utils.js';
 import { qtime, toSamples, fromSamples } from './qtime.js';
-import { flatSegPeriod, mapOffset, nodeWindowActive } from './time_map.js';
-import { programOf } from './sequence_program.js';
+import { mapOffset } from './time_map.js';
+import { ownPeriod } from './period_law.js';
+import { publishedLaw } from './vm/published.js';
 
-// Re-exported for consumers that fold periods on top of this module's
-// cycle math (view_model.js); the canonical home is math_utils.js.
-export { lcm };
+export { ownPeriod, periodContribution, periodDrifts, nodeDrifts, islandCycle }
+    from './period_law.js';
+export { activeSequenceSamples, sequenceProgram, sequenceVisits,
+         sequenceTotalSamples, isAuditionWindow } from './sequence_program.js';
+export { publishedLaw, frameLaw, publishedNodeDrifts, calculateStackLCM,
+         computeEffectiveQuantum } from './vm/published.js';
 
 /**
  * Capture-fold for a take recorded THROUGH an active map (time_maps.md
- * §3), JS mirror of timing.h throughMapDest: the buffer destination
- * index for heard-elapsed sample heardI of a take anchored at heard
- * offset anchorOff within the map period, folded into the dense
- * [0, commitCycle) buffer. Segment-general.
- * Precondition: 0 ≤ heardI < mapPeriod(map) ≤ commitCycle.
+ * §3; timing::throughMapDest): the buffer index for heard-elapsed sample
+ * `heardI` of a take anchored at heard offset `anchorOff` within the map
+ * period, folded into the dense [0, commitCycle) buffer.
+ * Precondition: 0 ≤ heardI < mapPeriod(map) ≤ commitCycle. Called by the
+ * golden test only (the mock folds its captures inline).
  */
 export function throughMapDest(heardI, anchorOff, map, commitCycle) {
     const originInner = mapOffset(map, anchorOff);
@@ -39,31 +43,21 @@ export function throughMapDest(heardI, anchorOff, map, commitCycle) {
     return d;
 }
 
-// === The physical/musical boundary (Q12 / D-T3), JS mirror of timing.h ===
-// Musical facts project onto the island's Q frame through the one law
-// (qtime.js fromSamples); physical facts (clock, zero, buffer lengths,
-// q_samples) stay in samples. These back the device-independent metadata
-// the save format serializes.
-
 /**
- * A clip's origin as a musical offset from the island zero (D-T3):
- * (origin − zero) / qSamples · Q. Exact; unsnapped origins yield an
- * ugly-but-exact rational (D-T5). Mirrors timing::originQ.
+ * A clip's origin as a musical offset from the island zero (Q12, D-T3;
+ * timing::originQ): (origin − zero) / qSamples · Q, exact. Musical facts
+ * project onto the Q frame through qtime.fromSamples; physical facts
+ * (the clock, the zero, buffer lengths, Q in samples) stay in samples.
+ * Called by the golden test only.
  */
 export function originQ(originSamples, frameZero, qSamples) {
     return fromSamples(originSamples - frameZero, qSamples);
 }
 
-/** A period / duration as musical time (D-T3). Mirrors timing::periodQ. */
-export function periodQ(durationSamples, qSamples) {
-    return fromSamples(durationSamples, qSamples);
-}
-
 /**
- * A Q subdivision boundary in samples, through THE rounding law
- * (qtime.js): toSamples(1/d · Q). Mirrors timing::subdivisionSamples —
- * replaces bare `Math.floor(quantum / d)`, which silently floored when
- * Q wasn't divisible (Q12 / D-T4).
+ * A Q subdivision in samples, through THE rounding law (qtime.toSamples;
+ * timing::subdivisionSamples): toSamples(1/d · Q). A bare
+ * floor(quantum / d) is wrong wherever d does not divide Q.
  */
 export function subdivisionSamples(quantum, denominator) {
     return toSamples(qtime(1, denominator), quantum);
@@ -72,14 +66,13 @@ export function subdivisionSamples(quantum, denominator) {
 /** Tolerance (fraction of Q) for snapping a committed duration. */
 export const HYSTERESIS_THRESHOLD = 0.15;
 
-/** Subdivisions of Q considered when committing/stopping short recordings. */
+/** Subdivisions of Q considered when committing or stopping a short take. */
 export const SUBDIVISIONS = [2, 4, 8];
 
 /**
- * The arm target (Q11 ruling): the next Q boundary at/after the HEARD
- * (latency-compensated) zero-relative position `rel`, on the CONTEXT
- * loop's grid. Mirrors timing::armTarget — see its header comment for
- * why no anticipatory-deferral window exists on top of this.
+ * The arm target (Q11; timing::armTarget): the next Q boundary at or
+ * after the HEARD (latency-compensated) zero-relative position `rel`, on
+ * the CONTEXT loop's grid.
  */
 export function armTarget(rel, quantum, contextLoop) {
     if (quantum <= 0) return rel < 0 ? 0 : rel;
@@ -103,107 +96,17 @@ export function armTarget(rel, quantum, contextLoop) {
         ? effective
         : (Math.floor(effective / quantum) + 1) * quantum;
     const loopBase = Math.floor(rel / contextLoop) * contextLoop;
-    // A mark at/past the context top = the top of the NEXT cycle — the
-    // heard grid restarts there (folding % contextLoop would put an
-    // unsnapped context's final-partial-Q boundary in the PAST; the
-    // through-window golden vectors pin this).
+    // A mark at or past the context top is the top of the NEXT cycle:
+    // the heard grid restarts there. Folding % contextLoop would put an
+    // unsnapped context's final partial-Q boundary in the past.
     const offset = nextVisual >= contextLoop ? contextLoop : nextVisual;
     return loopBase + offset;
 }
 
 /**
- * THE PERIOD LAW (composition.md §3, I12) — the JS twin of
- * src/period_law.h, pinned to the `period_law_cases` tree fixtures:
- *
- *   own(node)          = map ▸ active sequence ▸ (clip: duration |
- *                        stack: LCM of the children's contributions)
- *   contribution(node) = (one-shot || skipped || recording || DRIFTS)
- *                        ? 0 : own
- *   islandCycle        = lcm(quantum || fallback, own(root))
- *
- * `providers` adapt a node shape to the law — { mapPeriod(node) → the
- * ACTIVE map's period or 0, seqLen(node) → the ACTIVE sequence length
- * or 0, children(node) → the child list, quantum → the island Q (a
- * number or a function returning one; absent = no drift clause) }. The
- * view model and the mock each pass their own (published state vs.
- * mock state); the law itself is stated here once. A recording clip
- * contributes nothing (its duration is not a period yet — engine
- * parity: duration resets at arm).
- */
-export function ownPeriod(node, providers, skip = null) {
-    const m = Math.round(providers.mapPeriod(node) || 0);
-    if (m > 0) return m;
-    const s = Math.round(providers.seqLen(node) || 0);
-    if (s > 0) return s;
-    if (node.type !== 'stack') return Math.round(node.duration || 0);
-    let composite = 0;
-    for (const child of providers.children(node) || []) {
-        const k = periodContribution(child, providers, skip);
-        if (k > 0) composite = composite > 0 ? lcm(composite, k) : k;
-    }
-    return composite;
-}
-
-export function periodContribution(node, providers, skip = null) {
-    if (node === skip || node.periodSource === 'context') return 0;
-    if (node.isRecording) return 0;
-    const own = ownPeriod(node, providers, skip);
-    return ownDrifts(node, providers, own) ? 0 : own;
-}
-
-/**
- * THE DRIFT CLAUSE (Q22, design_language.md §5; composition.md §3): a
- * period that is neither a whole multiple nor an exact divisor of the
- * island Q cannot share a finite cycle with the grid. Such a node DRIFTS
- * — it plays exactly as recorded (its render folds on its own period
- * from its own origin) and each pass lines up differently against the
- * grid — and it contributes NOTHING to any fold, so it never widens a
- * cycle. It arises when Q is handed to another track (setDefiner) and
- * the new definer is trimmed off the old grid. False with no Q.
- */
-export function periodDrifts(period, quantum) {
-    const p = Math.round(period || 0);
-    const q = Math.round(quantum || 0);
-    return q > 0 && p > 0 && p % q !== 0 && q % p !== 0;
-}
-
-/** The island Q a provider set carries (a number, or a function of the
- * live state — the mock's Q moves under it). 0 = no drift clause. */
-function providerQuantum(providers) {
-    const q = typeof providers.quantum === 'function'
-        ? providers.quantum() : providers.quantum;
-    return q > 0 ? q : 0;
-}
-
-/** Whether `node`'s own period `own` drifts. A node holding an active
- * SONG is exempt, map or not (S10: free step lengths are a deliberate
- * drifting pass, badged on the song itself — and a step audition's
- * derived window is a step of that song): only a period that comes from
- * a map or from content drifts. */
-function ownDrifts(node, providers, own) {
-    const q = providerQuantum(providers);
-    if (!(q > 0)) return false;
-    if (Math.round(providers.seqLen(node) || 0) > 0) return false;
-    return periodDrifts(own, q);
-}
-
-/** Does `node` DRIFT under the law's providers (which carry the island
- * Q)? A one-shot or a live take never does — they contribute nothing
- * for their own reasons. */
-export function nodeDrifts(node, providers) {
-    if (node.periodSource === 'context' || node.isRecording) return false;
-    return ownDrifts(node, providers, ownPeriod(node, providers));
-}
-
-export function islandCycle(root, providers, quantum, fallback) {
-    const q = quantum > 0 ? Math.round(quantum) : Math.round(fallback || 0);
-    const own = ownPeriod(root, providers);
-    return own > 0 ? lcm(q, own) : q;
-}
-
-/**
- * LCM of a set of durations, seeded with the quantum.
- * Mirrors AudioEngine::calculateTimelineLength's core loop.
+ * LCM of a set of lengths, seeded with the quantum (`lcm_cases`). Each
+ * value is rounded first — lengths can arrive with float jitter — and a
+ * non-positive one is skipped.
  */
 export function timelineLcm(durations, quantum) {
     let result = Math.round(quantum) || 0;
@@ -215,232 +118,23 @@ export function timelineLcm(durations, quantum) {
 }
 
 /**
- * A clip's contribution (samples) to any whole-Q cycle math (frame LCM,
- * composite duration). Normally-committed clips have whole-Q durations
- * and contribute them unchanged. A Q13-trimmed definer's buffer is a
- * multiple of the PRE-TRIM Q — incommensurate with the grid its own
- * window defined — and LCM-ing the raw duration would explode the
- * display frame (waveforms vanish behind the maxTiles guards). Its
- * whole-Q truth is the WINDOW (exactly 1Q by construction); ceil-to-Q
- * is the defensive fallback so even a bypassed incommensurate clip
- * yields a finite frame. Audio is untouched — the engine wraps the
- * transport on the EFFECTIVE cycle, which already uses the window.
+ * Does a drifting published node drift only by SAMPLE ROUNDING — its own
+ * period is one of Q's subdivisions (a length a short take commits at)
+ * where Q does not divide exactly? It still drifts, a few samples per Q,
+ * so the period law keeps it out of every fold; but it is no musical
+ * mismatch, and the rail does not badge it.
  */
-export function commensuratePeriod(node, effectiveQ) {
-    const d = Math.round(node.duration || 0);
-    const q = Math.round(effectiveQ || 0);
-    if (!(d > 0) || !(q > 1)) return d;
-    // LAW 13 AMENDED (session_view.md): an ACTIVE map IS the displayed
-    // material, so the clip contributes the map period — the summed
-    // segment lengths, or the loop window as the map's single-segment
-    // form — whenever it is a real whole-Q shortening. Incommensurate
-    // (free-cut ⚠) maps fall through to the finite fallbacks below.
-    if (!node.loopBypassed) {
-        let p = 0;
-        if (node.segments && node.segments.length >= 4) {
-            p = flatSegPeriod(node.segments);
-        } else {
-            p = (node.loopEnd || 0) - (node.loopStart || 0);
-        }
-        p = Math.round(p);
-        if (p > 0 && p < d && p % q === 0) return p;
-    }
-    if (d % q === 0) return d;
-    const winLen = Math.round((node.loopEnd || 0) - (node.loopStart || 0));
-    if (!node.loopBypassed && winLen > 0 && winLen % q === 0) return winLen;
-    return Math.ceil(d / q) * q;
-}
-
-/**
- * THE DRIFT CLAUSE over the PUBLISHED node shape (the view's reading of
- * periodContribution's clause): the node's own period is its active map
- * (nodeWindowActive — the segments' sum, else the single window, a
- * clip's clamped to its take), else its content — a clip's take; a
- * stack's composite coheres by construction, and a song holder is
- * exempt (S10). Drifting nodes stay out of every frame fold the view
- * makes, exactly as the law keeps them out of the engine's.
- */
-export function publishedNodeDrifts(node, effectiveQ) {
-    if (!node || node.periodSource === 'context' || node.isRecording) return false;
-    if (!(Math.round(effectiveQ || 0) > 1)) return false;
-    if (activeSequenceSamples(node) > 0) return false;
-    return periodDrifts(publishedDriftPeriod(node), effectiveQ);
-}
-
-/** The period the drift clause judges on the published shape: the
- * active map's (a clip's window clamped to its take), else a clip's
- * take; 0 for a stack without a map (its composite coheres). */
-function publishedDriftPeriod(node) {
-    let p = 0;
-    if (nodeWindowActive(node)) {
-        p = Array.isArray(node.segments) && node.segments.length >= 4
-            ? flatSegPeriod(node.segments)
-            : (node.type === 'stack' ? (node.loopEnd || 0)
-                : Math.min(node.loopEnd || 0, node.duration || 0)) -
-              (node.loopStart || 0);
-    }
-    if (!(p > 0) && node.type !== 'stack') p = node.duration || 0;
-    return p;
-}
-
-/**
- * Does a drifting node drift only by SAMPLE ROUNDING — its period is the
- * grid's own subdivision (Q/2, Q/4, Q/8 through THE rounding law, the
- * length a short take commits at) where Q does not divide exactly? It
- * still drifts (a few samples per Q), so the law keeps it out of every
- * fold, but it is no musical mismatch: the rail does not badge it.
- */
-export function driftsByRoundingOnly(node, effectiveQ) {
-    const p = Math.round(publishedDriftPeriod(node));
-    const q = Math.round(effectiveQ || 0);
+export function driftsByRoundingOnly(node, quantum) {
+    const q = Math.round(quantum || 0);
+    const p = ownPeriod(node, publishedLaw(q));
     return q > 1 && p > 0 && SUBDIVISIONS.some(k => subdivisionSamples(q, k) === p);
 }
 
 /**
- * LCM for a stack's children (recursive for nested stacks).
- * A nested stack contributes its internal LCM as its composite duration.
- * Clip contributions are COMMENSURATE (see commensuratePeriod): the
- * composite stays a whole-Q fact even over a Q13-trimmed take.
- */
-export function calculateStackLCM(stackNodes, effectiveQ) {
-    let stackLCM = effectiveQ;
-    let maxDuration = 0;
-
-    (stackNodes || []).forEach(child => {
-        if (child.isRecording) return; // Skip recording clips
-        // One-shots excluded (Q5): period := context cycle — they adopt
-        // the scope's cycle, never extend it (engine fold parity).
-        if (child.periodSource === 'context') return;
-        // Drifting children excluded (Q22): they never widen a cycle.
-        if (publishedNodeDrifts(child, effectiveQ)) return;
-
-        if (child.type === 'clip' && child.duration > 0) {
-            const p = commensuratePeriod(child, effectiveQ);
-            stackLCM = lcm(Math.round(stackLCM), p);
-            maxDuration = Math.max(maxDuration, p);
-        } else if (child.type === 'stack' && child.nodes) {
-            // A nested stack contributes its EFFECTIVE period — its
-            // window, its sequence, or its inner LCM — exactly as a
-            // clip child contributes its window (commensuratePeriod).
-            // Fractal (I5).
-            const childLCM = stackEffectivePeriod(child, effectiveQ);
-            stackLCM = lcm(Math.round(stackLCM), Math.round(childLCM));
-            maxDuration = Math.max(maxDuration, childLCM);
-        }
-    });
-
-    return Math.max(stackLCM, maxDuration);
-}
-
-/**
- * The ACTIVE sequence length of a node in samples (0 = none/bypassed/
- * empty) — the period law's input (docs/sequencer.md §2), read off the
- * published `sequence` metadata.
- */
-export function activeSequenceSamples(node) {
-    const s = node && node.sequence;
-    if (!s || s.bypassed || !Array.isArray(s.steps)) return 0;
-    return sequenceTotalSamples(s);
-}
-
-/**
- * The PROGRAM of a published sequence (docs/sequencer.md §14): the
- * step index of every visit. The engine (and the mock) publish it as
- * `program`; a fixture without one unrolls (steps, seed) locally.
- */
-export function sequenceProgram(s) {
-    if (!s || !Array.isArray(s.steps) || !s.steps.length) {
-        return { visits: [], radio: false, reachable: [], firstVisit: [] };
-    }
-    if (Array.isArray(s.program) && s.program.length) {
-        const visits = s.program.filter(i => Number.isInteger(i) && i >= 0 &&
-                                             i < s.steps.length);
-        return {
-            visits,
-            radio: !!s.radio,
-            reachable: s.steps.map((_, i) => visits.includes(i)),
-            firstVisit: s.steps.map((_, i) => visits.indexOf(i)),
-        };
-    }
-    return programOf(s.steps, s.seed || 0);
-}
-
-export function sequenceVisits(s) {
-    return sequenceProgram(s).visits;
-}
-
-/** Total PROGRAM length in samples (visits CONCATENATE — S10). */
-export function sequenceTotalSamples(s) {
-    const lens = s.steps.map(x => (x.len > 0 ? Math.round(x.len) : 0));
-    return sequenceVisits(s).reduce((t, i) => t + lens[i], 0);
-}
-
-/**
- * Whether a stack's published window is the STEP AUDITION's derived
- * map (docs/sequencer.md §11.2) rather than an authored window: a
- * monitoring gesture over the song, not a part length. The frame keeps
- * the song while it is on (the root's pattern); only the audible loop
- * follows it.
- */
-export function isAuditionWindow(node) {
-    const s = node && node.sequence;
-    return !!(s && !s.bypassed && Number.isInteger(s.auditionStep) &&
-              s.auditionStep >= 0 && Array.isArray(s.steps) &&
-              s.auditionStep < s.steps.length);
-}
-
-/**
- * A stack's EFFECTIVE period in samples — what it IS as a part of its
- * parent's cycle. The JS twin of StackNode::getEffectivePeriod, in the
- * same order: an ACTIVE window on the stack wins (its whole-Q length —
- * a window sets the part's length, groups exactly as clips); else an
- * active SEQUENCE is the part (the period law); else the LCM of the
- * children's effective periods (nested windows shorten it all the way
- * up). `windowActive` is the engine's verdict (it folds S16
- * suspension); states without the field fall back to the bypass flag
- * + a valid span. `audible: true` counts
- * a step-audition window too (the engine's wrap), see isAuditionWindow.
- */
-export function stackEffectivePeriod(node, effectiveQ, { audible = false } = {}) {
-    const q = Math.round(effectiveQ || 0);
-    const on = nodeWindowActive(node);
-    // The step audition's derived window is a monitoring loop over the
-    // song, not the part's length: the FRAME reads the song (audible:
-    // false, the default); the audible-loop math reads the step.
-    if (on && (audible || !isAuditionWindow(node))) {
-        let p = (node.segments && node.segments.length >= 4)
-            ? flatSegPeriod(node.segments)
-            : (node.loopEnd || 0) - (node.loopStart || 0);
-        p = Math.round(p);
-        if (p > 0 && (q <= 1 || p % q === 0)) return p;
-    }
-    const seqLen = activeSequenceSamples(node);
-    if (seqLen > 0) return seqLen;
-    return calculateStackLCM(node.nodes, effectiveQ);
-}
-
-/**
- * The effective quantum for a node tree: the minimum positive
- * `effectiveQuantum` reported by any node, or 1 if none is established.
- */
-export function computeEffectiveQuantum(nodes) {
-    let effectiveQ = Infinity;
-
-    const visit = (list) => (list || []).forEach(n => {
-        if (n.effectiveQuantum > 0 && n.effectiveQuantum < effectiveQ) {
-            effectiveQ = n.effectiveQuantum;
-        }
-        if (n.type === 'stack' && n.nodes) visit(n.nodes);
-    });
-    visit(nodes);
-
-    return effectiveQ === Infinity ? 1 : effectiveQ;
-}
-
-/**
- * Where playback starts within a clip so that when the context phase equals
- * the recording start phase, the clip plays its first recorded sample.
- * docs/recording.md Example 2: duration=8Q, startPhase=2Q -> launch=6Q.
+ * Where playback starts within a clip so that, when the context phase
+ * equals the recording's start phase, the clip plays its first recorded
+ * sample (timing::launchPointFor; docs/recording.md Example 2:
+ * duration 8Q, startPhase 2Q → 6Q).
  */
 export function launchPointFor(startPhase, duration) {
     if (duration <= 0) return 0;
@@ -448,9 +142,10 @@ export function launchPointFor(startPhase, duration) {
 }
 
 /**
- * The boundary at which a stop request is honored: the next clean multiple of
- * Q, or — for short recordings (L < Q/2) — the smallest subdivision of Q that
- * is still ahead of the recorded length. Mirrors timing::nextStopBoundary.
+ * The boundary at which a stop request is honoured
+ * (timing::nextStopBoundary): the next whole multiple of Q, or — for a
+ * take shorter than Q/2 — the smallest subdivision of Q still ahead of
+ * the recorded length.
  */
 export function nextStopBoundary(recordedLength, quantum) {
     let nextB = (Math.floor(recordedLength / quantum) + 1) * quantum;
@@ -464,8 +159,8 @@ export function nextStopBoundary(recordedLength, quantum) {
 }
 
 /**
- * Hysteresis snap applied when a recording commits.
- * Mirrors timing::snapCommittedDuration.
+ * The hysteresis snap applied when a recording commits
+ * (timing::snapCommittedDuration).
  *
  * @returns {{duration: number, loopEnd: number, snapped: boolean}}
  */

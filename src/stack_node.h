@@ -13,148 +13,99 @@ namespace celestrian {
 
 /**
  * Sink for graph objects that must outlive their removal from the audio
- * thread's view. The audio thread traverses the whole-graph snapshot
- * (graph_snapshot.h) it loaded at the top of the callback, so a removed
- * node, a swapped content buffer, a replaced fx chain or an outgoing
- * snapshot may still be read for the callback in flight when the message
- * thread replaced it; the reclaimer (the engine) defers the actual delete
- * until the audio thread has provably moved on (a two-callback grace).
+ * thread's view: a removed node, a swapped content buffer, a replaced
+ * fx chain or an outgoing snapshot may still be read by the callback in
+ * flight. The reclaimer (the engine) defers the delete until the audio
+ * thread has provably moved on (a two-callback grace).
  */
 class GraphReclaimer {
  public:
   virtual ~GraphReclaimer() = default;
 
-  /** Called on the message thread. deleter runs when it is safe to free. */
+  /** Message thread. `deleter` runs when it is safe to free. */
   virtual void retire(std::function<void()> deleter) = 0;
 };
 
 /**
- * A container node that sums its children into a single output.
- * This enables the hierarchical structure of stacks-within-stacks.
+ * A container node: it sums its children through the group fx rack, and
+ * stacks nest. The session root is one, and owns the island facts.
  *
- * Threading model: the `children` vector (ownership) belongs to the
- * message thread and the audio thread never reads it. After every
- * structural mutation the engine publishes ONE whole-graph snapshot
- * (AudioEngine::publishGraph, graph_snapshot.h); the audio thread loads
- * it once per callback (ProcessContext.snap) and control()/render()
- * iterate its integer child indices — no locks. Removed nodes and
- * replaced snapshots go through the GraphReclaimer so an in-flight
- * callback never reads freed memory. There is no other traversal: a
- * context without a snapshot is a contract violation (node-level tests
- * build one through tests/test_utils.h NodeContext).
+ * The `children` vector is OWNERSHIP and belongs to the message thread
+ * (AudioNode's threading note). control() and render() iterate this
+ * stack's child span in the whole-graph snapshot, which the engine
+ * republishes after every structural edit (AudioEngine::publishGraph);
+ * removed nodes go through the GraphReclaimer.
  */
 class StackNode : public AudioNode {
  public:
   StackNode(juce::String name);
   ~StackNode() override;
 
-  // AudioNode implementation
-  // §2.3 control/render split: control recurses decisions/capture down
-  // the (snapshot) children with the window-mapped clock; render sums
-  // children renders through the same map + the group fx rack. Both
-  // iterate the whole-graph snapshot (ProcessContext.snap). When this
-  // stack's map is ACTIVE, both split the block into runs at map seams
-  // (time_maps.md §4) — the *Children helpers hold the pre-split
-  // bodies.
+  // Both phases run through forEachSeamRun: one read of this stack's
+  // scope facts per phase, the block cut into runs at its seams
+  // (time_maps.md §4), the *Children helpers as the per-run bodies — so
+  // control and render see the same child clock, run for run.
   void control(const float* const* input_channels, int num_input_channels,
                const ProcessContext& context) override;
   void render(float* const* output_channels, int num_output_channels,
               const ProcessContext& context) const override;
 
-  /**
-   * Aggregate waveform visualization for all children.
-   */
-  juce::var getWaveform(int num_peaks) const override;
+  /** Empty: peaks are per clip, and the UI composites a group's picture
+   * from its members. */
+  juce::var getWaveform(int) const override { return juce::Array<juce::var>(); }
 
-  /**
-   * Aggregates metadata from all children for the UI.
-   */
+  /** The base metadata plus the island facts, the sequence and every
+   * child's metadata. */
   juce::var getMetadata() const override;
 
-  /**
-   * Returns NodeType::Stack.
-   */
   NodeType getNodeType() const override { return NodeType::Stack; }
-
-  float getCurrentPeak() const override { return last_block_peak.load(); }
 
   int64_t getIntrinsicDuration() const override;
   int64_t getEffectiveQuantum() const override;
 
-  // Stack-specific methods
-  /**
-   * Adds a child node to this container. (Message thread only.)
-   */
+  // --- Ownership: MESSAGE THREAD ONLY (AudioNode's threading note) ---
   void addChild(std::unique_ptr<AudioNode> child);
-
-  /**
-   * Inserts a child node at a specific index. (Message thread only.)
-   */
   void insertChildAt(std::unique_ptr<AudioNode> child, int index);
 
-  /**
-   * Removes and returns a child node by index (for moving between stacks).
-   * The caller keeps the node alive; the audio thread may still be
-   * processing it until the next callback. (Message thread only.)
-   */
+  /** Detach and return one child (null when out of range) / every
+   * child. The caller owns retirement: the audio thread may still
+   * traverse them through the outgoing snapshot. */
   std::unique_ptr<AudioNode> removeChild(int index);
-
-  /**
-   * Detaches and returns ALL children — the caller (the engine) owns
-   * retirement, since the audio thread may still traverse them through
-   * the outgoing graph snapshot. (Message thread only.)
-   */
   std::vector<std::unique_ptr<AudioNode>> clearChildren();
 
-  /**
-   * Recursive UUID lookup, self included, through this stack and its
-   * sub-stacks. (Message thread only.)
-   */
   AudioNode* findByUuid(const juce::String& uuid) override;
 
-  /**
-   * True when any child (nested stacks recurse) is armed or recording.
-   * (Message thread only.)
-   */
+  /** True when any child (nested stacks recurse) is armed or recording. */
   bool isArmedOrRecording() const override;
 
-  /** Number of children. (Message thread only.) */
+  /** TEST-ONLY: the samples per channel the mix buffer and the
+   * accumulator hold, together (a growth of either shows). */
+  int renderScratchSamplesForTest() const {
+    return mix_buffer.getNumSamples() + fx_accum_.getNumSamples();
+  }
+
   int getNumChildren() const { return (int)children.size(); }
-
-  /** Child at index. (Message thread only.) */
   AudioNode* getChild(int index) { return children[(size_t)index].get(); }
-
-  /**
-   * The OWNERSHIP children — message thread only (the vector mutates on
-   * structural edits with no synchronization). Audio-thread traversal
-   * goes through the whole-graph snapshot (ProcessContext.snap /
-   * graph_snapshot.h); this accessor exists for the snapshot builder
-   * and message-side readers (metadata, session_io, engine helpers).
-   */
   const std::vector<std::unique_ptr<AudioNode>>& ownedChildren() const {
     return children;
   }
 
-  // --- Island quantum (kernel.md) ---
-  /**
-   * Sets the island's quantum and zero. Called when the first
-   * committed clip establishes the island, and again whenever a
-   * message-thread edit re-establishes the grid: a definer re-trim, a
-   * revert to empty, a geometry scrub, a seek, a session load. Q survives
-   * its creator otherwise (Q1, design_language.md): muting or deleting
-   * the establishing clip does not change it.
-   */
+  // --- Island facts (kernel.md): meaningful on the island root ---
+  /** Set the island's quantum and zero: at the first commit, and
+   * whenever a message-thread edit re-establishes the grid (a definer
+   * re-trim, a revert to empty, a geometry scrub, a seek, a session
+   * load). Otherwise Q survives its creator (Q1, design_language.md):
+   * muting or deleting the establishing clip does not change it. */
   void setQuantum(int64_t quantum, int64_t zero) {
     setIslandFacts(quantum, zero, island_generation_.load());
   }
-  /** SEQLOCK'D TRIPLE: the audio thread reads (Q, zero, generation) as
-   * ONE fact (readIslandFacts) — three separate loads would let a
-   * re-trim land between them and hand one block a mixed pair. The
-   * generation gates the clips' rendering origins
-   * (ClipNode::setOriginGated): a writer that moves origins with the
-   * zero names a new generation, so a block adopts the new origins
-   * iff it read the new zero. Single writer at a time: the message
-   * thread, or the audio-thread first-take establishment —
+  /** (Q, zero, generation) are ONE fact behind a seqlock: three
+   * separate loads would let a re-trim land between them and hand a
+   * block a mixed pair. The generation gates every node's rendering
+   * origin (AudioNode::setOriginGated): a writer that moves origins
+   * with the zero names a new generation, so a block adopts the new
+   * origins iff it read the new zero. Single writer at a time: the
+   * message thread, or the audio thread's first-take establishment —
    * message-thread fact writers are refused under a live take. */
   void setIslandFacts(int64_t quantum, int64_t zero, uint32_t generation) {
     island_lock_.write([&](int slot) {
@@ -176,10 +127,7 @@ class StackNode : public AudioNode {
     int64_t zero = 0;
     uint32_t generation = 0;
   };
-  /** (Q, zero) read consistently — never a mixed pair. Audio-thread
-   * safe: the latch hands the reader whichever copy no write is
-   * touching, so a writer preempted mid-write never stalls or tears it
-   * (seq_locked.h). */
+  /** (Q, zero, generation) read as one fact. Audio-thread safe. */
   IslandFacts readIslandFacts() const {
     IslandFacts f;
     island_lock_.read([&](int slot) {
@@ -196,21 +144,16 @@ class StackNode : public AudioNode {
     return f;
   }
 
-  /**
-   * Transport seek (AudioEngine::seekTransport): re-base the cycle
-   * zero so the monotonic clock reads as a chosen phase. The clock
-   * itself is never reset (kernel.md); moving the zero is how the
-   * island's phase moves — the same lever takeCommitted's re-base
-   * uses. Message thread only; the audio thread picks it up at the
-   * next block top (pc.frame_top = islandZero()).
-   */
+  /** Transport seek: move the zero so the clock reads as a chosen phase
+   * — the clock itself is never reset (kernel.md). Message thread; the
+   * audio thread adopts it at the next block top. */
   void seekZeroTo(int64_t zero, uint32_t generation) {
     setIslandFacts(quantum_samples_.load(), zero, generation);
   }
 
   /** Group-stop generation (ProcessContext::stop_generation): the
    * engine reserves the next value, parks it on every member, then
-   * publishes it here in ONE store. Island root only. */
+   * publishes it here in ONE store. */
   uint32_t nextStopGeneration() { return stop_generation_.load() + 1; }
   /** Island generation (ProcessContext::island_generation): a writer
    * names the next one, gates the origins on it, then writes it with
@@ -220,40 +163,32 @@ class StackNode : public AudioNode {
   void publishStopGeneration(uint32_t g) { stop_generation_.store(g); }
   uint32_t stopGeneration() const { return stop_generation_.load(); }
 
-  /** Establish (Q, zero) once; q == 0 sets a provisional zero only
-   * (first-clip arm). No-op once Q is locked. */
   void establishIsland(int64_t quantum, int64_t zero) override {
     if (quantum_samples_.load() != 0) return;
     setQuantum(quantum > 0 ? quantum : 0, zero);
   }
 
   // --- THE Q HAND-OFF (Q22, design_language.md §5) ---
-  /** The island's DESIGNATED Q-definer: the uuid the last `setDefiner`
-   * hand-off named, empty = none. engine_internal::definer answers it
-   * first while it names a valid definer target; a stale one (the node
+  /** The island's DESIGNATED Q-definer: the uuid the last hand-off
+   * named, empty = none. engine_internal::definer answers it first
+   * while it names a valid definer target; a stale one (the node
    * deleted, made a one-shot, …) is ignored but kept, so undoing what
-   * made it stale revives it. Island root only. MESSAGE THREAD ONLY —
-   * the audio thread never reads it (the grid it defines reaches the
-   * audio thread as (Q, zero)); changed only through Edit::Definer and
-   * a session load. */
+   * made it stale revives it. Message thread only; changed only through
+   * Edit::Definer and a session load. */
   const juce::String& definerDesignation() const { return definer_designation_; }
   void setDefinerDesignation(const juce::String& uuid) {
     definer_designation_ = uuid;
   }
 
-  // --- Take lifecycle (commit as an EVENT, unification_audit.md §1.5).
-  // Clips report arm/cancel/commit to the island root; the engine does
-  // no per-block edge detection. Counter drift on node removal is
-  // guarded in removeChild/clearChildren.
+  // --- Take lifecycle (the events AudioNode declares). Structural
+  // edits keep the count balanced (addChild / removeChild /
+  // clearChildren).
   void takeArmed() override;
   void takeCancelled() override { active_takes_.fetch_sub(1); }
-  void takeCommitted(int64_t origin, int64_t intrinsic_after) override;
+  void takeCommitted() override { active_takes_.fetch_sub(1); }
   bool hasActiveTake() const override { return active_takes_.load() > 0; }
   int64_t activeTakeHeardCycle() const override {
     return heard_cycle_at_arm_.load();
-  }
-  int64_t activeTakeIntrinsicCycle() const override {
-    return lcm_before_take_.load();
   }
 
   int64_t getIslandZero() const override {
@@ -262,42 +197,19 @@ class StackNode : public AudioNode {
     return 0;
   }
 
-  // Loop window state lives on AudioNode (fractal, I5): bypass flag,
-  // isLoopWindowActive(), and the metadata publish are shared with
-  // ClipNode. Window phase derives from the received clock
-  // ((t − frame_top) mod len) — no private counter, no dependence on
-  // when the user collapsed anything.
-
-  /**
-   * E-C, recursive: an active window on THIS stack wins (base class);
-   * else an active SEQUENCE contributes its total length (the period
-   * law, docs/sequencer.md §2 — composition order: map over sequence);
-   * otherwise the LCM of the children's EFFECTIVE periods — a windowed
-   * child contributes its window length, so nested windows shorten the
-   * audible cycle all the way up. Message thread only — the audio
-   * thread uses the snapshot-space twin (snapEffectivePeriod,
-   * graph_snapshot.h).
-   */
-  // (THE PERIOD LAW lives in period_law.h: AudioNode::getEffectivePeriod
-  // is its own-period over the ownership tree; the audio thread runs
-  // the same template over the snapshot.)
-
-  // --- The SEQUENCE (docs/sequencer.md — the fractal sequencer) ---
-  // One atomic pointer, the FxChain discipline: the
-  // message thread swaps immutable Sequence objects (finalize()d) and
-  // retires predecessors through the engine reclaimer; the audio
-  // thread only loads. The bypass flag is the jam toggle (bypassed =
-  // everything sounds; geometry survives, I9).
+  // --- THE SEQUENCE (sequencer.md): an immutable Sequence behind one
+  // atomic pointer (the one-pointer discipline, AudioNode::fxChain).
+  // The bypass flag is the jam toggle: bypassed = everything sounds,
+  // and the geometry survives (I9).
   const Sequence* sequencePtr() const { return sequence_.load(); }
-  /** Swap in `fresh` (heap-owned, or null to clear); returns the OLD
-   * pointer, which the caller must retire — never delete inline. */
+  /** Swap in `fresh` (heap-owned and finalize()d, or null to clear);
+   * returns the OLD pointer, which the caller must retire. */
   const Sequence* exchangeSequence(const Sequence* fresh) {
     return sequence_.exchange(fresh);
   }
   bool isSequenceBypassed() const { return sequence_bypassed_.load(); }
   void setSequenceBypassed(bool b) { sequence_bypassed_.store(b); }
-  /** The sequence iff it is ACTIVE (present, non-empty, not bypassed).
-   * Audio-thread safe: one pointer load + one flag load. */
+  /** The sequence iff it is ACTIVE: present, non-empty, not bypassed. */
   const Sequence* activeSequence() const {
     if (sequence_bypassed_.load()) return nullptr;
     const Sequence* s = sequence_.load();
@@ -308,39 +220,30 @@ class StackNode : public AudioNode {
     return s != nullptr ? s->total : 0;
   }
 
-  // --- THE STEP AUDITION (docs/sequencer.md §11.2) ---
-  // "Loop this step": a MONITORING gesture (the solo / midi_armed
-  // class — not undoable, not persisted). While set and the sequence
-  // is active, the stack's time-map IS the step's span, DERIVED from
-  // the sequence: it follows a step resize, cannot outlive the
-  // sequence (bypass it and the audition is simply gone), and leaves
-  // any authored window untouched underneath (I9: Esc restores it
-  // exactly). Recording through it is the phase-2 through-map path
-  // aimed at the step — "record into a step" (§4 Mode 2).
+  // --- THE STEP AUDITION (sequencer.md §11.2) ---
+  // "Loop this step": a monitoring gesture (not undoable, not
+  // persisted). While set and the sequence is active, the stack's
+  // time-map IS the step's span, derived from the sequence: it follows
+  // a step resize, cannot outlive the sequence, and leaves any authored
+  // window untouched underneath (I9). Recording through it is
+  // through-map recording aimed at the step (§4 Mode 2).
   int auditionStep() const { return audition_step_.load(); }
   void setAuditionStep(int step) { audition_step_.store(step); }
-  /** The audition's derived map, or none when no audition applies
-   * (no step set, sequence inactive, or the index no longer exists).
-   * A step the program visits more than once loops its FIRST visit
-   * (sequencer.md §14); an unreachable step has no span. */
+  /** The audition's derived map, or none when no audition applies (no
+   * step set, sequence inactive, or the index gone). A step the program
+   * visits more than once loops its FIRST visit (sequencer.md §14); an
+   * unreachable step has no span. */
   timing::TimeMap auditionMap() const {
-    const int i = audition_step_.load();
-    if (i < 0) return timing::TimeMap::none();
-    const Sequence* s = activeSequence();
-    if (s == nullptr || i >= s->numSteps()) return timing::TimeMap::none();
-    const int k = s->first_visit[i];
-    if (k < 0) return timing::TimeMap::none();
-    return timing::TimeMap::single(s->bounds[k], s->bounds[k + 1]);
+    return auditionMapOver(activeSequence());
   }
   bool auditionActive() const { return auditionMap().active(); }
 
-  // --- S16: THE WINDOW DOMAIN (docs/sequencer.md §11.8) ---
-  // A window AUTHORED over a sequence timeline (the S9 composition:
-  // the map selects spans of the song) loses its meaning when the
-  // sequence is bypassed — [8Q, 16Q) of an 8Q jam is nonsense. The
+  // --- THE WINDOW DOMAIN (S16, sequencer.md §11.8) ---
+  // A window authored over a sequence timeline selects spans of the
+  // song, and means nothing once the sequence is bypassed. The
   // authoring edit stamps the domain; a sequence-domain window is
-  // SUSPENDED (reads as no map, never deleted — I9) while the sequence
-  // is off, and returns with it. Message thread writes, audio reads.
+  // SUSPENDED — it reads as no map, and is never deleted (I9) — while
+  // the sequence is off, and returns with it.
   enum class WindowDomain : int { Intrinsic = 0, Sequence = 1 };
   WindowDomain windowDomain() const {
     return (WindowDomain)window_domain_.load();
@@ -349,73 +252,76 @@ class StackNode : public AudioNode {
   /** The authored window is suspended: sequence-domain, sequence off. */
   bool windowSuspended() const {
     return windowDomain() == WindowDomain::Sequence &&
-           activeSequence() == nullptr && AudioNode::isLoopWindowActive();
+           activeSequence() == nullptr &&
+           AudioNode::activeTimeMap().active();
   }
   timing::TimeMap activeTimeMap() const override {
-    if (const timing::TimeMap a = auditionMap(); a.active()) return a;
-    if (windowDomain() == WindowDomain::Sequence && activeSequence() == nullptr)
-      return timing::TimeMap::none();  // suspended (S16)
-    return AudioNode::activeTimeMap();
-  }
-  bool isLoopWindowActive() const override {
-    return auditionActive() ||
-           (!windowSuspended() && AudioNode::isLoopWindowActive());
+    return activeTimeMapOver(activeSequence());
   }
 
  private:
-  // Ownership: message thread only. The audio thread traverses the
-  // WHOLE-GRAPH snapshot (graph_snapshot.h) — never this vector.
+  // Ownership (message thread only).
   std::vector<std::unique_ptr<AudioNode>> children;
 
-  // Scratch buffer for summing children without affecting parent output
-  // directly until ready. Preallocated so render() does not touch the
-  // heap at normal block sizes. `mutable`: DSP scratch written by the
-  // CONST render phase (§2.3).
+  // Scratch for one child's render before it joins the sum, and the
+  // accumulator the group rack processes in place. Preallocated so
+  // render() touches no heap at normal block sizes. `mutable`: DSP
+  // scratch (AudioNode::render).
   mutable juce::AudioBuffer<float> mix_buffer;
-
-  // Mono accumulator for the effect rack: children sum here, the rack
-  // processes in place, the result adds to the parent. Same
-  // preallocation/growth discipline as mix_buffer. Audio-thread only.
-  // `mutable`: same §2.3 DSP-scratch exception.
   mutable juce::AudioBuffer<float> fx_accum_;
 
-  /** The window-mapped context handed to children — the time-map
-   * primitive, shared by BOTH phases so control and render see the
-   * same child clock. `self` is set by the caller. */
-  ProcessContext childContext(const ProcessContext& context) const;
+  // One seam run's slice of the block's live MIDI, re-based to the
+  // run's first sample (forEachSeamRun). Preallocated for the most the
+  // input queue can deliver in a block, so slicing never touches the
+  // heap. `mutable`: DSP scratch.
+  mutable juce::MidiBuffer midi_slice_;
 
-  // --- Q18 (composition.md §2): the stack's frame ---
-  /** The origin this stack's inner timeline is measured from, for the
-   * block: its own rendering origin once anchored, else the RECEIVED
-   * cycle top (the empty case — no member exists to disagree). */
-  /** inner(t) for this block's first sample (timing::innerAt over the
-   * map period) under an active map, else t − O (a plain stack is
-   * transparent — nothing folds). */
-  int64_t innerOf(const ProcessContext& context,
-                  const timing::TimeMap& own_map) const {
-    const int64_t O = frameOrigin(context);
-    if (!own_map.active()) return context.master_pos - O;
-    return timing::innerAt(context.master_pos, O, own_map, own_map.period())
-        .inner;
+  /** auditionMap() over `seq` — the ACTIVE sequence as the caller read
+   * it (null = none). */
+  timing::TimeMap auditionMapOver(const Sequence* seq) const {
+    const int i = audition_step_.load();
+    if (i < 0 || seq == nullptr || i >= seq->numSteps())
+      return timing::TimeMap::none();
+    const int k = seq->first_visit[i];
+    if (k < 0) return timing::TimeMap::none();
+    return timing::TimeMap::single(seq->bounds[k], seq->bounds[k + 1]);
   }
-  /** ONE-SHOT STACK facts (Q5 generalized by Q18): true when this stack
-   * sounds once per context cycle. `shot` = the span that sounds (map
-   * period, else the inner cycle); `cycle` = the context cycle it
-   * rests against. Audio-thread safe (snapshot-space intrinsic). */
-  bool oneShotFacts(const ProcessContext& context,
-                    const timing::TimeMap& own_map, int64_t& shot,
-                    int64_t& cycle) const;
-  /** The phase within the one-shot cycle for this block's first sample
-   * is in the REST region (nothing sounds; tails ring). */
-  bool inRest(const ProcessContext& context) const;
+  /** activeTimeMap() over `seq` — the ACTIVE sequence as the caller
+   * read it: the audition's derived map, else the authored one unless
+   * it is suspended. */
+  timing::TimeMap activeTimeMapOver(const Sequence* seq) const {
+    if (const timing::TimeMap a = auditionMapOver(seq); a.active()) return a;
+    if (windowDomain() == WindowDomain::Sequence && seq == nullptr)
+      return timing::TimeMap::none();
+    return AudioNode::activeTimeMap();
+  }
 
   /**
-   * Audio-thread child lookup, shared by both phase bodies: this
-   * stack's child span in the whole-graph snapshot (index spans,
-   * structural consistency for the whole callback). entryAt() is the
-   * child's snapshot entry index — what ProcessContext.self carries
-   * down to it.
+   * THE SCOPE FACTS: everything about this stack that one phase of one
+   * block renders against, read ONCE (scopeFacts) and handed to every
+   * seam run. The runs, the child clock, the rest, the gate lookup and
+   * the playhead must come from the same map, sequence and origin: a
+   * second read could land after an edit, cutting runs for one map and
+   * mapping the clock with another.
    */
+  struct ScopeFacts {
+    timing::TimeMap map;            // the active map (none = no window)
+    const Sequence* seq = nullptr;  // the active sequence
+    int64_t origin = 0;             // the frame origin O (frameOrigin)
+    timing::StackFold fold;         // how the child clock folds
+    int64_t child_cycle = 0;        // the scope cycle the children receive
+  };
+  ScopeFacts scopeFacts(const ProcessContext& context) const;
+
+  /** The context handed to children for one seam run, shared by both
+   * phases. `at` is the run's read of the render equation
+   * (forEachSeamRun); `self` is set by the caller. */
+  ProcessContext childContext(const ProcessContext& context,
+                              const ScopeFacts& facts,
+                              const timing::InnerAt& at) const;
+
+  /** This stack's child span in the whole-graph snapshot. entryAt() is
+   * the child's entry index — what ProcessContext::self carries down. */
   struct ChildView {
     const GraphSnapshot* snap;
     int self;
@@ -428,141 +334,68 @@ class StackNode : public AudioNode {
     return {context.snap, context.self};
   }
 
-  // Pre-split phase bodies (see control/render): each receives a
-  // context whose [master_pos, +num_samples) crosses no map seam.
+  // The per-run phase bodies: each receives a context whose
+  // [master_pos, +num_samples) crosses no seam of this stack.
   void controlChildren(const float* const* input_channels,
-                       int num_input_channels, const ProcessContext& context);
+                       int num_input_channels, const ProcessContext& context,
+                       const ScopeFacts& facts, const timing::InnerAt& at);
   void renderChildren(float* const* output_channels, int num_output_channels,
-                      const ProcessContext& context) const;
+                      const ProcessContext& context, const ScopeFacts& facts,
+                      const timing::InnerAt& at) const;
 
   // Channel-pointer bound for the seam split's shifted-pointer arrays
   // (stack storage; devices never approach this).
   static constexpr int kMaxSplitChannels = 64;
 
   /**
-   * SUB-BLOCK SEAM-SPLIT driver (time_maps.md §4), shared verbatim by
-   * BOTH §2.3 phases: an active map's seam mid-block would hand children
-   * a linearly-advancing clock across a mapped-time JUMP — up to a block
-   * of wrong positions per seam. Splits the block into runs at seam
-   * boundaries (bounded: ≤ segments + 1 per pass crossing,
-   * allocation-free) and calls `body(channels, channel_count, sub)` per
-   * run; with no active map the body runs once with the original
-   * arguments. `Ch` is `const float` on the control side and `float` on
-   * the render side — the only difference between the two call sites,
-   * which is why this is one template rather than two copies that
-   * would drift apart.
+   * THE SEAM-RUN DRIVER (time_maps.md §4), shared by both phases. Reads
+   * the scope facts once, then cuts the block into runs so that no run
+   * crosses a moment the child clock jumps or a gate envelope bends: a
+   * map seam, a one-shot's shot or rest boundary, a sequence visit
+   * boundary or gate-ramp corner. Calls `body(channels, channel_count,
+   * sub, facts, at)` per run; `at` is the render equation at the run's
+   * first sample (for a transparent stack, `at.inner` is the received
+   * clock's offset from the origin). Bounded and allocation-free.
+   *
+   * `sub` is the run's context. Its clocks advance (master_pos,
+   * island_pos, input_clock) and its BLOCK-RELATIVE fields
+   * (ProcessContext) are re-sliced: gate_g0/g1 become the run's stretch
+   * of the parent's line, and live_midi the run's own events, re-based
+   * to the run — every event belongs to exactly one run. An unsplit
+   * block passes the original context through.
+   *
+   * `Ch` is `const float` for control and `float` for render. Defined
+   * in stack_node.cc, its only user.
    */
   template <typename Ch, typename Body>
   void forEachSeamRun(Ch* const* channels, int channel_count,
-                      const ProcessContext& context, Body&& body) const {
-    const timing::TimeMap own_map = activeTimeMap();
-    // The SEQUENCE splits blocks too (docs/sequencer.md S7): gate
-    // envelopes are piecewise linear, so runs are cut at envelope
-    // corners — the (g0, g1) endpoints renderChildren hands each child
-    // are then exact, and output never depends on block boundaries.
-    const Sequence* seq = activeSequence();
-    // A ONE-SHOT stack (Q18) splits at its shot/rest boundaries too, so
-    // no run straddles the moment the group falls silent or fires.
-    int64_t shot = 0, cycle = 0;
-    const bool one_shot = oneShotFacts(context, own_map, shot, cycle);
-    if ((!own_map.active() && seq == nullptr && !one_shot) ||
-        context.num_samples <= 0) {
-      body(channels, channel_count, context);
-      return;
-    }
-    const int64_t period = own_map.active() ? own_map.period() : 0;
-    const int64_t fade = Sequence::fadeSamples(context.sample_rate);
-    // THE ANCHOR (Q18): every fold here is the one equation
-    // (timing::innerAt) from this stack's own origin — the same call
-    // childContext maps the child clock with, so the runs and the
-    // mapped child clock agree sample for sample.
-    const int64_t O = frameOrigin(context);
-    const bool geometry = one_shot || period > 0;
-    const timing::TimeMap eff =
-        own_map.active() ? own_map : timing::TimeMap::single(0, shot);
-    const int64_t fold = one_shot ? cycle : period;
-    int done = 0;
-    while (done < context.num_samples) {
-      int64_t dist = context.num_samples - done;
-      timing::InnerAt at;
-      if (geometry) {
-        at = timing::innerAt(context.master_pos + done, O, eff, fold);
-        dist = std::min<int64_t>(dist, at.run);
-      }
-      const bool resting = at.rest;
-      if (seq != nullptr && !resting) {
-        // Corner distance in the CHILD clock (composition law: the map
-        // selects song positions; the sequence is looked up there) —
-        // per gate row (ramp corners depend on the run, S13), plus the
-        // all-on mask every row-less child inherits. With no geometry
-        // the child clock is the received one, unfolded.
-        const int64_t crel =
-            geometry ? at.inner : context.master_pos + done - O;
-        const int64_t srel = seq->fold(crel);
-        dist = std::min<int64_t>(dist, seq->cornerDistance(srel, fade, ~0ull));
-        for (const auto& row : seq->gates) {
-          dist = std::min<int64_t>(dist,
-                                   seq->cornerDistance(srel, fade, row.mask));
-        }
-      }
-      const int run = (int)std::min<int64_t>(context.num_samples - done, dist);
-      Ch* shifted[kMaxSplitChannels];
-      Ch* const* run_channels = channels;
-      int run_channel_count = channel_count;
-      if (channels != nullptr && done > 0) {
-        run_channel_count = std::min(channel_count, kMaxSplitChannels);
-        for (int ch = 0; ch < run_channel_count; ++ch) {
-          shifted[ch] = channels[ch] ? channels[ch] + done : nullptr;
-        }
-        run_channels = shifted;
-      }
-      ProcessContext sub = context;
-      sub.master_pos = context.master_pos + done;
-      sub.island_pos = context.island_pos + done;
-      sub.num_samples = run;
-      sub.input_clock = context.input_clock + done;
-      body(run_channels, run_channel_count, sub);
-      done += run;
-    }
-  }
+                      const ProcessContext& context, Body&& body) const;
 
-  // Island state: explicit, stored once — never derived from child
-  // durations (a derived Q would change retroactively when a shorter
-  // clip commits). 0 = no quantum established in this scope yet.
+  // The island quantum: stored, never derived from child durations (a
+  // derived Q would change retroactively when a shorter clip commits).
+  // 0 = none established in this scope.
   std::atomic<int64_t> quantum_samples_{0};
   std::atomic<uint32_t> stop_generation_{0};
   std::atomic<uint32_t> island_generation_{0};
   SeqLock island_lock_;  // seqlock for (Q, zero, generation)
   std::atomic<int64_t> zero_samples_{0};
-  // The latch's shadow copy of (Q, zero, generation) (seq_locked.h):
-  // what readIslandFacts reads while a write rewrites the fields above.
+  // The seqlock's shadow copy of (Q, zero, generation) (seq_locked.h).
   struct {
     std::atomic<int64_t> quantum{0};
     std::atomic<int64_t> zero{0};
     std::atomic<uint32_t> generation{0};
   } island_shadow_;
-  // The Q hand-off's designation (definerDesignation): message thread
-  // only, a plain member.
-  juce::String definer_designation_;
+  juce::String definer_designation_;  // message thread only
 
-  // The sequence (docs/sequencer.md): immutable object behind ONE
-  // atomic pointer (the FxChain discipline — message thread swaps +
-  // reclaimer retirement; audio thread loads). The bypass flag gates
-  // it exactly like loop_window_bypassed_ gates the map.
   std::atomic<const Sequence*> sequence_{nullptr};
   std::atomic<bool> sequence_bypassed_{false};
-  // The step audition (§11.2): −1 = none. Monitoring state, like solo.
-  std::atomic<int> audition_step_{-1};
-  // S16 window domain (§11.8): stamped by the authoring edit.
-  std::atomic<int> window_domain_{0};
+  std::atomic<int> audition_step_{-1};  // −1 = none
+  std::atomic<int> window_domain_{0};   // a WindowDomain
 
-  // Take lifecycle: count of armed/capturing takes in this island, and
-  // two cycle snapshots taken when the first of them armed: the
-  // INTRINSIC committed cycle (the take's pre-take cycle, the origin
-  // fold frame) and the HEARD/effective cycle (the take's context
-  // frame + audible-equivalence step, Q15).
+  // Take lifecycle: the count of armed/capturing takes in this island,
+  // and the heard cycle snapshotted when the first of them armed
+  // (activeTakeHeardCycle).
   std::atomic<int> active_takes_{0};
-  std::atomic<int64_t> lcm_before_take_{0};
   std::atomic<int64_t> heard_cycle_at_arm_{0};
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StackNode)

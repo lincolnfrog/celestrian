@@ -23,14 +23,15 @@ namespace celestrian {
  *
  *   - reserve(): address space only (VirtualAlloc MEM_RESERVE / mmap
  *     MAP_NORESERVE) — nothing is charged.
- *   - commitTo(samples): MESSAGE THREAD, called by the engine's grower
- *     every poll — keeps `headroom` seconds committed past the write
- *     head (Windows: VirtualAlloc MEM_COMMIT; POSIX: pages are already
- *     lazily backed, so this only advances the bookkeeping).
- *   - committed(): the AUDIO THREAD's write wall. Capture never writes
- *     past it; reaching it (the grower starved for a whole headroom —
- *     a stalled message thread) finishes the take cleanly at the last
- *     boundary that fits.
+ *   - commitTo(samples): MESSAGE THREAD — the arm, and the engine's
+ *     grower on every poll, commit the take's REACH (ClipNode::takeReach:
+ *     the spans the arm clears, and a headroom past the write head).
+ *     Windows: VirtualAlloc MEM_COMMIT; POSIX: pages are already lazily
+ *     backed, so this only advances the bookkeeping.
+ *   - committed(): the write wall. No writer — the arm's clears, capture
+ *     — goes past it; capture reaching it (the grower starved for a
+ *     whole headroom: a stalled message thread) finishes the take
+ *     cleanly at the last boundary that fits.
  *
  * The juce::AudioBuffer the clip renders from REFERS to these channels
  * (the referring constructor); ownership of the storage travels with
@@ -60,6 +61,19 @@ class TakeStorage {
 
   /** Commit granularity (samples): 2^20 (4 MB per channel). */
   static constexpr int64_t kChunkSamples = int64_t{1} << 20;
+
+  /** TEST SEAM: while set, reserve() hands out reservations that behave
+   * like the eager platform's on every platform — the committed edge
+   * starts at 0 and only commitTo moves it — so a suite running where
+   * pages are lazily backed can still pin that every writer commits
+   * ahead of itself. The pages stay writable past the edge there; a
+   * write that had to be cut at it is counted in `cut_writes`.
+   * Process-wide; never set in the app. */
+  static inline std::atomic<bool> commit_on_demand{false};
+  /** Writes cut at a committed edge, reported by the writers (ClipNode's
+   * arm-time clears and capture writes): on the eager platform each
+   * would have touched uncommitted pages. A healthy take leaves it 0. */
+  static inline std::atomic<int64_t> cut_writes{0};
 
  private:
   TakeStorage() = default;

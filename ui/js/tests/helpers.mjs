@@ -1,39 +1,27 @@
 /**
- * Shared helpers for the js/tests suite — the fixtures and assertions
- * that used to be copy-pasted per file (nodeById ×4, record-a-take
- * builders ×5, golden-fixture loaders ×4, LCG ×3, `near`, engine-shaped
- * state builders). Pure module: importing it has NO side effects — in
- * particular it never imports the mock backend statically, so golden /
- * pure-math tests stay singleton-free. (mock/rate.js IS imported
- * statically — it is a bare rate variable with no graph state and no
- * side effects beyond reading CELESTRIAN_MOCK_RATE.) Helpers that drive
- * the mock (recordTake) import it lazily; mock state is module-global
- * per test process, which is safe because node runs each test file in
- * its own process — do not build cross-file fixtures that assume
- * otherwise.
+ * Shared fixtures and assertions for the js/tests suite. Pure module:
+ * importing it has NO side effects, and it never imports the mock
+ * backend statically, so golden and pure-math tests stay singleton-free
+ * (mock/rate.js is a bare rate variable with no graph state). recordTake
+ * imports the mock lazily; prologues that drive the mock live in
+ * mock_scene.mjs, DOM stand-ins in dom_stub.mjs. Mock state is
+ * module-global per test process — node runs each test file in its own
+ * process — so no fixture may assume state shared across files.
  *
  * SAMPLE RATE: nothing here spells 44100. MOCK_Q follows the mock's
  * rate and PERF republishes it live, so `CELESTRIAN_MOCK_RATE=48000
  * npm test` re-rates the whole suite (see mock/rate.js).
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
 import { getSampleRate, quantumSamples } from '../mock/rate.js';
 
-// The production math, so tests never re-implement it (the old local
-// lcm copies drifted into the overflow-prone (a*b)/gcd form).
-export { gcd, lcm } from '../math_utils.js';
-// Rate control for tests that want to assert at a specific rate. Call
-// setSampleRate BEFORE loadScenario/recordTake — fixture lengths and
-// MOCK_Q are read when the scenario loads / this module evaluates.
-export { getSampleRate, setSampleRate } from '../mock/rate.js';
-
 /** The mock backend's quantum in most scenarios: 1 s of audio at its
- *  rate (the literal 44100 before the rate became a variable). */
+ *  rate. */
 export const MOCK_Q = quantumSamples();
 /** The `perf` blob deriveViewModel expects on engine-shaped states.
  *  A live getter, so a mid-test setSampleRate is reflected. */
@@ -47,6 +35,20 @@ export const repoRoot = path.resolve(
 /** Parse a JSON fixture from <repo>/shared/ (timing_golden.json etc.). */
 export function loadSharedJson(name) {
     return JSON.parse(readFileSync(path.join(repoRoot, 'shared', name), 'utf8'));
+}
+
+/** A capture the C++ suite writes to <repo>/shared/ (gitignored), with
+ *  the `skip` option for the tests that replay it: until the
+ *  CelestrianTests Debug binary has run they skip, saying how to make
+ *  it (the runner's summary counts them under `skipped`). */
+export function loadCapture(name) {
+    const found = existsSync(path.join(repoRoot, 'shared', name));
+    return {
+        fixture: found ? loadSharedJson(name) : null,
+        skip: found ? false
+            : `shared/${name} not found — the C++ suite writes it: build the CelestrianTests ` +
+              'target and run build/CelestrianTests_artefacts/Debug/CelestrianTests',
+    };
 }
 
 /** Depth-first search of an engine-shaped node tree by id. */
@@ -80,10 +82,10 @@ export function findByName(nodes, name) {
  * `stopEarly` samples before the length (a stop exactly ON a boundary
  * pads a whole extra Q — nextStopBoundary), then advance `settle`
  * samples so the transport crosses the boundary and the take commits at
- * exactly `lengthSamples` (the engine's AWAITING-STOP: stops always pad
- * forward, owner ruling 2026-07-10). Pass stopEarly 0 / settle 0 for a
- * first take with no prior Q (raw commit, no boundary wait).
- * Lazily imports the mock so pure tests importing helpers stay clean.
+ * exactly `lengthSamples` (the engine's AWAITING-STOP: a stop always
+ * pads forward). Pass stopEarly 0 / settle 0 for a first take with no
+ * prior Q: it has no boundary to wait for and commits raw, at the audio
+ * callback after its stop — which the settle is, even over no samples.
  */
 export async function recordTake(parentId, lengthSamples,
     { stopEarly = 100, settle = stopEarly } = {}) {
@@ -92,38 +94,68 @@ export async function recordTake(parentId, lengthSamples,
     await callNative('startRecordingInNode', id);
     advanceBy(lengthSamples - stopEarly);
     await callNative('stopRecordingInNode', id);
-    if (settle > 0) advanceBy(settle);
+    advanceBy(settle);
     return id;
 }
 
-/** assert |a − b| < eps — the float near-equality every suite inlined. */
-export const near = (a, b, eps = 1e-9) =>
-    assert.ok(Math.abs(a - b) < eps, `expected ${a} ≈ ${b}`);
+/** assert |a − b| < eps, `msg` naming what was compared. */
+export const near = (a, b, msg = '', eps = 1e-9) =>
+    assert.ok(Math.abs(a - b) < eps, `${msg && msg + ': '}${a} ≉ ${b}`);
 
-/** Deterministic Park–Miller LCG → () ⇒ [0, 1). Same generator the
- *  property tests seeded (live peaks, random-scene I2/I8). */
+/** Deterministic Park–Miller LCG → () ⇒ the next integer state. */
+export function makeLcgInt(seed) {
+    return () => (seed = (seed * 48271) % 2147483647);
+}
+/** The same generator as () ⇒ [0, 1). */
 export function makeLcg(seed) {
-    return () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+    const next = makeLcgInt(seed);
+    return () => next() / 2147483647;
 }
 
-/* ------- engine-shaped state builders (view-model test scenes) ------- */
+/* ------- engine-shaped scenes (view-model tests) -------
+ * One family: node builders in Q at SCENE_Q, and two roots — `island`,
+ * the published island (quantum, zero, raw clock), and `state`, a bare
+ * poll deep into playback whose Q the view model reads off its nodes. */
 
-/** Quantum the view-model scenes run at — deliberately NOT the mock's
- *  own rate, so absolute and Q-relative values never coincide (that
- *  coincidence hid two field bugs). Follows the mock rate away rather
- *  than pinning 48000, so a 48 kHz sweep keeps the property. */
+/** Quantum of the view-model scenes: never the mock's own rate, so an
+ *  absolute value and a Q-relative one cannot coincide. */
 export const SCENE_Q = getSampleRate() === 48000 ? 96000 : 48000;
+const atQ = q => Math.round(q * SCENE_Q);
+
+/** A committed clip `id` performed at `originQ`, `durationQ` long. */
+export const clipAt = (id, originQ, durationQ, extra = {}) => ({
+    id, name: id, type: 'clip', origin: atQ(originQ),
+    duration: atQ(durationQ), effectiveQuantum: SCENE_Q,
+    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
+    isMuted: false, isRecording: false, isPendingStart: false,
+    periodSource: 'own', ...extra,
+});
+/** clipAt looped to the window [aQ, bQ) of its take. */
+export const windowed = (id, originQ, durationQ, [aQ, bQ], extra = {}) =>
+    clipAt(id, originQ, durationQ, {
+        loopStart: atQ(aQ), loopEnd: atQ(bQ), windowActive: true, ...extra,
+    });
+/** clipAt under a multi-segment map, `segsQ` = [[a, b], …]. */
+export const mapped = (id, originQ, durationQ, segsQ, extra = {}) =>
+    clipAt(id, originQ, durationQ, {
+        segments: segsQ.flat().map(atQ), windowActive: true, ...extra,
+    });
+/** An anchored group `id` at `originQ` over `nodes`. */
+export const groupAt = (id, originQ, nodes, extra = {}) => ({
+    id, name: id, type: 'stack', anchored: true, origin: atQ(originQ),
+    effectiveQuantum: SCENE_Q, nodes, ...extra,
+});
+/** The published island over `nodes`, its raw clock at `clockQ`. */
+export const island = (nodes, { clockQ = 0, ...extra } = {}) => ({
+    id: 'root', type: 'stack', quantum: SCENE_Q, islandZero: 0, definerId: '',
+    isPlaying: true, masterPos: 0, islandPos: atQ(clockQ), perf: PERF,
+    nodes, ...extra,
+});
 
 let nextId = 1;
-/** A committed clip of `periodQ` quantums (engine-published shape). */
-export function clip(periodQ, extra = {}) {
-    return Object.assign({
-        id: `clip-${nextId++}`, name: `clip ${periodQ}Q`, type: 'clip',
-        duration: periodQ * SCENE_Q, origin: 0, effectiveQuantum: SCENE_Q,
-        loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-        isMuted: false, isRecording: false, isPendingStart: false,
-    }, extra);
-}
+/** An anonymous committed clip of `periodQ` quantums at origin 0. */
+export const clip = (periodQ, extra = {}) =>
+    clipAt(`clip-${nextId++}`, 0, periodQ, { name: `clip ${periodQ}Q`, ...extra });
 
 /** A stack (group) holding `children`, expanded by default. */
 export function stack(children, extra = {}) {
@@ -135,7 +167,7 @@ export function stack(children, extra = {}) {
     }, extra);
 }
 
-/** A getGraphState-shaped state. masterPos defaults deep into playback
+/** A bare getGraphState poll. masterPos defaults deep into playback
  *  (25 cycles of 12Q + 5.25Q) so cycle-relative math is exercised. */
 export function state(nodes, extra = {}) {
     return Object.assign({
@@ -143,6 +175,9 @@ export function state(nodes, extra = {}) {
         soloedId: '', nodes,
     }, extra);
 }
+
+/** The view model's lane for node `id`. */
+export const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
 
 /** Assert one lane's reps exactly tile [0, cycleQ): start at 0, abut
  *  without gaps or overlaps, end at the cycle, with exactly ONE take

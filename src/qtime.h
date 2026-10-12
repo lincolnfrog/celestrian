@@ -121,8 +121,6 @@ struct QTime {
   int64_t den = 1;
 };
 
-// gcd/lcm live here (the foundation layer); timing.h includes this
-// header and re-exposes them under the same namespace.
 inline int64_t gcd(int64_t a, int64_t b) {
   while (b != 0) {
     int64_t t = b;
@@ -201,9 +199,11 @@ inline QTime qsub(QTime a, QTime b) {
 /**
  * Rational LCM of two positive periods: the smallest positive r such
  * that r/a and r/b are both integers. For a/b, c/d in lowest terms:
- * lcm(a, c) / gcd(b, d). This is what composite (stack) periods use —
- * the integer LCM in timing.h is the q_samples projection of this.
- * Returns the other argument if either is zero (mirrors timing::lcm).
+ * lcm(a, c) / gcd(b, d). The musical-frame statement of a composite
+ * period: the engine itself folds composite (stack) periods in samples
+ * with the integer `lcm` above, which is this value's q_samples
+ * projection. Returns the other argument if either is zero (mirrors
+ * `lcm`).
  */
 inline QTime qlcm(QTime a, QTime b) {
   if (a.num == 0) return b;

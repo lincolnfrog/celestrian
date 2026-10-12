@@ -104,18 +104,18 @@ juce_add_gui_app(Celestrian
     CAMERA_PERMISSION_ENABLED TRUE
 )
 
-# Add source files
-target_sources(Celestrian PRIVATE
-    src/main.cc
-    src/main_component.h
-    src/main_component.cc
-    src/bridge_dispatch.h
+# The engine: everything the app, the headless server and the unit tests
+# all compile. A new engine translation unit is added HERE, once.
+set(CELESTRIAN_ENGINE_SOURCES
     src/bridge_dispatch.cc
-    src/audio_engine.h
     src/audio_engine.cc
-    src/engine/engine_internal.h
     src/engine/island_geometry.cc
+    src/engine/definer.cc
     src/engine/edit_log.cc
+    src/engine/edit_structure.cc
+    src/engine/edit_geometry.cc
+    src/engine/edit_takes.cc
+    src/engine/edit_facts.cc
     src/engine/take_service.cc
     src/engine/transport.cc
     src/engine/verbs.cc
@@ -124,19 +124,26 @@ target_sources(Celestrian PRIVATE
     src/engine/device_service.cc
     src/engine/bounce.cc
     src/engine/import.cc
-    src/timing.h
     src/clip_node.cc
+    src/clip_node_capture.cc
+    src/clip_node_takes.cc
+    src/clip_node_render.cc
     src/take_storage.cc
     src/stack_node.cc
     src/session_io.cc
     src/project_manager.cc
-    src/plugin_host_service.h
     src/plugin_host_service.cc
-    src/plugin_scan_worker.h
     src/plugin_scan_worker.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
     src/dsp/vst3_slot.cc
+)
+
+# Add source files
+target_sources(Celestrian PRIVATE
+    src/main.cc
+    src/main_component.cc
+    ${CELESTRIAN_ENGINE_SOURCES}
 )
 
 # Link JUCE modules
@@ -213,28 +220,7 @@ juce_add_console_app(CelestrianHeadless
 
 target_sources(CelestrianHeadless PRIVATE
     src/headless/headless_main.cc
-    src/bridge_dispatch.cc
-    src/clip_node.cc
-    src/take_storage.cc
-    src/stack_node.cc
-    src/audio_engine.cc
-    src/engine/island_geometry.cc
-    src/engine/edit_log.cc
-    src/engine/take_service.cc
-    src/engine/transport.cc
-    src/engine/verbs.cc
-    src/engine/map_edits.cc
-    src/engine/audio_callback.cc
-    src/engine/device_service.cc
-    src/engine/bounce.cc
-    src/engine/import.cc
-    src/session_io.cc
-    src/project_manager.cc
-    src/plugin_host_service.cc
-    src/plugin_scan_worker.cc
-    src/dsp/effects.cc
-    src/dsp/fx_chain.cc
-    src/dsp/vst3_slot.cc
+    ${CELESTRIAN_ENGINE_SOURCES}
 )
 
 target_link_libraries(CelestrianHeadless PRIVATE
@@ -280,10 +266,10 @@ target_sources(CelestrianTests PRIVATE
     tests/stack_node_tests.cc
     tests/quantum_propagation_tests.cc
     tests/stack_loop_tests.cc
-    tests/regression_tests.cc
-    tests/audio_engine_tests.cc
     tests/undo_tests.cc
+    tests/undo_symmetry_tests.cc
     tests/engine_bridge_tests.cc
+    tests/bridge_dispatch_tests.cc
     tests/qtime_lock_tests.cc
     tests/definer_handoff_tests.cc
     tests/graph_snapshot_tests.cc
@@ -304,6 +290,8 @@ target_sources(CelestrianTests PRIVATE
     tests/callback_edge_tests.cc
     tests/group_arm_tests.cc
     tests/take_undo_tests.cc
+    tests/take_lifecycle_tests.cc
+    tests/rack_rate_tests.cc
     tests/takes_tests.cc
     tests/content_frame_tests.cc
     tests/audit_regression_tests.cc
@@ -321,27 +309,7 @@ target_sources(CelestrianTests PRIVATE
     tests/bounce_tests.cc
     tests/monitor_tests.cc
     tests/import_tests.cc
-    src/clip_node.cc
-    src/take_storage.cc
-    src/stack_node.cc
-    src/audio_engine.cc
-    src/engine/island_geometry.cc
-    src/engine/edit_log.cc
-    src/engine/take_service.cc
-    src/engine/transport.cc
-    src/engine/verbs.cc
-    src/engine/map_edits.cc
-    src/engine/audio_callback.cc
-    src/engine/device_service.cc
-    src/engine/bounce.cc
-    src/engine/import.cc
-    src/session_io.cc
-    src/project_manager.cc
-    src/plugin_host_service.cc
-    src/plugin_scan_worker.cc
-    src/dsp/effects.cc
-    src/dsp/fx_chain.cc
-    src/dsp/vst3_slot.cc
+    ${CELESTRIAN_ENGINE_SOURCES}
 )
 
 target_link_libraries(CelestrianTests PRIVATE

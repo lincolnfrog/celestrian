@@ -1,39 +1,41 @@
 /**
- * Loop-window interactions (docs/session_view.md law 13 — the window
- * sets the part; docs/time_maps.md).
+ * A lane's loop-window brackets (docs/session_view.md law 13;
+ * docs/time_maps.md): drag a bracket to edit the window, click the chip
+ * to toggle it active ↔ bypassed.
  *
- * Drag a bracket to edit; click the chip to toggle active/bypassed.
- * TWO-LAYER DRAG FEEDBACK: the handle itself follows the pointer
- * CONTINUOUSLY (you see your motion), while a dashed snap-ghost bracket
- * + the dims + the chip preview the Q-SNAPPED landing position (you see
- * what a release commits). Release commits the snap via setLoopPoints.
- * During the drag the overlay is frozen (gesture.js isOverlayFrozen) —
- * replacing the captured bracket node would orphan the gesture.
+ * TWO-LAYER DRAG FEEDBACK: the handle follows the pointer CONTINUOUSLY
+ * while a dashed snap-ghost bracket, the dims and the chip preview the
+ * Q-SNAPPED landing a release commits (setLoopPoints). The overlay is
+ * frozen for the drag and held until the commit settles (gesture.js,
+ * the freeze law).
  */
 
 import { ctx } from './context.js';
-import { pct, setText } from './sv_util.js';
-import { beginGesture, isDragging, holdOverlay, releaseOverlay, afterSettled }
-    from './gesture.js';
+import { pct, fmtQ, setText } from './sv_util.js';
+import { beginGesture, holdUntilSettled } from './gesture.js';
+import { selectOnly } from './selection.js';
 import { buildWindowDims } from './dims.js';
 import { windowDragTarget } from '../view_model.js';
+import { slideSegs } from '../map_edit.js';
 
 /* Two brackets within this many Q of each other share one place. */
 const BRACKET_EPS_Q = 1e-9;
+/* The Q-definer drags FREE (sub-Q); this floor keeps Q positive — the
+ * smallest TEMPO it may set (not map_moves' MIN_CUT_Q, the smallest cut
+ * a band may hold). */
+const Q_DEFINER_MIN_LEN_Q = 0.05;
 
 /**
  * WHERE A BRACKET SITS ON THE LANE (frame Q). Window Qs are
  * content-relative and the content's origin is the take tile (anchorQ)
  * — which the frame's end may CLIP: the rest of the take then sounds,
- * and is drawn, from the frame's start. A bracket past the frame's end
- * belongs there too. Left at `anchorQ + q` it sat off the lane, out of
- * sight and out of reach: a bypassed window's end bracket and chip, and
- * a plain loop's latent end (so a region could only ever be drawn in
- * from its start).
+ * and is drawn, from the frame's start, and a bracket past the frame's
+ * end belongs there too (at `anchorQ + q` it would sit off the lane, out
+ * of reach).
  *
- * `q` is that unwrapped place. The START bracket of a region that
- * begins exactly at the frame's end is the frame's start; the END
- * bracket of one that ends there stays on the right edge.
+ * `q` is that unwrapped place. The START bracket of a region that begins
+ * exactly at the frame's end is the frame's start; the END bracket of
+ * one that ends there stays on the right edge.
  */
 export function bracketQ(q, cycleQ, edge) {
     if (!(cycleQ > 0)) return q;
@@ -47,43 +49,55 @@ export function bracketQ(q, cycleQ, edge) {
  * the frame: a frame position stands for content `cycleQ` apart on
  * either side of the wrap, so take the one NEAREST `nearQ` — where the
  * dragged edge last was. The edge then follows the hand continuously on
- * whichever side of the frame's edge it sits (and past the lane's own
- * edge, where the unwrapped line simply runs on).
+ * whichever side of the frame's edge it sits.
  */
 export function contentQNear(rawQ, nearQ, cycleQ) {
     if (!(cycleQ > 0) || !Number.isFinite(nearQ)) return rawQ;
     return rawQ + cycleQ * Math.round((nearQ - rawQ) / cycleQ);
 }
 
-/* The Q-definer drags FREE (sub-Q); this floor keeps Q positive.
- * (Deliberately distinct from map_bands' MIN_CUT_Q: this is the
- * smallest TEMPO the definer may set; that is the smallest CUT a
- * band may hold — different laws, different numbers.) */
-const Q_DEFINER_MIN_LEN_Q = 0.05;
-/* (After a release the overlay is HELD at the previewed geometry until
- * the engine has answered the commit — a state poll already in flight
- * still carries the pre-commit window and would rebuild the brackets
- * there for a tick. The cap lives in gesture.js: COMMIT_HOLD_MAX_MS.) */
+/** ⌥ = SLIDE the window by `deltaQ` — any amount — its length held,
+ * clamped to [0, maxQ]: the map's slide law for one window (map_edit
+ * slideSegs; the anchoring law keeps content in place, only which
+ * stretch is heard changes). */
+export function slideWindow(win, deltaQ, maxQ) {
+    const [[startQ, endQ]] = slideSegs([[win.startQ, win.endQ]], deltaQ, maxQ).segs;
+    return { startQ, endQ };
+}
+
+/** ⌥ RELEASED mid-drag: the slid window re-lands on whole Q, its whole-Q
+ * length held. The plain snap computes its targets FROM the window, so a
+ * fraction left in it would survive every later snap, and the commit. */
+export function relandWindow(win, maxQ) {
+    const len = Math.max(1, Math.round(win.endQ - win.startQ));
+    const startQ = Math.max(0, Math.min(maxQ - len, Math.round(win.startQ)));
+    return { startQ, endQ: startQ + len };
+}
 
 export function wireWindow(o, lane, vm, body, win) {
-    // (Multi-segment maps never reach here: lane_body's mapSegs branch
-    // returns before the bracket overlay is built — the cell/punch
-    // editor owns their geometry. Kept as a guard only.)
-    if (win.segs && win.segs.length > 1) return;
     // A step audition's DERIVED window is shown, not edited (view_model).
     if (win.audition) return;
-    // Per-lane scale (law 13 amendment): an editing lane maps through
-    // its own frame, not the shared one.
-    const laneCycleQ = lane.frameQ || vm.cycleQ;
+    const multi = !!(win.segs && win.segs.length > 1);
     const chip = o.querySelector('.win-chip');
-    // Fractal (I5): clip and group windows toggle alike — the engine's
-    // toggleLoopWindow works on any node. The Q-definer's chip is a
-    // live readout, not a toggle (there's no window to bypass).
+    // Clip and group windows toggle alike (I5). The Q-definer's chip is
+    // a live readout, not a toggle (there is no window to bypass).
     if (chip && !lane.isQDefiner) {
         chip.classList.add('toggle');
-        chip.title = 'Toggle window: active ↔ bypassed (brackets stay editable)';
+        // A suspended window's chip keeps the reason it was built with.
+        if (!win.suspended) {
+            chip.title = multi
+                ? 'Toggle the map: active ↔ bypassed (bypass keeps its shape)'
+                : 'Toggle window: active ↔ bypassed (brackets stay editable)';
+        }
         chip.addEventListener('click', () => ctx.cb.onToggleWindow(lane.id));
     }
+    // A clip's bypassed MULTI-SEGMENT map rests here raw-framed: the
+    // chip above switches it back on; its brackets mark the outer
+    // bounds and take no drag (the cut bands and the region panel own
+    // that geometry).
+    if (multi) return;
+    // A raw inspector maps through its own frame, not the shared one.
+    const laneCycleQ = lane.frameQ || vm.cycleQ;
 
     const brackets = {
         start: o.querySelector('.win-bracket.start'),
@@ -93,11 +107,9 @@ export function wireWindow(o, lane, vm, body, win) {
     if (maxQ < 1) return;
     let cur = { startQ: win.startQ, endQ: win.endQ };
     const dimsLive = (win.active && !win.bypassed) || win.latent;
-    // Window Qs are CONTENT-relative; the pointer moves in FRAME Qs.
-    // The lane's content-frame origin is its take tile — which the
-    // frame's end may clip, the rest of the take drawn at the frame's
-    // start: brackets wrap with it (bracketQ) and the pointer reads the
-    // content on its own side of the wrap (contentQNear).
+    // Window Qs are CONTENT-relative; the pointer moves in FRAME Qs. The
+    // brackets wrap with a clipped take tile (bracketQ) and the pointer
+    // reads the content on its own side of the wrap (contentQNear).
     const anchorQ = lane.takeStartQ || 0;
     /** The lane position (%) of content `q`'s bracket of `edge`. */
     const at = (q, edge) => pct(bracketQ(anchorQ + q, laneCycleQ, edge), laneCycleQ);
@@ -115,7 +127,7 @@ export function wireWindow(o, lane, vm, body, win) {
                 bracketQ(anchorQ + t.endQ, laneCycleQ, 'end') >= laneCycleQ);
             setText(chip, lane.isQDefiner
                 ? 'Q = ' + ((t.endQ - t.startQ) * vm.quantum / vm.sampleRate).toFixed(2) + 's'
-                : (t.endQ - t.startQ) + 'Q window');
+                : fmtQ(t.endQ - t.startQ) + 'Q window');
         }
         if (dimsLive) {
             // Only THIS window's dims: the enclosing map's projection
@@ -127,97 +139,75 @@ export function wireWindow(o, lane, vm, body, win) {
 
     ['start', 'end'].forEach(edge => {
         const bracket = brackets[edge];
+        const otherEdge = edge === 'start' ? 'end' : 'start';
+        const edgeQ = (t, e) => (e === 'start' ? t.startQ : t.endQ);
         let ghost = null;
         let grab = null;
         let lastQ = 0;       // the content Q the pointer last read
         let wasAlt = false;  // last move was an ⌥ free slide
         bracket.addEventListener('pointerdown', e => {
-            if (isDragging(body)) return; // one gesture at a time (a second pointer)
             const g = beginGesture(e, {
                 node: bracket,
-                claim: lane.id, // a handle's gesture claims the track, at its end
                 onMove: mv => onDrag(mv),
                 onEnd: committed => finish(committed),
             });
-            if (!g.live()) return;  // the runner is a singleton
-            g.freeze(body);  // the drag holds capture on this overlay
+            if (!g.live()) return;
+            // The press selects this track alone (several selected
+            // collapse to the one whose handle is pressed).
+            selectOnly(lane.id);
+            g.freeze(body);
             bracket.classList.add('dragging');
             g.defer(() => bracket.classList.remove('dragging'));
             // The snap ghost starts AT the handle (same classes → same
-            // shape/transform), marking the landing position
+            // shape/transform), marking the landing position.
             ghost = bracket.cloneNode(false);
             ghost.classList.remove('dragging', 'latent');
             ghost.classList.add('snap-ghost');
             o.appendChild(ghost);
             g.defer(() => { if (ghost) { ghost.remove(); ghost = null; } });
-            // ⌥ FREE SLIDE needs the grab point: the window at the grab
-            // and the frame-Q under the pointer (deltas from here).
+            // The grab point: the window and the content Q under the
+            // pointer (an ⌥ slide is a displacement from here).
             const r0 = body.getBoundingClientRect();
-            grab = { win: { ...cur },
-                     q: pointerQ(e.clientX, r0, edge === 'start' ? cur.startQ : cur.endQ) };
+            grab = { win: { ...cur }, q: pointerQ(e.clientX, r0, edgeQ(cur, edge)) };
             lastQ = grab.q;
             wasAlt = false;
         });
         const onDrag = e => {
             if (!ghost) return;
             const r = body.getBoundingClientRect();
-            // Frame Q under the pointer → content Q for the snap math
-            // (on the side of a wrapped take the edge is on).
             const rawQ = pointerQ(e.clientX, r, lastQ);
             lastQ = rawQ;
-            // ⌥ FREE SLIDE: the grabbed edge follows the pointer by ANY
-            // fractional amount and the OTHER
-            // end moves by the same delta — the window length is held,
-            // so Q coherence survives (the anchoring law keeps content
-            // in place; only which stretch is heard changes). Clamped to
-            // the take's extent. Not for the Q-definer (its brackets
-            // define Q; there is nothing to slide against).
+            // ⌥ FREE SLIDE (slideWindow). Not for the Q-definer: its
+            // brackets define Q; there is nothing to slide against.
             if (e.altKey && grab && !lane.isQDefiner) {
-                const len = grab.win.endQ - grab.win.startQ;
-                let s = grab.win.startQ + (rawQ - grab.q);
-                s = Math.max(0, Math.min(maxQ - len, s));
-                const t = { startQ: s, endQ: s + len };
-                bracket.style.left = at(edge === 'start' ? t.startQ : t.endQ, edge);
-                const otherEdge = edge === 'start' ? 'end' : 'start';
+                const t = slideWindow(grab.win, rawQ - grab.q, maxQ);
+                bracket.style.left = at(edgeQ(t, edge), edge);
                 const other = brackets[otherEdge];
-                if (other) {
-                    other.style.left =
-                        at(edge === 'start' ? t.endQ : t.startQ, otherEdge);
-                }
+                if (other) other.style.left = at(edgeQ(t, otherEdge), otherEdge);
                 previewSnap(t, edge, ghost);
                 wasAlt = true;
                 return;
             }
-            // ⌥ RELEASED MID-DRAG: the free slide leaves `cur` on a
-            // fractional grid, and plain snapping computes its targets
-            // FROM cur, so the fraction would survive every subsequent
-            // snap (and the commit). Re-land on whole Q first,
-            // preserving the whole-Q length the slide held.
             if (wasAlt && !lane.isQDefiner) {
-                const len = Math.max(1, Math.round(cur.endQ - cur.startQ));
-                let s = Math.round(cur.startQ);
-                s = Math.max(0, Math.min(maxQ - len, s));
-                cur = { startQ: s, endQ: s + len };
+                cur = relandWindow(cur, maxQ);
                 wasAlt = false;
             }
-            // Q13: the Q-definer drags FREE (sub-Q) — we're DEFINING Q,
-            // not snapping to it. The handle position is the landing; a
-            // small min length keeps Q positive. Clamp to the RAW
-            // fractional buffer extent: the rounded maxQ would let the
-            // end handle land up to half a Q past the recorded material,
-            // making a window (and a Q) longer than the content.
+            // Q13: the Q-definer drags FREE (sub-Q) — it DEFINES Q, it
+            // does not snap to it. Clamped to the RAW buffer extent (the
+            // rounded maxQ would let the end land up to half a Q past the
+            // recorded material).
             if (lane.isQDefiner) {
                 const minLen = Q_DEFINER_MIN_LEN_Q;
                 const extQ = lane.intrinsicQ || 0;
                 const t = edge === 'start'
                     ? { startQ: Math.min(Math.max(0, rawQ), cur.endQ - minLen), endQ: cur.endQ }
                     : { startQ: cur.startQ, endQ: Math.max(Math.min(extQ, rawQ), cur.startQ + minLen) };
-                bracket.style.left = at(edge === 'start' ? t.startQ : t.endQ, edge);
+                bracket.style.left = at(edgeQ(t, edge), edge);
                 previewSnap(t, edge, ghost);
                 return;
             }
             // The handle tracks the pointer continuously, inside the
-            // same bounds the snap enforces (≥1Q window, lane extent)
+            // bounds the snap enforces (≥ 1Q window, lane extent).
             const freeQ = edge === 'start'
                 ? Math.min(Math.max(0, rawQ), cur.endQ - 1)
                 : Math.max(Math.min(maxQ, rawQ), cur.startQ + 1);
@@ -228,30 +218,19 @@ export function wireWindow(o, lane, vm, body, win) {
             }
         };
         const finish = commit => {
-            // NO-MOVE, NO-COMMIT: a plain click on a bracket ends with
-            // cur === the window it started at; committing it would be
-            // a redundant engine round-trip that could land as a real
-            // (if identity) edit on the undo path.
+            // The next patch that may rebuild does, from settled state.
+            o._key = '';
+            // NO MOVE, NO COMMIT: a plain click on a bracket must not
+            // land as an (identity) edit on the undo path.
             const moved = grab == null ||
                 Math.abs(cur.startQ - grab.win.startQ) > 1e-9 ||
                 Math.abs(cur.endQ - grab.win.endQ) > 1e-9;
-            if (commit && moved) {
-                const p = ctx.cb.onSetWindow(lane.id,
-                    Math.round(cur.startQ * vm.quantum),
-                    Math.round(cur.endQ * vm.quantum));
-                // HOLD until the engine answered (afterSettled, capped at
-                // gesture.js's COMMIT_HOLD_MAX_MS): the previewed
-                // brackets/dims already show the committed geometry; a
-                // rebuild from an in-flight pre-commit poll would snap
-                // them back for a tick.
-                holdOverlay(body);
-                afterSettled(p, () => {
-                    releaseOverlay(body);
-                    o._key = ''; // rebuild from settled state on the next patch
-                });
-            } else {
-                o._key = ''; // rebuild from settled state on the next patch
-            }
+            if (!commit || !moved) return;
+            // The previewed brackets/dims show the committed geometry:
+            // held until the engine answers.
+            holdUntilSettled(body, ctx.cb.onSetWindow(lane.id,
+                Math.round(cur.startQ * vm.quantum),
+                Math.round(cur.endQ * vm.quantum)));
         };
     });
 }

@@ -269,11 +269,11 @@ on the ROOT only; nested radios are refused (§14).
 | Layer | Home |
 |---|---|
 | Storage | `sequence` behind one atomic pointer per StackNode; `Edit::Sequence` undoable with raw-state inverse; save format additive (`sequence` block, QTime lengths) |
-| Engine | `src/sequence.h` (the pure envelope, `gainAt`, `songToContent`, `rampsOf`, `finalize`, `linearize`), `src/stack_node.cc` (`childContext` re-base, gate lookup, seam-run splitting), `src/audio_engine.cc` (verbs, S21 auto-target, refusals) |
-| Bridge | `setSequence(uuid, seq)`, `toggleSequence(uuid)`, `auditionStep(uuid, step)` — three places plus the mock twin |
-| Mock | `ui/js/mock/sequence.js`, `ui/js/mock/recording.js` |
-| VM | `ui/js/view_model.js` (grid, `displayPeriodQ`, `seqDims` layers), `ui/js/sequence_program.js`, `ui/js/frame_health.js` |
-| UI | `ui/js/session_view/seq_grid.js` (the grid, pips, popovers), `lane_body.js` (dims, cue marks, fade gradients) |
+| Engine | `src/sequence.h` (the pure envelope, `gainAt`, `rampsOf`, `finalize`, `linearize`, and the ONE reader of a song from the wire, `fromVar`), `src/stack_node.cc` (`scopeFacts` reads the song once per phase; `childContext` re-base, gate lookup, seam-run splitting), `src/engine/map_edits.cc` (the verbs and their refusals), `src/engine/take_service.cc` (the S21 auto-target, the auto-gate), `src/engine/edit_facts.cc` (the `Sequence` applier) |
+| Bridge | `setSequence(uuid, seq)`, `toggleSequence(uuid)`, `auditionStep(uuid, step)` — three places (`protocol.js`, `bridge_dispatch.cc`, the mock) |
+| Mock | `ui/js/mock/sequence.js`, `ui/js/mock/seq_query.js`, `ui/js/mock/recording.js` |
+| VM | `ui/js/vm/sequence_rows.js` (the row and its facts `seqRowFacts`, the lanes' `seqDims` layers, frame health), `ui/js/vm/published.js` (`displayPeriodQ`), `ui/js/sequence_program.js`, `ui/js/frame_health.js` |
+| UI | `ui/js/session_view/seq_grid.js` (the grid, pips, popovers), `seq_columns.js` (which columns a row shows, the playing column), `seq_dims.js` and `lane_body.js` (dims, cue marks, fade gradients) |
 | Templates | `src/track_template.h` — sequences carried, gates re-keyed to rebuilt ids (S14) |
 
 ### The pad grid is the one control, at every depth (S15)
@@ -284,15 +284,31 @@ on the ROOT only; nested radios are refused (§14).
   the FIRST row, over the top-level tracks. The chip hides until Q is
   established. Rows = children, columns ∝ lenQ.
 - **Step verbs on column headers** (cut-band grammar): grip resize
-  (whole-Q, cycle-multiple default), dblclick rename, drag reorder,
+  (whole cycles by default, ⌥ whole Q; the drag is scaled to the steps
+  the row SHOWS, so on a radio — one column per reachable step — a
+  column's width of drag is a column's worth of song, not a fraction of
+  the unrolled run; a drag that is cancelled, loses its pointer or sees
+  the window blur commits nothing), dblclick rename (a rename that
+  changes nothing sends nothing), drag reorder,
   right-click merge/delete, ＋ appends, hover ⟲ loops the step
   (audition / record), ⇤ pip toggles cue (S22), → pip opens the
   successors popover (§14), the length chip opens the fades popover
   (§15).
-- **Pad verbs:** click toggle, drag paint, row-name whole-row toggle.
+- **Pad verbs:** click toggle, drag paint (primary button only),
+  row-name whole-row toggle.
+- **Popovers** (successors, fades) follow the session view's one rule
+  set (session_view.md §5): one open at a time, Escape closes the
+  popover and nothing else. A fades popover stays open across the
+  rebuild its own commit causes, so both fades can be typed in one
+  visit.
 - **Footer:** totals ("seq · 28Q · 1:52"), bypass toggle, frame-health
   badge when warranted, orphan ⤳ chips, and a radio's
-  `📻 radio · seed xxxxxxxx` + `⟳ re-roll`.
+  `📻 radio · seed xxxxxxxx` + `⟳ re-roll`. The bypass is a fact of the
+  SONG — published and saved inside it — so a stack with no song has
+  none to flip: `toggleSequence` is refused there (the grid shows no
+  bypass control without a song), and a `setSequence` that names the
+  song the stack already holds, or clears where there is none, records
+  nothing (the answer law, ui.md).
 - **Lanes are display, not control.** Their song-frame rendering is the
   period law's display consequence — a pure projection. Lane span
   gestures are already dense (trim grips, cut bands, seams), so gate
@@ -393,9 +409,10 @@ Recorded 2026-08-19 unless noted.
 ### 11.2 The step audition is a derived window (S17)
 
 `StackNode::audition_step_` makes the selected step a derived
-one-segment map. `AudioNode::activeTimeMap()` and
-`isLoopWindowActive()` are VIRTUAL so StackNode can answer with the
-derived map — and, for S16, with *none* while suspended.
+one-segment map. `AudioNode::activeTimeMap()` is VIRTUAL so StackNode
+can answer with the derived map — and, for S16, with *none* while
+suspended; "is a window active" is that one answer
+(`isLoopWindowActive()` = `activeTimeMap().active()`), for every node.
 `AudioEngine::auditionStep(uuid, step)` refuses mid-take and
 out-of-range. A step-COUNT change (delete) clears the audition; a
 resize keeps it — decided inside the Sequence edit applier so undo and
@@ -412,8 +429,7 @@ clears it through `onEscapeAudition`.
 ### 11.4 The commit cycle — the song rides the island zero (S18)
 
 A root song's steps fold from the island zero, and no commit moves it
-(`StackNode::takeCommitted`; frame.md): a part recorded into a song
-never re-phases the song. The view seats the root song first, so the
+(frame.md): a part recorded into a song never re-phases the song. The view seats the root song first, so the
 song owns the frame on screen exactly as it does on the audio thread.
 
 ### 11.5 Takes are undoable, and the auto-gate composes (S19)
@@ -426,11 +442,19 @@ Commit is an audio-thread event, so the engine registers a
 **PendingTake** at arm (uuids, the pre-take Q/zero, the auto-gate
 target) and `reconcileTakes()` logs it — at the top of every
 `getGraphState` poll and before any log operation — once every member
-has settled. A Q7 group take is ONE entry; a cancelled performance logs
-nothing. Undo/redo of a take entry is REFUSED (entry kept) while a take
-is live. The first take's establishment of Q and the island zero rides
-`setsIsland` (no commit moves them afterwards). Untake deliberately does NOT uncollapse a Q13
-definer — the `CollapseTake` entry beneath it does.
+has settled: the scan waits while the island still counts a live take
+(a take's end is published facts, then Idle, then the island's count),
+and both arm verbs reconcile first, so an earlier performance is always
+logged ahead of the next arm's edits. A Q7 group take is ONE entry; a
+cancelled performance logs nothing. Undo/redo of a take entry is
+REFUSED (entry kept) while a take is live. The first take's
+establishment of Q and the island zero rides `setsIsland` (no commit
+moves them afterwards). **A performance moves no song:** undoing the
+island's first take sets Q and the zero back and leaves every song that
+was authored before the take exactly as it found it (an import that
+established Q, the same); redo re-establishes Q under them. Untake
+deliberately does NOT uncollapse a Q13 definer — the `Collapse` entry
+beneath it does.
 
 **The auto-gate composes:** `applyAutoGate` folds one `Edit::Sequence`
 into the take's Untake entry (the `seq` rider), so ⌘Z removes take and
@@ -454,9 +478,24 @@ The threshold is strict: coprime p beside q has ratio min(p, q), so 7Q
 beside 4Q (28Q, exactly 4×) is healthy while 7Q beside 5Q (35Q) warns.
 
 Shown on the responsible lane's period chip (amber, tooltip), the grid
-footer (badge + one-click snap, delta on the last step, one undoable
-`setSequence`), the grip's live readout (⚠ / ↯ while dragging), and the
-seq chips (↯ for drift).
+footer (badge + one-click snap, one undoable `setSequence`), the grip's
+live readout (⚠ / ↯ while dragging), and the seq chips (↯ for drift).
+
+**The live warning is the committed verdict.** The grip's readout is
+judged by the same functions over the same members as the badge a
+commit would show (`seqHealthAt(row, songQ)`,
+`ui/js/vm/sequence_rows.js`, over `assessBlowup` / `assessDrift`): the
+row carries the scope's drift divisor (`scopeInnerQ`) and, when this
+scope's song is what it hands its parent, the parent scope's ordered
+member list (`parentMembers`). So a drag never warns for a song the
+committed badge would not blame, and a bypassed song — which changes
+no frame — never warns. A member whose slot is being re-taken stays in
+its scope's member list for the length of the take (takes.md §2), so a
+badge does not clear at the arm and come back at the commit.
+
+**The snap offer lands where it can.** The delta goes on the LAST step
+the program plays once that stays ≥ 1Q after it; the button's title
+names that step, and an offer no step can absorb is not shown.
 
 ### 11.7 "+ step" defaults to one intrinsic cycle
 
@@ -473,7 +512,17 @@ appliers (`Edit::window_domain`; inverses restore the old stamp).
 Suspended = sequence-domain ∧ sequence off ∧ a valid window
 (`activeTimeMap()` → none; metadata `windowDomain` / `windowSuspended`),
 persisted additively, drawn as dashed dim brackets with a
-"window · suspended (sequence off)" chip.
+"window · suspended (sequence off)" chip. A suspended CUT map draws the
+same way — no dims, no sound cursor, a "map · suspended (sequence off)"
+chip — and the edit bar says "suspended", not "whole take".
+
+**Both appliers stamp the domain BEFORE the top reconciles**
+(`stampWindowDomain`, then `reconcileTopRider`,
+`src/engine/edit_geometry.cc`). The top's reconcile asks whether the
+map is active (time_maps.md §7), and a map is active in the domain the
+edit leaves it in: a window re-drawn over a suspended one (drawn over a
+song, the song since bypassed) is in force once re-drawn, and its top
+lands on its start — by the window verb and by the cell verb alike.
 
 ---
 
@@ -545,7 +594,7 @@ grid you see is the grid you hear", design_language.md §5).
 
 **The cue map.** Song position → content position:
 `content(rel) = rel − stepStart(i)` on a cued step i, identity
-elsewhere (`Sequence::songToContent`). The re-base lives in
+elsewhere. The re-base lives in
 `StackNode::childContext`, layered UNDER any authored or audition map —
 the S9 composition law: the map selects SONG positions, and the cue
 maps song positions to CONTENT positions:
@@ -559,10 +608,13 @@ song-stack restarts from its own top on every entrance.
 `forEachSeamRun` already splits blocks at step bounds, so the step is
 constant within any one run.
 
-- **Gates stay on the SONG timeline.** `renderChildren` derives the step
-  lookup from the received clock through the own map alone — never from
-  the re-based child clock, or a child gated off in a cued step would
-  wrongly read step 0's gates.
+- **Gates stay on the SONG timeline.** The stack derives the step
+  lookup from the received clock through its own map alone
+  (`StackNode::scopeFacts`, read once per phase and handed to every
+  seam run) — never from the re-based child clock, or a child gated off
+  in a cued step would wrongly read step 0's gates. A ONE-SHOT stack
+  that holds a song reads its gates at the song position its members
+  hear, at every firing.
 - **Record into a cued step composes.** Under an audition aimed at a
   cued step, `childContext` hands down the COMPOSED map
   (`single(0, stepLen)`), so the through-map arm math places the take at
@@ -635,6 +687,24 @@ untouched — successors name STEP indices, which the template keeps). The
 ROOT's own sequence is persisted as the `sequence` block of the root's
 own node record (`root`), applied after Q; version-1 bundles'
 bundle-level `rootSequence` still loads.
+
+**One reader.** A song arrives from the bridge, a session and a track
+template in one wire shape, read by one function,
+`Sequence::fromVar(block, keys, to_samples, dropped)`
+(`src/sequence.h`): the dialects differ only in their key set
+(`kSampleKeys` — lengths in samples, the bridge; `kQKeys` — lengths in
+Q, the files) and in how a length becomes samples. It COUNTS what it
+leaves out (`Sequence::Dropped`: steps past the 64-step limit, steps
+with no length, successors that name no step of the block or carry no
+weight). The two kinds of caller differ only in what they do with that
+count: **`setSequence` is strict** — anything dropped refuses the whole
+edit, with the reason; **a load keeps what it can** — a session or a
+template whose block is damaged loads the steps that are sound, logs
+one line, and the rest of the project loads with it. An entry is read
+as the engine has always read it: `to` and `w` are whole numbers (a
+fraction truncates toward zero), an entry with no `w` weighs 1, and one
+whose weight is not positive or whose target is no step names nothing
+(golden `sequence_program_cases`; the JS twin reads the same).
 
 **UI.** While the program is periodic the grid's COLUMNS are its visits
 in program order — a deterministic loop plays each step at most once, so

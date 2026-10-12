@@ -3,7 +3,8 @@
 > Status: **spec** — owner-ratified 2026-07-19f (both forks ruled:
 > birth at first committed take; continuous mirror). Implemented the
 > same night: `src/project_manager.{h,cc}`, session_io SaveOptions,
-> bridge + mock + UI. Pinned by `tests/project_manager_tests.cc`.
+> bridge + mock + UI. Pinned by `tests/project_manager_tests.cc` and
+> `tests/project_lifecycle_tests.cc`.
 
 The design distills the owner's Ableton workflow (template → seed take →
 build → save-as-date) into three rules.
@@ -39,6 +40,16 @@ from the first take, **a template is pre-Q by construction** — loading
 one drops you exactly at the top of the ritual: play the seed on
 whichever instrument wants to start, Q is born, build.
 
+- **A template has an id and a name, like a project.** The NAME is what
+  was typed and lives in its session.json. The ID is its folder: the
+  name's legal-file-name form (`createLegalFileName`), so a name is
+  never used as a path. A name with nothing legal in it — or only dots
+  (`.`, `..`) — is refused. `listTemplates` answers `{id, name, path}`
+  and `newProjectFromTemplate` takes the id. Re-saving a name
+  overwrites its template.
+- **Loading a template is a fresh UNBORN session**: the seed take
+  births — and names — the project.
+
 ## Rule 3 — Save is a mirror, not an event
 
 - **Birth at the first committed take** (owner ruling): the dated
@@ -51,16 +62,56 @@ whichever instrument wants to start, Q is born, build.
   is exactly the mismatch that triggers the one legitimate rewrite.
   session.json rewrites on each heartbeat tick (3 s, message thread),
   never while a take is in flight (transient state is not saved).
+- **The mirror is flushed wherever a session is about to be replaced
+  or dropped** (`ProjectManager::flush()`: birth if a take has
+  committed, then mirror; a no-op while a take is in flight). The
+  heartbeat is "return idle takes' storage to exact size, then flush";
+  the same flush runs at the top of opening another project and of
+  new-from-template, and when the app quits — so the last edits made
+  between two ticks are on disk before anything replaces them.
+- **A take that cannot be written fails the save.** `save` answers
+  false (and logs) when any take WAV could not be written; the clip's
+  files stay marked dirty, so the next mirror tries again. Only an
+  incremental (mirror) save that wrote every take clears that mark — a
+  save to another folder never does. session.json is still written.
 - **A crash loses at most the take in flight.**
 - ⌘S remains as "checkpoint now" — and an explicit ⌘S before the
   first take is intent enough to birth the project early.
 
+## Loading replaces; it never merges
+
+A load puts the live root into the state the bundle describes, whatever
+the previous project left there:
+
+- a root record with no rack gets the DEFAULT rack; one with no usable
+  song — no step of positive length — gets NO song, and the
+  song-bypass flag is reset with it;
+- every node's top and re-time load, the root's included (absent =
+  unset / as played), and a load clears the live root's;
+- racks are prepared at the DEVICE's rate, whatever rate the bundle was
+  saved at (vst3.md §3.2);
+- a take whose WAV exists but cannot be opened loads EMPTY, and a LATER
+  take whose WAV is missing loads silent in its slot (so `activeTake`
+  and the comp keep naming the takes that were saved); the session
+  still loads;
+- a damaged song block loads the steps that are sound (sequencer.md
+  §14);
+- the undo history starts afresh, and placeholder plugins the registry
+  knows are revived (vst3.md §6).
+
+Pinned by `tests/session_io_tests.cc` and
+`tests/session_negative_tests.cc`.
+
 ## The launch ritual
 
-- **Boot EMPTY** (Q17). There is no seeded "Track 1" and no default
-  template loaded at startup. `R` creates and arms the default track;
-  every `+` is a template picker. Whole-session templates stay an
-  explicit save-as / new-from choice in the Project menu.
+- **Boot EMPTY, always** (Q17). There is no seeded "Track 1", no
+  default template and no "last template" remembered between launches:
+  nothing is loaded at startup, and nothing on disk names a session or
+  a template to load.
+  `R` creates and arms the default track; every `+` is a template
+  picker. Whole-session templates stay an explicit save-as / new-from
+  choice in the Project menu — "Save as template" says where the
+  template is then found (Project ▾ → New from template).
 - **PER-TRACK RECORD, no global button**: the track's ● is THE record
   verb — the core journey is "song looping → ＋ Track → hit its ● →
   recording at the next boundary". A group's ● records all
@@ -98,7 +149,13 @@ whichever instrument wants to start, Q is born, build.
 - Bridge: `getProjectInfo`, `renameProject`, `saveProjectNow`,
   `listTemplates`, `listRecentProjects`, `newProjectFromTemplate`,
   `openProjectPath`, `saveAsTemplate`, `duplicateProject` (3-place
-  contract: protocol.js ↔ main_component.cc ↔ mock).
+  contract: protocol.js ↔ bridge_dispatch.cc ↔ mock). The listings
+  answer records and arrays (not JSON text); the verbs that can fail
+  answer whether they applied, and the menu's status line reads that
+  answer (ui.md "The answer law"). `loadSession(path)` with a path goes
+  through `openProject` like every other open; with none it is the
+  native chooser. One native chooser shows at a time: opening another
+  closes the one still up and answers its call as cancelled.
 
 ## Deferred (recorded, not designed away)
 

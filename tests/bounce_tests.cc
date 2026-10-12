@@ -3,13 +3,14 @@
  * offline.
  *
  * The golden drives a ramp-input take through the real device callback
- * (every recorded sample encodes its own index — the content-frame
- * method, tests/content_frame_tests.cc), bounces the root, then drives
- * the LIVE callback from the same frame top over the same cycle and
- * asserts the WAV equals the speakers sample for sample. Around it: a
- * windowed group spans exactly its effective period, a live take
- * refuses the bounce, and an echo tail rings past the span and ends
- * under the −90 dBFS floor.
+ * (every recorded sample encodes its own index: test_utils.h
+ * EngineRig), bounces the root, then drives the LIVE callback from the
+ * same frame top over the same cycle and asserts the WAV equals the
+ * speakers sample for sample. Around it: a windowed group spans exactly
+ * its effective period, a live take refuses the bounce, an echo tail
+ * rings past the span and ends under the −90 dBFS floor, and a loop
+ * bounced from its top - or from any named start - is its own pass,
+ * rotated.
  */
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -17,79 +18,29 @@
 
 #include <algorithm>
 #include <cmath>
-#include <memory>
-#include <vector>
+#include <optional>
 
 #include "../src/audio_engine.h"
 #include "../src/stack_node.h"
 #include "test_utils.h"
 
-using celestrian::test_utils::freshTempDir;
-using celestrian::test_utils::nodesOf;
-
 namespace {
 
-const int BLOCK = 512;
-const int64_t RAMP_P = int64_t{1} << 22;  // longer than any take here
+using celestrian::test_utils::addNode;
+using celestrian::test_utils::clipOf;
+using celestrian::test_utils::deepProp;
+using celestrian::test_utils::EngineRig;
+using celestrian::test_utils::findVar;
+using celestrian::test_utils::mod;
+using celestrian::test_utils::readWav;
+using celestrian::test_utils::RigInput;
+using celestrian::test_utils::rootId;
+using celestrian::test_utils::rootProp;
+
+const int BLOCK = EngineRig::BLOCK;
 /** The tail floor the engine closes a bounce on (docs/bounce.md). */
 const float TAIL_FLOOR = 3.1623e-5f;
 
-float rampAt(int64_t clock) {
-  return 0.1f + 0.8f * (float)((double)(clock % RAMP_P) / (double)RAMP_P);
-}
-
-/** Drives `total` samples through the live callback — ramp input, or
- * silence — appending both output channels when `left`/`right` are
- * given. `clock` mirrors the engine's monotonic transport. */
-void driveLive(AudioEngine& engine, int64_t total, int64_t& clock,
-               bool ramp_input, std::vector<float>* left = nullptr,
-               std::vector<float>* right = nullptr) {
-  std::vector<float> in((size_t)BLOCK), l((size_t)BLOCK), r((size_t)BLOCK);
-  float* ins[] = {in.data()};
-  float* outs[] = {l.data(), r.data()};
-  int64_t remaining = total;
-  while (remaining > 0) {
-    const int n = (int)std::min<int64_t>(remaining, BLOCK);
-    for (int i = 0; i < n; ++i)
-      in[(size_t)i] = ramp_input ? rampAt(clock + i) : 0.0f;
-    engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-    if (left != nullptr) left->insert(left->end(), l.begin(), l.begin() + n);
-    if (right != nullptr)
-      right->insert(right->end(), r.begin(), r.begin() + n);
-    clock += n;
-    remaining -= n;
-  }
-}
-
-juce::var findVar(const juce::var& node, const juce::String& id) {
-  if (node.getProperty("id", "").toString() == id) return node;
-  if (auto* kids = node.getProperty("nodes", juce::var()).getArray())
-    for (auto& k : *kids) {
-      juce::var hit = findVar(k, id);
-      if (!hit.isVoid()) return hit;
-    }
-  return {};
-}
-void clipIdsUnder(const juce::var& node, juce::StringArray& out) {
-  if (node.getProperty("type", "").toString() == "clip") {
-    out.add(node.getProperty("id", "").toString());
-    return;
-  }
-  if (auto* kids = node.getProperty("nodes", juce::var()).getArray())
-    for (auto& k : *kids) clipIdsUnder(k, out);
-}
-juce::String lastTopLevelId(AudioEngine& e) {
-  const juce::var state = e.getGraphState();
-  auto* nodes = nodesOf(state);
-  if (nodes == nullptr || nodes->isEmpty()) return {};
-  return nodes->getLast().getProperty("id", "").toString();
-}
-juce::String rootId(AudioEngine& e) {
-  return e.getGraphState().getProperty("id", "").toString();
-}
-int64_t rootProp(AudioEngine& e, const char* prop) {
-  return (int64_t)(double)e.getGraphState().getProperty(prop, 0);
-}
 /** The slot uuid of the first `type` slot on a node's published chain. */
 juce::String slotIdOf(AudioEngine& e, const juce::String& uuid,
                       const juce::String& type) {
@@ -102,20 +53,6 @@ juce::String slotIdOf(AudioEngine& e, const juce::String& uuid,
         return entry.getProperty("slot", "").toString();
   return {};
 }
-int64_t mod(int64_t a, int64_t m) { return ((a % m) + m) % m; }
-
-/** Reads a WAV whole; an empty buffer when the file cannot be read. */
-juce::AudioBuffer<float> readWav(const juce::File& file, double* rate_out) {
-  juce::WavAudioFormat fmt;
-  std::unique_ptr<juce::AudioFormatReader> reader(
-      fmt.createReaderFor(file.createInputStream().release(), true));
-  if (reader == nullptr) return {};
-  if (rate_out != nullptr) *rate_out = reader->sampleRate;
-  juce::AudioBuffer<float> audio((int)reader->numChannels,
-                                 (int)reader->lengthInSamples);
-  reader->read(&audio, 0, (int)reader->lengthInSamples, 0, true, true);
-  return audio;
-}
 
 float peakOf(const juce::AudioBuffer<float>& audio, int start, int n) {
   float peak = 0.0f;
@@ -124,16 +61,27 @@ float peakOf(const juce::AudioBuffer<float>& audio, int start, int n) {
   return peak;
 }
 
-/** Records one ramp take of `D` samples on `target` (a clip or a
- * group); returns with the take committed and one block settled. */
-void recordTake(AudioEngine& engine, const juce::String& target, int64_t D,
-                int64_t& clock) {
-  engine.startRecordingInNode(target);
-  driveLive(engine, D, clock, /*ramp_input=*/true);
-  engine.stopRecordingInNode(target);  // first take: immediate commit
-  driveLive(engine, BLOCK, clock, /*ramp_input=*/true);
-  // Mirror the engine clock exactly from here on.
-  clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
+/** Samples, on either side, where one pass of `file` is not `pass`
+ * rotated by `shift`: file[i] against pass[(i + shift) mod span]. The
+ * ramp steps 1.9e-7 a sample and the tolerance sits under one step, so
+ * a render one sample out of place counts; a buffer shorter than the
+ * pass fails whole. */
+int passErrors(const juce::AudioBuffer<float>& file,
+               const juce::AudioBuffer<float>& pass, int64_t span,
+               int64_t shift = 0) {
+  if (file.getNumSamples() < span || pass.getNumSamples() < span) {
+    return (int)(2 * span);
+  }
+  int bad = 0;
+  for (int64_t i = 0; i < span; ++i) {
+    for (int ch = 0; ch < 2; ++ch) {
+      if (std::abs(file.getSample(ch, (int)i) -
+                   pass.getSample(ch, (int)mod(i + shift, span))) > 1e-7f) {
+        ++bad;
+      }
+    }
+  }
+  return bad;
 }
 
 }  // namespace
@@ -142,68 +90,78 @@ class BounceTests : public juce::UnitTest {
  public:
   BounceTests() : juce::UnitTest("Bounce (Q19)") {}
 
+  /** Bounces `id` to `name` in the test's folder - from `start` when
+   * given - and answers the file's audio; the bounce must succeed. */
+  juce::AudioBuffer<float> bounced(AudioEngine& engine, const juce::String& id,
+                                   const juce::String& name,
+                                   const juce::String& what,
+                                   std::optional<int64_t> start = std::nullopt,
+                                   double* rate = nullptr) {
+    const juce::File wav = dir.getChildFile(name);
+    expect(engine.bounce(id, wav.getFullPathName(), start), what);
+    return readWav(wav, rate);
+  }
+
+  /** One `span` of the live callback, the input silent, from the next
+   * moment the transport stands at `top` (mod span). */
+  juce::AudioBuffer<float> liveFrom(EngineRig& rig, int64_t top, int64_t span,
+                                    const juce::String& what) {
+    rig.drive(mod(top - rig.clock, span), nullptr, RigInput::Silence);
+    expectEquals(mod(rig.engine.transportClock() - top, span), (int64_t)0,
+                 what);
+    const EngineRig::Heard heard = rig.hear(span, RigInput::Silence);
+    juce::AudioBuffer<float> live(2, (int)span);
+    live.copyFrom(0, 0, heard.left.data(), (int)span);
+    live.copyFrom(1, 0, heard.right.data(), (int)span);
+    return live;
+  }
+
   void runTest() override {
     const int64_t D = 40000;  // one take, under 1 s at 44.1k
-    const juce::File dir = freshTempDir("bounce");
+    dir = celestrian::test_utils::freshTempDir("bounce");
 
     beginTest("GOLDEN: the bounced root equals the live render of one cycle");
     {
-      AudioEngine engine;
-      int64_t clock = 0;
-      engine.createNode("stack");
-      const juce::String stack_id = lastTopLevelId(engine);
-      engine.createNode("clip", stack_id);
-      engine.createNode("clip", stack_id);
-      juce::StringArray ids;
-      clipIdsUnder(findVar(engine.getGraphState(), stack_id), ids);
-      recordTake(engine, stack_id, D, clock);
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
+      const juce::String stack_id = addNode(engine, "stack");
+      const juce::String left_id = addNode(engine, "clip", stack_id);
+      const juce::String right_id = addNode(engine, "clip", stack_id);
+      rig.record(stack_id, D);
       expectEquals(rootProp(engine, "quantum"), D, "Q := D");
       // A little stereo: one member left, one right, so both channels
       // carry distinct content.
-      engine.setNodePan(ids[0], -0.6);
-      engine.setNodePan(ids[1], 0.4);
+      engine.setNodePan(left_id, -0.6);
+      engine.setNodePan(right_id, 0.4);
 
-      const juce::File wav = dir.getChildFile("song.wav");
-      expect(engine.bounce(rootId(engine), wav.getFullPathName()),
-             "bounce of the root succeeds");
       double rate = 0.0;
-      const juce::AudioBuffer<float> file = readWav(wav, &rate);
+      const juce::AudioBuffer<float> file =
+          bounced(engine, rootId(engine), "song.wav",
+                  "bounce of the root succeeds", std::nullopt, &rate);
       expectEquals(file.getNumChannels(), 2, "stereo");
       expectEquals(rate, 44100.0, "the device rate");
       const int64_t span = D;  // effective cycle = Q = D
       expect(file.getNumSamples() >= span, "the file covers the span");
 
-      // The live twin: from a clock ≡ zero (the bounce's frame top),
-      // one cycle through the device callback.
-      const int64_t zero = rootProp(engine, "islandZero");
-      driveLive(engine, mod(zero - clock, span), clock, false);
-      expectEquals(mod(clock - zero, span), (int64_t)0, "at the cycle top");
-      std::vector<float> live_l, live_r;
-      driveLive(engine, span, clock, false, &live_l, &live_r);
-
-      int bad = 0;
-      float loud = 0.0f;
-      for (int64_t i = 0; i < span; ++i) {
-        const float l = file.getSample(0, (int)i);
-        const float r = file.getSample(1, (int)i);
-        if (std::abs(l - live_l[(size_t)i]) > 1e-6f) ++bad;
-        if (std::abs(r - live_r[(size_t)i]) > 1e-6f) ++bad;
-        loud = std::max(loud, std::max(std::abs(l), std::abs(r)));
-      }
-      expectEquals(bad, 0, "bounce == live render, sample for sample");
-      expect(loud > 0.05f, "the render carries the take (not silence)");
+      // The live twin: one cycle through the device callback from the
+      // bounce's frame top, the zero.
+      const juce::AudioBuffer<float> live = liveFrom(
+          rig, rootProp(engine, "islandZero"), span, "at the cycle top");
+      expectEquals(passErrors(file, live, span), 0,
+                   "bounce == live render, sample for sample");
+      expect(peakOf(file, 0, (int)span) > 0.05f,
+             "the render carries the take (not silence)");
       const int tail = file.getNumSamples() - (int)span;
       expect(tail == 0 || peakOf(file, (int)span, tail) < TAIL_FLOOR,
              "nothing rings past the span without effects");
 
-      // (c) A live take refuses the bounce: no render, no file.
-      engine.createNode("clip");
-      const juce::String armed = lastTopLevelId(engine);
+      // A live take refuses the bounce: no render, no file.
+      const juce::String armed = addNode(engine, "clip");
       engine.startRecordingInNode(armed);
       const juce::File refused = dir.getChildFile("refused.wav");
       expect(!engine.bounce(rootId(engine), refused.getFullPathName()),
              "refused while a take is armed");
-      driveLive(engine, BLOCK, clock, false);  // capture rolls
+      rig.drive(BLOCK, nullptr, RigInput::Silence);  // capture rolls
       expect(!engine.bounce(rootId(engine), refused.getFullPathName()),
              "refused while a take is recording");
       expect(!refused.exists(), "a refused bounce writes no file");
@@ -212,13 +170,12 @@ class BounceTests : public juce::UnitTest {
 
     beginTest("A windowed group spans exactly its effective period");
     {
-      AudioEngine engine;
-      int64_t clock = 0;
-      engine.createNode("stack");
-      const juce::String stack_id = lastTopLevelId(engine);
-      engine.createNode("clip", stack_id);
-      engine.createNode("clip", stack_id);
-      recordTake(engine, stack_id, D, clock);
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
+      const juce::String stack_id = addNode(engine, "stack");
+      addNode(engine, "clip", stack_id);
+      addNode(engine, "clip", stack_id);
+      rig.record(stack_id, D);
       const int64_t ws = D / 4, we = (3 * D) / 4;
       engine.setLoopPoints(stack_id, ws, we);
       const celestrian::AudioNode* node = engine.findNodeByUuidForTest(stack_id);
@@ -226,64 +183,47 @@ class BounceTests : public juce::UnitTest {
       const int64_t period = celestrian::period_law::ownPeriodOf(*node);
       expectEquals(period, we - ws, "effective period = the window");
 
-      const juce::File wav = dir.getChildFile("group.wav");
-      expect(engine.bounce(stack_id, wav.getFullPathName()),
-             "bounce of the group succeeds");
-      const juce::AudioBuffer<float> file = readWav(wav, nullptr);
+      const juce::AudioBuffer<float> file = bounced(
+          engine, stack_id, "group.wav", "bounce of the group succeeds");
       expectEquals((int64_t)file.getNumSamples(), period,
                    "the file is one effective period, no tail");
       expect(peakOf(file, 0, (int)period) > 0.05f, "the window's content");
     }
 
-    // Audit D15-1: ONE frame-top law for every node. The root is never
-    // anchored, so its frame top is the zero — plus a0 under a root
-    // window: the bounce starts where the window starts, not where the
-    // island cycle wraps (from the zero a [D/4, 3D/4) window would have
-    // started 3D/4 in — inside the rest, silent).
+    // One frame-top law for every node: the root is never anchored, so
+    // its frame top is the zero, plus a0 under a root window. The bounce
+    // starts where the window starts, not where the island cycle wraps
+    // (from the zero, a [D/4, 3D/4) window would open 3D/4 in: inside
+    // the rest, silent).
     beginTest("GOLDEN: a windowed ROOT bounces from its window top (zero + a0)");
     {
-      AudioEngine engine;
-      int64_t clock = 0;
-      engine.createNode("clip");
-      const juce::String clip_id = lastTopLevelId(engine);
-      recordTake(engine, clip_id, D, clock);
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
+      rig.recordClip(D);
       expectEquals(rootProp(engine, "quantum"), D, "Q := D");
       // A root window [D/4, 3D/4): period D/2 divides Q (coherent),
       // a0 = D/4; the island cycle stays lcm(Q, D/2) = D.
       engine.setLoopPoints(rootId(engine), D / 4, (3 * D) / 4);
       expectEquals(rootProp(engine, "loopStart"), D / 4, "the root window holds");
 
-      const juce::File wav = dir.getChildFile("root_window.wav");
-      expect(engine.bounce(rootId(engine), wav.getFullPathName()),
-             "bounce of the windowed root succeeds");
-      const juce::AudioBuffer<float> file = readWav(wav, nullptr);
+      const juce::AudioBuffer<float> file =
+          bounced(engine, rootId(engine), "root_window.wav",
+                  "bounce of the windowed root succeeds");
       const int64_t span = D;  // one effective island cycle
       expect(file.getNumSamples() >= span, "the file covers the cycle");
-
-      // The live twin from a clock ≡ zero + a0 (the window top).
-      const int64_t top = rootProp(engine, "islandZero") + D / 4;
-      driveLive(engine, mod(top - clock, span), clock, false);
-      expectEquals(mod(clock - top, span), (int64_t)0, "at the window top");
-      std::vector<float> live_l, live_r;
-      driveLive(engine, span, clock, false, &live_l, &live_r);
-
-      int bad = 0;
-      float loud_head = 0.0f;
-      for (int64_t i = 0; i < span; ++i) {
-        const float l = file.getSample(0, (int)i);
-        const float r = file.getSample(1, (int)i);
-        if (std::abs(l - live_l[(size_t)i]) > 1e-6f) ++bad;
-        if (std::abs(r - live_r[(size_t)i]) > 1e-6f) ++bad;
-        if (i < D / 8) loud_head = std::max(loud_head, std::abs(l));
-      }
-      expectEquals(bad, 0, "bounce == live render from the window top");
-      expect(loud_head > 0.05f,
+      const juce::AudioBuffer<float> live =
+          liveFrom(rig, rootProp(engine, "islandZero") + D / 4, span,
+                   "at the window top");
+      expectEquals(passErrors(file, live, span), 0,
+                   "bounce == live render from the window top");
+      expect(file.getMagnitude(0, 0, (int)(D / 8)) > 0.05f,
              "the file OPENS with the window's content (not the rest)");
     }
 
     beginTest("Refused with no committed content");
     {
-      AudioEngine engine;
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
       engine.createNode("clip");
       const juce::File wav = dir.getChildFile("empty.wav");
       expect(!engine.bounce(rootId(engine), wav.getFullPathName()),
@@ -298,11 +238,10 @@ class BounceTests : public juce::UnitTest {
       // The render buffer is sized from the span: a saturated lcm or a
       // merely huge effective period must be refused before any
       // allocation, exactly where the arm path caps the same quantity.
-      AudioEngine engine;
-      engine.createNode("clip");
-      const juce::String id = celestrian::test_utils::firstNodeId(engine);
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(
-          engine.findNodeByUuidForTest(id));
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
+      const juce::String id = addNode(engine, "clip");
+      auto* clip = clipOf(engine, id);
       expect(clip != nullptr, "clip found");
       if (clip != nullptr) {
         // The clip's effective period is its intrinsic duration: stamp
@@ -318,19 +257,15 @@ class BounceTests : public juce::UnitTest {
 
     beginTest("TAIL: an echo rings past the span and ends under -90 dBFS");
     {
-      AudioEngine engine;
-      int64_t clock = 0;
-      engine.createNode("clip");
-      const juce::String clip_id = lastTopLevelId(engine);
-      recordTake(engine, clip_id, D, clock);
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
+      const juce::String clip_id = rig.recordClip(D);
       const juce::String echo = slotIdOf(engine, clip_id, "echo");
       expect(echo.isNotEmpty(), "the clip's chain carries an echo slot");
       engine.setSlotEnabled(clip_id, echo, true);
 
-      const juce::File wav = dir.getChildFile("echo.wav");
-      expect(engine.bounce(clip_id, wav.getFullPathName()),
-             "bounce of the clip succeeds");
-      const juce::AudioBuffer<float> file = readWav(wav, nullptr);
+      const juce::AudioBuffer<float> file = bounced(
+          engine, clip_id, "echo.wav", "bounce of the clip succeeds");
       const int n = file.getNumSamples();
       expect(n > (int)D, "the file is longer than the span (the tail)");
       expect(n - (int)D < 44100 * 10, "the tail closes before the cap");
@@ -341,129 +276,61 @@ class BounceTests : public juce::UnitTest {
              "the last block is under the floor");
     }
 
-    // THE ↺ (loop_selection.md §9; owner, 2026-09-24): "Bounce
-    // selected…" on a clip opens on the loop's one — its top's moment —
-    // not on the splice. The loop is periodic, so the topped file is the
-    // plain one rotated by the top's heard offset, sample for sample
-    // (the ramp take makes every sample distinct).
-    beginTest("A clip bounces from its ↺ top, not from the splice");
-    {
-      AudioEngine engine;
-      int64_t clock = 0;
-      engine.createNode("clip");
-      recordTake(engine, lastTopLevelId(engine), D, clock);  // Q := D
-      engine.createNode("clip");
-      const juce::String b = lastTopLevelId(engine);
-      // A second take arms on the next Q line and stops on one: drive
-      // well past both, then let the commit settle.
-      engine.startRecordingInNode(b);
-      driveLive(engine, 5 * D, clock, /*ramp_input=*/true);
-      engine.stopRecordingInNode(b);
-      driveLive(engine, 2 * D, clock, /*ramp_input=*/true);
-      engine.setLoopPoints(b, D, 3 * D);  // loop [1Q, 3Q): one pass is 2Q
-      const int64_t span = 2 * D;
-
-      const juce::File plain = dir.getChildFile("plain.wav");
-      expect(engine.bounce(b, plain.getFullPathName()), "bounce, top unset");
-      const int64_t h = D / 2;  // the ↺ half a Q into the loop
-      engine.setTiming(b, 0, D + h);  // stores the top; moves no audio
-      const juce::File topped = dir.getChildFile("topped.wav");
-      expect(engine.bounce(b, topped.getFullPathName()), "bounce, top set");
-
-      const juce::AudioBuffer<float> f0 = readWav(plain, nullptr);
-      const juce::AudioBuffer<float> f1 = readWav(topped, nullptr);
-      expect(f0.getNumSamples() >= span && f1.getNumSamples() >= span,
-             "both files cover one pass");
-      int bad = 0;
-      for (int64_t i = 0; i < span; ++i) {
-        for (int ch = 0; ch < 2; ++ch) {
-          if (std::abs(f1.getSample(ch, (int)i) -
-                       f0.getSample(ch, (int)mod(i + h, span))) > 1e-6f) {
-            ++bad;
-          }
-        }
+    // The loop top (loop_selection.md §9): "Bounce selected…" opens on
+    // the loop's one — its top's moment — not on the splice, for a clip
+    // and for a group alike (the top lives on AudioNode). The loop is
+    // periodic, so the topped file is the plain one rotated by the top's
+    // heard offset, sample for sample (the ramp take makes every sample
+    // distinct).
+    beginTest("A clip and a group each bounce from their (top), not from "
+              "the splice");
+    for (const bool group : {false, true}) {
+      const juce::String tag = group ? "group" : "clip";
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
+      rig.recordClip(D);  // Q := D
+      const juce::String id = addNode(engine, group ? "stack" : "clip");
+      if (group) {
+        addNode(engine, "clip", id);
+        addNode(engine, "clip", id);
       }
-      expectEquals(bad, 0, "the topped file is the plain one, rotated to the ↺");
-      expect(peakOf(f1, 0, (int)span) > 0.05f, "the render carries the take");
-    }
-
-    // A GROUP's top is a clip's (fractal, owner 2026-09-29: the top
-    // lives on AudioNode), so the DEFAULT start is its ↺ too. Until
-    // 2026-10-01 the offset was read off clips alone, and a group
-    // bounced from its splice whatever its ↺ said.
-    beginTest("A group bounces from its ↺ top too");
-    {
-      AudioEngine engine;
-      int64_t clock = 0;
-      engine.createNode("clip");
-      recordTake(engine, lastTopLevelId(engine), D, clock);  // Q := D
-      engine.createNode("stack");
-      const juce::String g = lastTopLevelId(engine);
-      engine.createNode("clip", g);
-      engine.createNode("clip", g);
-      engine.startRecordingInNode(g);
-      driveLive(engine, 5 * D, clock, /*ramp_input=*/true);
-      engine.stopRecordingInNode(g);
-      driveLive(engine, 2 * D, clock, /*ramp_input=*/true);
-      engine.setLoopPoints(g, D, 3 * D);  // loop [1Q, 3Q): one pass is 2Q
+      rig.record(id, 5 * D);
+      engine.setLoopPoints(id, D, 3 * D);  // loop [1Q, 3Q): one pass is 2Q
       const int64_t span = 2 * D;
-      const celestrian::AudioNode* node = engine.findNodeByUuidForTest(g);
-      expect(node != nullptr && node->isAnchored(), "the group is anchored");
+      const celestrian::AudioNode* node = engine.findNodeByUuidForTest(id);
+      expect(node != nullptr && node->isAnchored(), tag + ": anchored");
       expectEquals(celestrian::period_law::ownPeriodOf(*node), span,
-                   "one pass of the group's loop");
+                   tag + ": one pass of its loop");
 
-      const juce::File plain = dir.getChildFile("group_plain.wav");
-      expect(engine.bounce(g, plain.getFullPathName()), "bounce, top unset");
-      const int64_t h = D / 2;  // the ↺ half a Q into the loop
-      engine.setTiming(g, 0, D + h);  // stores the group's top
-      expectEquals(node != nullptr ? node->effectiveTop() : -1, D + h,
-                   "the group stores its top");
-      const juce::File topped = dir.getChildFile("group_topped.wav");
-      expect(engine.bounce(g, topped.getFullPathName()), "bounce, top set");
-
-      const juce::AudioBuffer<float> f0 = readWav(plain, nullptr);
-      const juce::AudioBuffer<float> f1 = readWav(topped, nullptr);
-      expect(f0.getNumSamples() >= span && f1.getNumSamples() >= span,
-             "both files cover one pass");
-      int bad = 0;
-      for (int64_t i = 0; i < span; ++i) {
-        for (int ch = 0; ch < 2; ++ch) {
-          if (std::abs(f1.getSample(ch, (int)i) -
-                       f0.getSample(ch, (int)mod(i + h, span))) > 1e-6f) {
-            ++bad;
-          }
-        }
-      }
-      expectEquals(bad, 0, "the topped file is the plain one, rotated to the ↺");
-      expect(peakOf(f1, 0, (int)span) > 0.05f, "the render carries the take");
+      const juce::AudioBuffer<float> plain = bounced(
+          engine, id, tag + "_plain.wav", tag + ": bounce, top unset");
+      const int64_t h = D / 2;  // the top half a Q into the loop
+      engine.setTiming(id, 0, D + h);  // stores the top; moves no audio
+      expectEquals(node->effectiveTop(), D + h, tag + ": stores its top");
+      const juce::AudioBuffer<float> topped = bounced(
+          engine, id, tag + "_topped.wav", tag + ": bounce, top set");
+      expectEquals(passErrors(topped, plain, span, h), 0,
+                   tag + ": the topped file is the plain one, rotated to "
+                         "the (top)");
+      expect(peakOf(topped, 0, (int)span) > 0.05f,
+             tag + ": the render carries the take");
     }
 
-    // A NAMED START (docs/bounce.md; owner, 2026-10-01): the app names
-    // the start of "Bounce selected…" — the ↺ AS SHOWN, which on a loop
-    // that slots into the frame is the FRAME's top: a moment that is
-    // not the node's own top, and may lie before the node's origin (the
-    // frame is seated from another loop). The render is the kernel
-    // equation at absolute time, so one pass from ANY moment is the
-    // loop's own pass, rotated — for a window, a cut map and a group.
+    // A named start (docs/bounce.md): the app names the start of "Bounce
+    // selected…" — the ↺ AS SHOWN, which on a loop that slots into the
+    // frame is the FRAME's top: a moment that is not the node's own top,
+    // and may lie before the node's origin (the frame is seated from
+    // another loop). The render is the kernel equation at absolute time,
+    // so one pass from ANY moment is the loop's own pass, rotated — for
+    // a window, a cut map and a group.
     beginTest("A named start: one pass from any moment is the loop's pass, rotated");
     {
-      AudioEngine engine;
-      int64_t clock = 0;
-      engine.createNode("clip");
-      recordTake(engine, lastTopLevelId(engine), D, clock);  // Q := D
-      const auto longTake = [&](const juce::String& id) {
-        engine.startRecordingInNode(id);
-        driveLive(engine, 5 * D, clock, /*ramp_input=*/true);
-        engine.stopRecordingInNode(id);
-        driveLive(engine, 2 * D, clock, /*ramp_input=*/true);
-      };
-      engine.createNode("clip");
-      const juce::String win = lastTopLevelId(engine);
-      longTake(win);
+      EngineRig rig;
+      AudioEngine& engine = rig.engine;
+      rig.recordClip(D);  // Q := D
+      const juce::String win = rig.recordClip(5 * D);
       engine.setLoopPoints(win, D, 3 * D);  // a window: [1Q, 3Q)
-      engine.createNode("clip");
-      const juce::String cut = lastTopLevelId(engine);
-      longTake(cut);
+      const juce::String cut = rig.recordClip(5 * D);
       {
         celestrian::timing::TimeMap m;  // a cut map: [1Q, 2Q) ∪ [3Q, 4Q)
         m.n = 2;
@@ -471,25 +338,22 @@ class BounceTests : public juce::UnitTest {
         m.segs[1] = {3 * D, 4 * D};
         engine.setSegments(cut, m);
       }
-      engine.createNode("stack");
-      const juce::String grp = lastTopLevelId(engine);
-      engine.createNode("clip", grp);
-      engine.createNode("clip", grp);
-      longTake(grp);
+      const juce::String grp = addNode(engine, "stack");
+      addNode(engine, "clip", grp);
+      addNode(engine, "clip", grp);
+      rig.record(grp, 5 * D);
       engine.setLoopPoints(grp, D, 3 * D);  // a group's window: [1Q, 3Q)
 
       const int64_t span = 2 * D;  // each loop's one pass
       int n = 0;
       for (const juce::String& id : {win, cut, grp}) {
         const juce::String tag = "named" + juce::String(n++);
-        const juce::var v = findVar(engine.getGraphState(), id);
-        const int64_t origin = (int64_t)(double)v.getProperty("origin", 0);
+        const int64_t origin = (int64_t)deepProp(engine, id, "origin");
         const int64_t top0 = origin + D;  // origin + a0: the default start
-        const juce::File plain = dir.getChildFile(tag + "_plain.wav");
-        expect(engine.bounce(id, plain.getFullPathName()), tag + ": the default");
-        const juce::AudioBuffer<float> f0 = readWav(plain, nullptr);
-        expect(f0.getNumSamples() >= span, tag + ": covers one pass");
-        expect(peakOf(f0, 0, (int)span) > 0.05f, tag + ": carries the take");
+        const juce::AudioBuffer<float> plain =
+            bounced(engine, id, tag + "_plain.wav", tag + ": the default");
+        expect(plain.getNumSamples() >= span, tag + ": covers one pass");
+        expect(peakOf(plain, 0, (int)span) > 0.05f, tag + ": carries the take");
         // Named AT the default start (the same file); later in the
         // pass; whole passes later; before the take began; and before
         // the clock's own zero (a seek moves origins, never the clock,
@@ -497,22 +361,13 @@ class BounceTests : public juce::UnitTest {
         for (const int64_t k :
              {int64_t{0}, D / 3, 3 * span + D / 3, -(span + D / 4),
               -(origin + 7 * D)}) {
-          const juce::File named = dir.getChildFile(tag + "_at.wav");
-          expect(engine.bounce(id, named.getFullPathName(), top0 + k),
-                 tag + ": bounce from a named start");
-          const juce::AudioBuffer<float> f1 = readWav(named, nullptr);
-          expectEquals((int64_t)f1.getNumSamples(), (int64_t)f0.getNumSamples(),
+          const juce::AudioBuffer<float> named =
+              bounced(engine, id, tag + "_at.wav",
+                      tag + ": bounce from a named start", top0 + k);
+          expectEquals((int64_t)named.getNumSamples(),
+                       (int64_t)plain.getNumSamples(),
                        tag + ": one pass, the same length");
-          int bad = 0;
-          for (int64_t i = 0; i < span && i < f1.getNumSamples(); ++i) {
-            for (int ch = 0; ch < 2; ++ch) {
-              if (std::abs(f1.getSample(ch, (int)i) -
-                           f0.getSample(ch, (int)mod(i + k, span))) > 1e-6f) {
-                ++bad;
-              }
-            }
-          }
-          expectEquals(bad, 0,
+          expectEquals(passErrors(named, plain, span, k), 0,
                        tag + ": the default pass, rotated by " + juce::String(k));
         }
       }
@@ -520,6 +375,9 @@ class BounceTests : public juce::UnitTest {
 
     dir.deleteRecursively();
   }
+
+ private:
+  juce::File dir;  // the test's folder of bounced files
 };
 
 static BounceTests bounceTests;

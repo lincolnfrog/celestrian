@@ -1,10 +1,9 @@
 /**
- * Display schema for the built-in effect rack (src/dsp/effects.h).
- *
- * The engine owns the truth (ranges are clamped there too); this is the
- * UI's rendering of the same fixed rack, in the same canonical order
- * EQ → Compressor → Echo → Reverb. Keys match the metadata the engine
- * publishes on every node under `effects`.
+ * Display schema for the built-in effects: each card's sliders — the
+ * param key the engine publishes on a slot, its range, step and
+ * readout — in the engine's canonical order. The engine owns the
+ * params and clamps to the same ranges (src/dsp/fx_chain.cc);
+ * effect_contract.test.mjs holds the two together.
  */
 
 const db = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + ' dB';
@@ -29,8 +28,7 @@ export const EFFECT_SCHEMA = [
             { key: 'ratio', label: 'ratio', min: 1, max: 20, step: 0.5, fmt: ratio },
             { key: 'attack', label: 'atk', min: 0.1, max: 100, step: 0.1, fmt: ms },
             { key: 'release', label: 'rel', min: 10, max: 1000, step: 5, fmt: ms },
-            // Output trim: makeup convention is raise-only (compression
-            // removes level; this restores it) but cutting is useful too
+            // An output trim: it may cut as well as raise.
             { key: 'makeup', label: 'gain', min: -12, max: 24, step: 0.5, fmt: db },
         ],
     },

@@ -1,23 +1,17 @@
 /**
- * Audio device pickers (docs/performance.md §4), hosted by the
- * preferences panel (preferences.js renders them into
- * #audio-device-host on open).
+ * Audio device pickers (docs/performance.md §4), rendered into the
+ * preferences panel's #audio-device-host when it opens.
  *
- * Why this exists: whatever Windows calls the default input is a
- * 2-channel endpoint. Worse, a multi-channel
- * interface's WDM driver publishes each pair as its OWN stereo endpoint
- * ("MOTU Analog 1-2", "Analog 3-4", …) and Windows opens one at a time —
- * so on WASAPI there is NO device that gives you 8 inputs. Only the ASIO
- * driver type presents the interface whole. That makes the driver TYPE
- * the primary control here, not an advanced afterthought.
+ * The driver TYPE is the primary control. On Windows a multi-channel
+ * interface's WDM driver publishes each stereo pair as its own
+ * endpoint ("Analog 1-2", "Analog 3-4", …) and Windows opens one at a
+ * time: only the ASIO type presents the interface whole. The engine
+ * persists the choice.
  *
- * The selection is persisted by the engine (audio_device.xml), so this
- * is a launch-time ritual you perform once, not every session.
- *
- * Ordering note: type → device → rate/buffer is a dependency chain. A
- * type switch invalidates the device list, and a device switch
- * invalidates the rate/buffer lists, so every apply re-reads full state
- * from the engine rather than patching locally.
+ * type → device → rate / buffer is a dependency chain: a type switch
+ * invalidates the device list, a device switch the rate and buffer
+ * lists. So every apply re-reads the full state from the engine; none
+ * is patched locally.
  */
 
 let host = null;
@@ -30,13 +24,13 @@ export function initAudioSettings(callNativeFn, log) {
     if (log) onLog = log;
 }
 
-/** One line for the device: "MOTU 8A · 8 in · 48 kHz / 256", or the
- * no-device notice. */
-export function deviceSummary(s) {
-    if (!s || !s.currentDevice) return 'No audio device open';
-    const n = s.inputChannels || 0;
-    return `${s.currentDevice} · ${n} in · ` +
-        `${(s.currentSampleRate || 0) / 1000} kHz / ${s.currentBufferSize || 0}`;
+/** The status line for setAudioDevice's answer: "" is success, any
+ * other text the engine's error, and `null` a call that was lost. */
+export function deviceChangeVerdict(answer) {
+    if (answer === null || answer === undefined) {
+        return 'Audio device not changed — the engine did not answer';
+    }
+    return answer ? 'Audio device error: ' + answer : 'Audio device updated.';
 }
 
 /** Render the pickers into `hostEl` (re-entrant: a later call replaces
@@ -51,27 +45,9 @@ export async function renderAudioDevice(hostEl) {
     await render();
 }
 
-/** Read the full device state from the engine (getAudioDeviceState).
- *  Returns the state object, or null on failure (already logged). */
-async function fetchState() {
-    try {
-        return await callNative('getAudioDeviceState');
-    } catch (err) {
-        onLog('Audio device query failed: ' + err.message);
-        return null;
-    }
-}
-
-/**
- * Build one labelled <select> row.
- * @param {string} labelText  Row label ("Driver", "Device", …).
- * @param {Array} options     Option values; an empty/missing list renders
- *                            a disabled "—" placeholder.
- * @param {*} current         Value to pre-select (compared as strings).
- * @param {function} onChange Called with the selected value (string).
- * @param {function} [formatter] Optional value → display-text mapper.
- * @returns {HTMLLabelElement} the assembled row.
- */
+/** One labelled <select> row. `current` is pre-selected (compared as
+ * strings); `onChange` gets the chosen value as a string; `formatter`
+ * maps a value to its display text. No options renders a disabled "—". */
 function sel(labelText, options, current, onChange, formatter) {
     const row = document.createElement('label');
     row.className = 'ap-row';
@@ -97,38 +73,25 @@ function sel(labelText, options, current, onChange, formatter) {
     return row;
 }
 
-/**
- * Push a (partial) device change to the engine, then re-render from
- * freshly fetched state (never patched locally — see the ordering note
- * in the file header). All controls are disabled while the change
- * applies; errors go to the status line.
- */
+/** Push a (partial) device change to the engine, say how it went, and
+ * re-render from the state it leaves. Controls are disabled meanwhile. */
 async function apply({ type, device, sampleRate, bufferSize }) {
-    // Empty/0 mean "keep current" on the native side; a type switch
-    // deliberately sends no device so the engine picks that type's default
-    // rather than failing on a name that belongs to the other type.
+    // '' and 0 mean "keep the current one". A type switch sends no
+    // device, so the engine picks that type's default instead of
+    // failing on a name that belongs to the other type.
     host.querySelectorAll('select, button').forEach(el => (el.disabled = true));
-    try {
-        const err = await callNative('setAudioDevice',
-            type || '', device || '', sampleRate || 0, bufferSize || 0);
-        if (err) onLog('Audio device error: ' + err);
-        else onLog('Audio device updated.');
-    } catch (e) {
-        onLog('Audio device error: ' + e.message);
-    }
+    onLog(deviceChangeVerdict(await callNative('setAudioDevice',
+        type || '', device || '', sampleRate || 0, bufferSize || 0)));
     await render();
 }
 
-/**
- * (Re)build the host's contents from engine state: the four
- * dependency-chained selects (type → device → rate/buffer), the channel
- * count, the WASAPI→ASIO nudge hints, and any engine error. Safe if the
- * host left the document mid-fetch (bails), or if the engine is
- * unreachable (renders a note instead).
- */
+/** (Re)build the host from engine state: the four selects, the channel
+ * count, the ASIO hints and any engine error. Does nothing if the host
+ * left the document while the state was read; a lost read renders a
+ * note. */
 async function render() {
     if (!host) return;
-    const s = await fetchState();
+    const s = await callNative('getAudioDeviceState');
     if (!host || !host.isConnected) return;
     host.textContent = '';
 

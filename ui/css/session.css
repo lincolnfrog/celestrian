@@ -6,10 +6,13 @@
    ready — red-vs-green never carries meaning. Sized for
    instrument-in-hand: big targets, glanceable state.
    All timeline geometry arrives as PERCENTAGES of the cycle from the
-   patch layer (session_view.js) — the single Q→% scale lives there.
+   patch layer (js/session_view/) — the single Q→% scale lives there.
+
+   A rule shared by two sections is written ONCE, in one of them, and
+   the other points at it ("§N").
 
    TABLE OF CONTENTS
-    1. Design tokens & layering
+    1. Design tokens & layering (the z-index scale)
     2. Base elements
     3. App shell
     4. Transport
@@ -17,31 +20,42 @@
     6. Master monitor
     7. Transport responsive breakpoints
     8. Session grid & ruler
-    9. Lane rows & handle nav dock
+    9. Lane rows & the edit bar (the region panel)
    10. Selection & drag-to-group
-   11. Lane rail
-   12. Lane body & reps
+   11. Lane rail (controls, dials, the chips, in-rail menus)
+   12. Lane body & reps (gridlines, tiles)
    13. Map editor (cut bands, seam handles, splices + the ↺, drag preview)
    14. Lane body state accents (armed / recording)
-   15. Effects panel
+   15. Effects panel (the rack row, VST3 chips, the plugin picker)
    16. Loop window brackets & chips
-   17. Playhead
-   18. Create row & empty state
-   19. Status strip
-   20. Popovers (project menu & audio device panel)
-   21. Loading overlay
+   17. Takes (the take chip, list and comp cells)
+   18. Playhead
+   19. Create row & empty state
+   20. Status strip
+   21. Popovers (project menu, the panel chrome, preferences)
+   22. Loading overlay
+   23. Creation menu
+   24. Sequencer (the pad grid, its pips and popovers, the lane projection)
+   25. Reduced motion (every animation's opt-out, in one block)
 */
 
 /* ===== 1. Design tokens & layering ===== */
 
 /* Z-INDEX LAYERING SCALE (whole app):
-     1–8   lane internals — snap-ghost 1, dragging bracket 2, drag-live
-           win-cursor 3, cut-band 4, sticky group headers 5,
-           playhead / cut- & seam-handles / lr-splice 6, inspecting body /
-           cut-chip / lr-top / region-top 7, cut-ghost / lr-badge / lr-snap 8
-     20    in-rail popups (rename editor layer, .input-menu)
-     50    popovers (#project-menu, .audio-panel)
-     60    #selection-bar
+     1–8   lane internals —
+           1  snap-ghost bracket
+           2  dragging bracket, the panel's kept box
+           3  drag-live win-cursor, the panel / reveal sound cursors
+           4  cut-band, comp-cell
+           5  sticky group headers
+           6  playhead, cut- & seam-handles, lr-splice, the panel's brackets
+           7  inspecting / revealing lane body, cut-chip, lr-top,
+              region-top, comp-badge
+           8  cut-ghost, lr-badge, lr-snap, region-badge
+     20    in-rail menus (.input-menu, .take-menu)
+     30    the sequencer grid's popovers (.seq-fade-pop, .seq-next-pop)
+     50    popovers (#project-menu, .audio-panel, .creation-menu)
+     60    #selection-bar, .fx-picker
      9999  #loading-overlay (boot only)
    CANVAS MIRROR: js/theme.js hard-codes the TAPE / COMPOSITE / ECHO
    palettes as mirrors of --amber / --amber-group / --cyan for canvas
@@ -67,17 +81,16 @@
                                   toward cream for real group-vs-track
                                   contrast */
     --amber-dim: #8a744d;      /* odometer secondary text */
-    --cyan: #5fc9d8;           /* echoes / monitoring / ready lamp */
+    --cyan: #5fc9d8;           /* echoes / monitoring / status */
     --cyan-dim: #3f7d8c;       /* VU dial arc */
     --arm: #b06a30;            /* arm ring (reads by fill, not hue) */
     --record: #b93e24;         /* record accents (shape carries meaning) */
     --record-hi: #e06248;
 
-    /* map editor amber (cut bands, seam handles, loop-top chip) — a
-       paler gold than --amber so map chrome reads apart from material.
-       The alpha variants keep their EXACT original rgba() values (not
-       color-mix): computed-style serialization must stay byte-identical
-       for the e2e assertions. */
+    /* map editor amber (cut bands, seam handles, splices) — a paler
+       gold than --amber so map chrome reads apart from material. The
+       alpha variants are literal rgba() values, not color-mix: the e2e
+       assertions compare computed-style strings. */
     --map-amber: #e4b45a;
     --map-amber-35: rgba(228, 180, 90, 0.35);
     --map-amber-40: rgba(228, 180, 90, 0.4);
@@ -146,9 +159,6 @@ button:hover { filter: brightness(1.12); }
 button:active { filter: brightness(0.92); box-shadow: inset 0 2px 4px rgba(0,0,0,.4); }
 button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 
-/* NOTE: .mono must stay ABOVE .nav-btn — nav buttons carry both classes
-   and .nav-btn's `all: unset` wins the font-family tie only because it
-   comes later in the file. */
 .mono { font-family: var(--font-mono); }
 
 /* ===== 3. App shell ===== */
@@ -264,7 +274,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     font-size: 0.8rem;
     white-space: nowrap;
 }
-#transport .bar-btn:hover { color: var(--text); filter: brightness(1.12); }
 /* The project button carries the (arbitrarily long) project name —
    it shrinks with ellipsis rather than pushing the cluster offscreen */
 #project-menu-btn { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
@@ -282,11 +291,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     flex: 0 1 auto;
 }
 /* THE STATE-METRICS LAW, in the transport (session_view.md law 3): the
-   readout's box does not change width with what it says. A drag that
-   pins the frame while its live commits lengthen the cycle adds
-   " · loop NQ" to the digits for as long as the hand is down; sized by
-   its content alone, the odometer grew and shrank with it and pushed
-   the meters, the fader and everything after them sideways under the
+   readout's box does not change width with what it says — a drag that
+   pins the frame adds " · loop NQ" to the digits while the hand is
+   down, and the meters and fader beside it must not move under the
    pointer. An invisible template line reserves the width of the
    longest everyday readout, in the digits' own face, so the box rests
    at that width (and still grows for a longer one, and still shrinks
@@ -331,21 +338,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     flex: none;
 }
 #master-monitor .vu-pair { display: flex; gap: 10px; align-items: center; }
-/* Master fx chip (B5): the root's rack, opened from the strip — the
-   rail fx chip's family (enabled count at rest, amber when live, an
-   inset ring while its row is open). */
-#master-fx-btn {
-    width: auto;
-    min-width: 30px;
-    height: 24px;
-    padding: 0 7px;
-    border-radius: 5px;
-    font-size: 0.65rem;
-    font-weight: 600;
-    color: var(--text-dim);
-}
-#master-fx-btn.on { color: var(--tape); border-color: var(--tape); background: var(--panel-2); }
-#master-fx-btn.open { box-shadow: inset 0 0 0 1px var(--tape); }
+/* (The master fx chip, #master-fx-btn, opens the root's rack: it is
+   styled with the other chips — §11.) */
 /* Master fader: a slim vertical fader beside the meters — root-node
    gain (0..unity, the no-boost law). The grip tracks the pointer 1:1;
    double-click for unity. (A fader, not a knob: the master is a fader
@@ -482,9 +476,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
        only sets the target angle */
     transition: transform 90ms linear;
 }
-@media (prefers-reduced-motion: reduce) {
-    #master-monitor .vu .needle { transition: none; }
-}
 #master-monitor .monitor-label {
     text-align: center;
     font-family: var(--font-mono);
@@ -562,9 +553,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 #ruler .tick-label.cycle-end { transform: translateX(-100%); }
 
 /* Ruler scrub: the ruler is the transport's seek surface — click
-   teleports, drag scrubs. ew-resize says
-   "horizontal", matching the gesture; while a take is live or armed
-   the gesture is refused (engine rule) and the cursor says so. */
+   teleports, drag scrubs. ew-resize says "horizontal", matching the
+   gesture; while a take is live or armed the gesture is refused (engine
+   rule) and the cursor says so. */
 #ruler.seekable { cursor: ew-resize; }
 #ruler.seek-locked { cursor: not-allowed; }
 /* Scrub drags must not select tick labels — and the gesture must NOT
@@ -583,8 +574,37 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     pointer-events: none;
     display: none;
 }
+/* The root stack's "rail" is the ruler row's rail spacer: the session's
+   own sequencer chip (#root-seq-btn — the chips, §11) sits there, right
+   above the track rails, so the transport bar never crowds. */
+#ruler-row .rail-spacer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 4px;
+}
+/* The root's looping step, bracketed on the ruler (the root has no
+   lane to carry it). */
+.ruler-root-window {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    box-sizing: border-box;
+    border-left: 2px solid var(--cyan);
+    border-right: 2px solid var(--cyan);
+    background: color-mix(in srgb, var(--cyan) 10%, transparent);
+    pointer-events: auto;
+}
+.ruler-root-window-label {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    font-size: 0.58rem;
+    color: var(--cyan);
+    white-space: nowrap;
+}
 
-/* ===== 9. Lane rows & the region panel ===== */
+/* ===== 9. Lane rows & the edit bar (the region panel) ===== */
 #lanes { display: flex; flex-direction: column; gap: 10px; }
 .lane {
     display: grid;
@@ -592,7 +612,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     gap: 6px 12px;
 }
 
-/* THE EDIT BAR (#region-dock; loop_selection.md §15, 2026-10-08): the
+/* THE EDIT BAR (#region-dock; loop_selection.md §15): the
    SELECTED track's region panel, docked at the foot of the session
    view — Ableton's clip view. A fixed height while there are lanes, so
    selecting a track never moves a lane nor resizes the session; one
@@ -621,8 +641,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 #region-dock.open.empty > .region-dock-hint { display: flex; }
 .lane-region { height: 100%; }
-/* THE REGION PANEL (region_panel.js, 2026-09-11; zoomable since
-   2026-09-23; docked since 2026-10-08): Label | a column of the
+/* THE REGION PANEL (region_panel.js): Label | a column of the
    whole-take OVERVIEW strip (the view as a box) over the zoomable
    DETAIL strip: excluded material dimmed, the kept region a bright box
    (drag = slide) with bracket handles (drag = trim), inner cuts as
@@ -743,15 +762,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     overflow: hidden;
     touch-action: none;
 }
-/* Whole-Q gridlines (never finer — owner ruling 2026-09-23) and their
-   numbers once a Q is wide enough to carry one. */
+/* Whole-Q gridlines, never finer (.region-gridline: the lanes'
+   gridlines, §12), and their numbers once a Q is wide enough to carry
+   one. */
 .region-grid { position: absolute; inset: 0; pointer-events: none; }
-.region-gridline {
-    position: absolute; top: 0; bottom: 0;
-    width: 1px;
-    background: var(--grid);
-}
-.region-gridline.major { background: var(--grid-q4); }
 .region-qlabel {
     position: absolute;
     top: 1px;
@@ -768,13 +782,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     align-items: center;
     pointer-events: none;
 }
-/* flex: none — the visible slice's canvas is WIDER than the strip at
-   most zooms (whole peaks, translated to their exact raw position). */
+/* flex: none — the canvas keeps the width region_panel.js gives it
+   (the strip's own: the visible slice is re-sampled per view). */
 .region-wave canvas { display: block; flex: none; }
 .region-overlay {
     position: absolute;
     inset: 0;
-    pointer-events: none;   /* children opt in (the win-bracket rule) */
+    pointer-events: none;   /* children opt in (§12) */
 }
 /* The kept box: the region you can grab and slide. Bands/handles sit
    above it (z 4/6); the dims beneath it read as "not this". */
@@ -792,21 +806,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .region-kept.whole { border-color: var(--map-amber-40); }
 .region-kept:active { cursor: grabbing; }
-/* The panel's brackets: the lane bracket's shape and hit zone, under
-   their own class (region-*) so lane-scoped queries never find them. */
-.region-bracket {
-    position: absolute; top: 2px; bottom: 2px;
-    width: 8px;
-    border: 2px solid var(--tape);
-    opacity: 0.85;
-    pointer-events: auto;
-    cursor: ew-resize;
-    touch-action: none;
-    z-index: 6;
-}
-.region-bracket::after { content: ""; position: absolute; inset: -6px -9px; }
-.region-bracket.start { border-right: none; border-radius: 4px 0 0 4px; }
-.region-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
+/* The panel's brackets wear the lane bracket's shape (§16). */
+.region-bracket { opacity: 0.85; z-index: 6; }
 .region-bracket.latent { opacity: 0.35; }
 .region-strip:hover .region-bracket.latent { opacity: 0.7; }
 /* A NARROW kept box (< 3 hit zones) wears its brackets OUTSIDE and
@@ -816,32 +817,31 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .region-bracket.end.narrow { transform: none; }
 .region-bracket.start.narrow::after { inset: -6px 0 -6px -14px; }
 .region-bracket.end.narrow::after { inset: -6px -14px -6px 0; }
-.region-dim {
-    position: absolute; top: 0; bottom: 0;
-    background: rgba(23, 19, 16, 0.62);
-}
-/* The raw-time sound cursor (amber, like every lane's heard cursor).
-   It lives in the strip, OUTSIDE the keyed overlay: made once, never
-   rebuilt (no unplaced cursor at raw 0) and never faded by a drag's
-   .drag-live — you hear the live splice, so you see where. */
-.region-cursor {
+/* (.region-dim, the dim outside the kept box: the lane window's, §16.) */
+/* THE RAW-TIME SOUND CURSOR (amber, like every lane's heard cursor):
+   the panel's, and the same-scale reveal's (§13). The panel's lives in
+   the strip, OUTSIDE the keyed overlay: made once, never rebuilt (no
+   unplaced cursor at raw 0) and never faded by a drag's .drag-live —
+   you hear the live splice, so you see where. */
+.region-cursor,
+.reveal-cursor {
     position: absolute;
     top: 0;
     bottom: 0;
     width: 2px;
     margin-left: -1px;
     background: var(--map-amber);
-    opacity: 0.85;
-    pointer-events: none;
     z-index: 3;
     transition: left 140ms linear;
 }
+.region-cursor { opacity: 0.85; pointer-events: none; }
+.reveal-cursor { opacity: 0.9; }
 /* The strip is a band host: the cut chip's pill is too tall for a 40px
    strip at its lane size — shrink it there. */
 .region-overlay .cut-chip { font-size: 9px; padding: 0 6px; }
-/* THE ↺ — Ableton's start marker (region_panel.js, 2026-09-24). Its
-   line sits inside the kept box and never takes a press (a box slide
-   must never be stolen); only its TAB grabs. */
+/* THE ↺ — the start marker (region_panel.js). Its line sits inside the
+   kept box and never takes a press (a box slide must never be stolen);
+   only its TAB grabs. */
 .region-top {
     position: absolute;
     top: 0;
@@ -890,23 +890,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     background: var(--amber-bright);
     pointer-events: none;
 }
-/* The start-marker drag's badge. */
-.region-badge {
-    position: absolute;
-    top: 50%;
-    margin-top: -8px;
-    font-size: 9.5px;
-    font-weight: 600;
-    line-height: 1;
-    color: var(--amber-bright);
-    background: rgba(16, 17, 19, 0.94);
-    border: 1px solid var(--map-amber);
-    border-radius: 4px;
-    padding: 3px 6px;
-    white-space: nowrap;
-    pointer-events: none;
-    z-index: 8;
-}
+/* The start-marker drag's badge: the lane drag's badge (§13), smaller
+   and centred on the strip. */
+.region-badge { top: 50%; margin-top: -8px; font-size: 9.5px; padding: 3px 6px; }
 /* THE TIMING, under the label's terms: how far a re-time has moved the
    take from how it was played (lit once shifted), and the way back. */
 .region-timing {
@@ -1093,20 +1079,30 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--record-hi);
     animation: recpulse 1.6s ease-in-out infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-    .rail-sub.recording { animation: none; }
-}
 /* The shared record/arm pulse (also drives .rail-btn.arm-btn.recording,
    .rep.recording-bar and .arm-marker below) */
 @keyframes recpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+/* THE FRAME-HEALTH BADGE on the rail (docs/sequencer.md §11.6): this
+   lane's period is what explodes its scope's frame. */
+.rail-sub.health-warn {
+    color: var(--map-amber);
+    text-shadow: 0 0 6px var(--map-amber-40);
+    cursor: help;
+}
+/* ↯ DRIFTING (Q22): a loop whose length fits no whole number of Qs —
+   information, not a fault: the cool echo tone, with a help cursor for
+   the tooltip. */
+.rail-sub.drift {
+    color: var(--cyan);
+    cursor: help;
+}
 .armed-word { color: var(--rec); }
 /* Q-definer badge: a lit "Q" LAMP in the deck's lamp vocabulary —
    recessed bezel, glow, fixed size so it can NEVER truncate (a text
    pill crushes to "T…" on crowded rails). TEAL, not red: red is the
-   record identity, and tempo is information, not danger — this sits
-   in the cyan
-   status family with the ready lamp. Lit = this take's length IS the
-   tempo, still trimmable; it goes out when a second take locks it. */
+   record identity, and tempo is information, not danger (the cyan
+   status family). Lit = this take's length IS the tempo, still
+   trimmable; it goes out when a second take locks it. */
 .tempo-chip {
     flex: none;
     width: 20px; height: 20px;
@@ -1250,30 +1246,84 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .rail-btn.delete-btn:hover { opacity: 1; color: #fff; background: var(--rec); border-radius: 6px; }
 .rail-btn.delete-btn:disabled { opacity: 0.12; background: none; color: var(--text-dim); }
 
-/* Input picker: chip reads at rest ("in 2", "in 3/4" for a stereo
-   pair); menu opens below the rail. Tighter padding than the fx chip:
-   the foot row runs at the rail's full width, and the stereo label is
-   the widest thing on it. */
-.rail-btn.input-btn {
-    width: auto;
-    min-width: 34px;
-    padding: 0 5px;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-}
-/* The monitoring chip (Q20) sits beside the input picker in the same
-   compact voice; lit (tape) while the input is heard through the
-   track. */
-.rail-btn.mon-btn {
+/* CHIPS — the compact text buttons. On the rail: the input picker
+   ("in 2", "3/4" for a stereo pair — the widest label on the foot row,
+   hence its tighter padding), the monitoring chip beside it (Q20: lit
+   while the input is heard through the track), fx ("fx·N": the enabled
+   count) and seq ('seq' until a sequence exists). The root stack has
+   no rail, so its two — the master strip's fx and the ruler row's seq
+   — are the same family at the transport's size. */
+.rail-btn.input-btn,
+.rail-btn.mon-btn,
+.rail-btn.fx-btn,
+.rail-btn.seq-btn {
     width: auto;
     min-width: 30px;
-    padding: 0 5px;
+    padding: 0 6px;
     font-size: 0.65rem;
     font-weight: 600;
-    letter-spacing: 0.02em;
 }
-.input-menu {
+.rail-btn.input-btn,
+.rail-btn.mon-btn { padding: 0 5px; letter-spacing: 0.02em; }
+.rail-btn.input-btn { min-width: 34px; }
+#master-fx-btn,
+#root-seq-btn {
+    width: auto;
+    height: 24px;
+    border-radius: 5px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+#master-fx-btn { min-width: 30px; padding: 0 7px; }
+#root-seq-btn { min-width: 34px; padding: 0 8px; }
+/* The period-source toggle (↺ / 1×): compact — it shares the head row
+   with the name, and every pixel there is the name's. */
+.rail-btn.oneshot-btn {
+    flex: none;
+    width: 22px; height: 20px;
+    padding: 0;
+    font-size: 0.72rem; line-height: 1;
+    color: var(--text-dim);
+}
+/* LIT: a quiet accent, never the rail button's solid fill — tape amber
+   for fx and one-shot, map amber for the sequencer. The sequencer's
+   chip is struck while bypassed (the jam), cyan while a step loops,
+   and wears ↯ while its passes drift. A root chip carries an inset
+   ring while its row is open. */
+#master-fx-btn.on,
+.rail-btn.fx-btn.on,
+.rail-btn.oneshot-btn.on {
+    color: var(--tape); border-color: var(--tape); background: var(--panel-2);
+}
+#root-seq-btn.on,
+.rail-btn.seq-btn.on {
+    color: var(--map-amber); border-color: var(--map-amber); background: var(--panel-2);
+}
+.rail-btn.seq-btn.bypassed { color: var(--text-dim); }
+.rail-btn.seq-btn.bypassed,
+#root-seq-btn.bypassed { text-decoration: line-through; }
+.rail-btn.seq-btn.looping,
+#root-seq-btn.looping { color: var(--cyan); border-color: var(--cyan); }
+.rail-btn.seq-btn.drift::after,
+#root-seq-btn.drift::after { content: ' ↯'; color: var(--amber-bright); }
+#master-fx-btn.open { box-shadow: inset 0 0 0 1px var(--tape); }
+#root-seq-btn.open { box-shadow: inset 0 0 0 1px var(--map-amber); }
+/* A MIDI track's input chip (docs/vst3.md §8) is a read-only "♪ MIDI":
+   its take records notes into the instrument, with no audio input to
+   choose. Disabled but legible — and lit while the keyboard plays this
+   track (the MIDI target follows the selection). */
+.rail-btn.input-btn.midi:disabled { opacity: 0.7; cursor: default; }
+.rail-btn.input-btn.midi.on:disabled {
+    opacity: 1;
+    color: var(--tape);
+    border-color: var(--tape);
+}
+
+/* IN-RAIL MENUS: the input picker's menu and the take list (its rows:
+   §17) drop from under the rail. */
+.input-menu,
+.take-menu {
     position: absolute;
     top: calc(100% + 4px);
     left: 8px;
@@ -1305,9 +1355,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     font-size: 0.75rem;
     color: var(--text-dim);
 }
-@media (prefers-reduced-motion: reduce) {
-    .rail-btn.arm-btn.recording { animation: none; }
-}
 
 /* ===== 12. Lane body & reps ===== */
 /* Lane body: the tape strip. The hairline ring is an inset shadow, not
@@ -1328,22 +1375,19 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 /* INSPECTOR lanes (the raw-take edit view) run on their OWN horizontal
    scale — the global playhead's position is meaningless over them
-   (cursor decoupling). Stack the opaque body
-   ABOVE the playhead (z 6) so the one honest cursor there is the
-   lane's amber heard cursor; the white cursor stays visible over every
-   in-frame lane. */
+   (cursor decoupling). The opaque body stacks ABOVE the playhead (z 6),
+   so the one honest cursor there is the lane's amber heard cursor; the
+   white cursor stays visible over every in-frame lane. */
 .lane-body.inspecting {
     z-index: 7;
     box-shadow: inset 0 0 0 1px var(--map-amber-35);
 }
-/* SMOOTH OPEN: entering the raw take view eases in
-   instead of snapping — the content swap reads as the lane "opening"
-   to show the whole clip and its map structure. */
-@media (prefers-reduced-motion: no-preference) {
-    .lane-body.inspecting .reps-layer,
-    .lane-body.inspecting .grid-layer {
-        animation: lane-open 200ms ease-out;
-    }
+/* SMOOTH OPEN: entering the raw take view eases in instead of snapping
+   — the content swap reads as the lane "opening" to show the whole
+   clip and its map structure. */
+.lane-body.inspecting .reps-layer,
+.lane-body.inspecting .grid-layer {
+    animation: lane-open 200ms ease-out;
 }
 /* Transform ONLY — an opacity dip would make the lane translucent for
    200ms on EVERY grab: the greys pulse and the z-6 playhead bleeds
@@ -1353,22 +1397,32 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     to   { transform: scaleY(1); }
 }
 .lane[data-depth="1"] .lane-body, .lane[data-depth="2"] .lane-body { min-height: 56px; }
-.lane-body .gridline {
+/* Whole-Q gridlines — a lane's, its reveal layer's (§13), the region
+   panel's (§9): every 4th Q is major. */
+.lane-body .gridline,
+.reveal-grid .gridline,
+.region-gridline {
     position: absolute; top: 0; bottom: 0;
     width: 1px;
     background: var(--grid);
 }
-.lane-body .gridline.major { background: var(--grid-q4); }
+.lane-body .gridline.major,
+.reveal-grid .gridline.major,
+.region-gridline.major { background: var(--grid-q4); }
 
 /* Lane-body layers: grid under reps under overlay. Reps are RECONCILED
    (reused, not recreated), so geometry changes morph via transitions
-   instead of popping (the commit "flash"). */
+   instead of popping. */
 .body-layer { position: absolute; inset: 0; }
+/* THE OPT-IN LAW: the grid and overlay layers take no pointer, so every
+   interactive thing drawn in them sets pointer-events: auto itself.
+   Without it no real mouse can grab the thing — and a synthetic-event
+   test, which bypasses hit-testing, will not notice. */
 .grid-layer, .overlay-layer { pointer-events: none; }
 
 /* Reps clip their pinned canvases: a geometry morph REVEALS content,
-   it never stretches it (canvas at 100% rubber-banded with the div
-   mid-transition — the composite's "collapse then expand" at commits) */
+   it never stretches it (a canvas at 100% would rubber-band with the
+   div mid-transition). */
 .rep { position: absolute; top: 3px; bottom: 3px; overflow: hidden; }
 .reps-layer .rep {
     transition: left 180ms ease, width 180ms ease, opacity 180ms ease;
@@ -1380,9 +1434,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .reps-layer .rep.recording-bar {
     transition: width 140ms linear;
     overflow: hidden;
-}
-@media (prefers-reduced-motion: reduce) {
-    .reps-layer .rep { transition: none; }
 }
 /* THE RE-SEAT TWEEN (frame.md §1): the frame's zero moves by per-frame
    re-derives (patch.js toggles the class), so every tile must sit where
@@ -1398,27 +1449,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    renderings of the same audio (features shift a few px) — a hard
    swap reads as squish/stretch */
 .rep canvas { position: absolute; left: 0; top: 0; height: 100%; }
-/* One-shot lanes (Q5): the lone take tile carries a dashed edge —
-   "plays once, then rests" (recording.md Example 3). An OUTLINE, never
-   a border: lane-body box metrics must not change with state (the
-   state-metrics law). */
-.lane-body.one-shot .rep {
-    outline: 1px dashed var(--text-dim);
-    outline-offset: -1px;
-    border-radius: 3px;
-}
-/* The period-source toggle: compact (it shares the head row with the
-   name — every pixel is the name's), quiet accent like fx·N when on. */
-.rail-btn.oneshot-btn {
-    flex: none;
-    width: 22px; height: 20px;
-    padding: 0;
-    font-size: 0.72rem; line-height: 1;
-    color: var(--text-dim);
-}
-.rail-btn.oneshot-btn.on {
-    color: var(--tape); border-color: var(--tape); background: var(--panel-2);
-}
 /* Ghost opacity sized for display-normalized waveforms; the Q
    gridlines mark boundaries (a per-rep tick notch reads as waveform
    corruption) */
@@ -1430,12 +1460,23 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-radius: 6px;
     animation: recpulse 1.6s ease-in-out infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-    .rep.recording-bar { animation: none; }
+/* DASHED TILES: a one-shot lane's lone take tile (Q5: "plays once, then
+   rests" — recording.md Example 3), and a retaking lane's resting tiles
+   (silent while the new take is live, so dimmed too). An OUTLINE, never
+   a border: the state-metrics law (§14). */
+.lane-body.one-shot .rep,
+.rep.silent {
+    outline: 1px dashed var(--text-dim);
+    outline-offset: -1px;
+    border-radius: 3px;
 }
+.rep.silent { opacity: 0.3; }
+/* An OS file dragged over a lane body (import_drop.js, docs/import.md):
+   the body outlines in the material hue until the drop lands. */
+.lane-body.drop-file { outline: 1px dashed var(--amber); outline-offset: -2px; }
 
 /* ===== 13. Map editor (cut bands, seam handles, splices + the ↺, drag preview) ===== */
-/* === CUT BANDS (phase 3 map editor, owner-chosen design A) === */
+/* === CUT BANDS === */
 /* A cut is a first-class object in the bracket vocabulary: dim band,
    two bracket-style handles, a sliding length chip. */
 .cut-band {
@@ -1460,11 +1501,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     width: 14px;
     cursor: ew-resize;
     touch-action: none;
-    /* The overlay layer is pointer-events:none — every interactive
-       child must OPT IN (the win-bracket rule). Without this no real
-       mouse can grab a cut; synthetic-event tests bypass hit-testing
-       and will not notice — verify interactive chrome with real input. */
-    pointer-events: auto;
+    pointer-events: auto;   /* the opt-in law, §12 */
     z-index: 6;
 }
 .cut-handle::before {
@@ -1514,8 +1551,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     z-index: 8;
 }
 
-/* Multi-segment map seam ticks (phase 3): thin boundary marks where
-   heard time jumps — non-interactive, quieter than brackets. */
+/* Multi-segment map seam ticks: thin boundary marks where heard time
+   jumps — non-interactive, quieter than brackets. */
 .map-seam-tick {
     position: absolute;
     top: 0;
@@ -1567,34 +1604,31 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     pointer-events: none !important;
     cursor: default !important;
 }
-/* The preview draws RAW-frame geometry; on a lane it is only right
-   once the lane shows raw material — its inspector view, or the
-   same-scale REVEAL a drag opens (.revealing). Elsewhere (a heard lane
-   before engage) it would sit over HEARD content: hidden. The region
-   panel's strip is raw by construction. */
-.lane-body:not(.inspecting):not(.revealing) .drag-preview-layer { opacity: 0; }
+/* The preview draws RAW-frame geometry, and exists only over raw
+   material (map_core.js runRawDrag): the region panel's strip, a
+   raw-framed lane (a cut band's drag), or a heard lane while its
+   same-scale REVEAL is open (.revealing goes on before the first
+   preview and comes off with the last). */
 .drag-preview-layer {
     position: absolute;
     inset: 0;
     pointer-events: none;
 }
 
-/* THE SAME-SCALE REVEAL (map_bands.js, 2026-09-11): while a heard-lane
-   handle is dragged, the lane keeps its px-per-Q and UNROLLS the raw
-   take around the grabbed thing — the reveal layer draws the visible
-   raw slice (waveform + raw-Q gridlines) where the heard tiles were;
-   the preview layer's dims/brackets/bands sit over it. The heard
-   layers hide (opacity — the grabbed handle keeps its capture). The
-   body stacks above the white playhead like an inspector (raw
-   coordinates; the amber reveal cursor is the honest one). */
+/* THE SAME-SCALE REVEAL (map_bands.js): while a heard-lane handle is
+   dragged, the lane keeps its px-per-Q and UNROLLS the raw take around
+   the grabbed thing — the reveal layer draws the visible raw slice
+   (waveform + raw-Q gridlines: §12) where the heard tiles were; the
+   preview layer's dims/brackets/bands sit over it. The heard layers
+   hide (opacity — the grabbed handle keeps its capture). The body
+   stacks above the white playhead like an inspector (raw coordinates;
+   the amber reveal cursor — .reveal-cursor, §9 — is the honest one). */
 .lane-body.revealing { z-index: 7; box-shadow: inset 0 0 0 1px var(--map-amber-35); }
 .lane-body.revealing .reps-layer,
 .lane-body.revealing .grid-layer,
 .lane-body.revealing > .seq-dims { opacity: 0; }
 .reveal-layer { position: absolute; inset: 0; pointer-events: none; }
 .reveal-grid { position: absolute; inset: 0; }
-.reveal-grid .gridline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
-.reveal-grid .gridline.major { background: var(--grid-q4); }
 .reveal-tile {
     position: absolute;
     top: 0;
@@ -1604,30 +1638,20 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     overflow: hidden;
 }
 .reveal-tile canvas { display: block; }
-.reveal-cursor {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    margin-left: -1px;
-    background: var(--map-amber);
-    opacity: 0.9;
-    z-index: 3;
-    transition: left 140ms linear;
-}
+/* The trim view with company (Q22): outside the handed-Q definer's
+   selection, other lanes do not play against its buffer this pass. */
+.trim-dims { position: absolute; inset: 0; pointer-events: none; }
 
-/* === THE SPLICE AND THE TOP (splice_handles.js; loop_selection.md §9,
-   2026-09-24) ===
+/* === THE SPLICE AND THE TOP (splice_handles.js; loop_selection.md §9) ===
    A heard lane's loop handles (and a plain loop's lone ↺), in their
    OWN layer outside the keyed overlay (positioned every patch; a
-   drag's preview moves them). Every
-   class here carries the lr- prefix: the lane-row-scoped queries for
-   brackets, seams and cut bands (tests, the teleport walk, wireWindow)
-   must never find these, and prototype v9's `wrap` handle class
-   collided with a page container. A SPLICE grabs by the lane's LOWER
-   half (its tab on the bottom edge), the ↺ TOP by the UPPER half (its
-   tab on the top edge): two handles, independent even where they
-   coincide. Each line spans the whole lane from its half. */
+   drag's preview moves them). Every class here carries the lr- prefix:
+   the lane-row-scoped queries for brackets, seams and cut bands (tests,
+   the teleport walk, wireWindow) must never find these. A SPLICE grabs
+   by the lane's LOWER half (its tab on the bottom edge), the ↺ TOP by
+   the UPPER half (its tab on the top edge): two handles, independent
+   even where they coincide. Each line spans the whole lane from its
+   half. */
 .lr-layer { pointer-events: none; }
 .lr-splice,
 .lr-top {
@@ -1636,9 +1660,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     margin-left: -9px;
     cursor: ew-resize;
     touch-action: none;
-    /* The layer is pointer-events:none — handles OPT IN (the
-       win-bracket rule; verify with real input). */
-    pointer-events: auto;
+    pointer-events: auto;   /* the opt-in law, §12 */
     z-index: 6;
 }
 .lr-splice { top: 50%; bottom: 0; }
@@ -1716,18 +1738,20 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .lr-ghost::before { opacity: 0.3; }
 .lr-ghost:hover .lr-tab { opacity: 1; }
 .lr-ghost:hover::before { opacity: 1; }
-/* HANDLES ON THE SELECTED TRACK ONLY (loop_selection.md §15, owner
-   2026-10-08). An unselected lane's loop section shows how the loop
-   aligns with the song: its ↺ and splices stay as quiet LINES — no
-   tabs, no badges, no hover, no grab — and its brackets, grips and
-   cut handles and chips are not drawn. A press there selects the track
-   (lane_build.js captures it), and the handles appear. Dims, cut
-   bands, a one-shot's seam marks, the chip's readout, the arm marker
-   and the cursors stay: they are what the loop IS. */
+/* HANDLES ON THE SELECTED TRACK ONLY (loop_selection.md §15). An
+   unselected lane's loop section shows how the loop aligns with the
+   song and is no edit surface: its ↺ and splices, and a one-shot's
+   seams, stay as quiet MARKS — no tabs, no badges, no hover, no
+   tooltip, no grab — and its brackets, edge grips, cut handles and
+   chips are not drawn. A press there selects the track (lane_build.js
+   captures it), and the handles appear. Dims, cut bands, the chip's
+   readout, the arm marker and the cursors stay: they are what the
+   loop IS. */
 .lane:not(.sel) .lr-layer { opacity: 0.45; }
-.lane:not(.sel) .lr-layer > * { pointer-events: none !important; }
+.lane:not(.sel) .lr-layer > *,
+.lane:not(.sel) .overlay-layer .seam-handle { pointer-events: none !important; }
 .lane:not(.sel) .lr-layer :is(.lr-tab, .lr-badge, .lr-tint) { display: none; }
-.lane:not(.sel) .overlay-layer :is(.win-bracket, .cut-handle, .cut-chip) { display: none; }
+.lane:not(.sel) .overlay-layer :is(.win-bracket, .trim-grip, .cut-handle, .cut-chip) { display: none; }
 .lane:not(.sel) > .lane-body,
 .lane:not(.sel) > .lane-body * { cursor: pointer !important; }
 /* The recording gate's INERT handles: drawn, hoverable (their tooltip
@@ -1738,22 +1762,23 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    !important: the hover rules above out-rank a plain one, and the
    body under a drag is always hovered. */
 .lane-body.revealing > .lr-layer { opacity: 0 !important; }
-/* A drag's chrome, made mid-gesture: the badge, the dashed snap ghost
+/* A drag's chrome, made mid-gesture: the badge (the panel's start-marker
+   drag wears the same one — .region-badge, §9), the dashed snap ghost
    at the landing, the swept strip's tint (lane drags only). */
-.lr-badge {
+.lr-badge,
+.region-badge {
     position: absolute;
-    font-size: 10.5px;
     font-weight: 600;
     line-height: 1;
     color: var(--amber-bright);
     background: rgba(16, 17, 19, 0.94);
     border: 1px solid var(--map-amber);
     border-radius: 4px;
-    padding: 3px 7px;
     white-space: nowrap;
     pointer-events: none;
     z-index: 8;
 }
+.lr-badge { font-size: 10.5px; padding: 3px 7px; }
 /* Beside the dragged handle's own tab, clear of the other's. */
 .lr-badge.lr-badge-splice { bottom: 26px; }
 .lr-badge.lr-badge-top { top: 25px; }
@@ -1797,19 +1822,19 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-radius: 1px;
 }
 
-/* Through-map take (time_maps.md phase 2): the map's amber window tone
-   rides the record red — the visual cue that a map is shaping time
-   (ruling 5). Same box metrics (STATE-METRICS LAW). */
+/* Through-map take (time_maps.md ruling 5): the map's amber window tone
+   rides the record red — the visual cue that a map is shaping time.
+   Same box metrics (the state-metrics law, §14). */
 .rep.recording-bar.map-bar {
     background: linear-gradient(to bottom, #3a3220, #2c2616);
     box-shadow: inset 0 0 0 1px var(--rec), inset 0 0 0 3px var(--map-amber-35);
 }
 
 /* ===== 14. Lane body state accents (armed / recording) ===== */
-/* STATE-METRICS LAW: a lane body's box never changes with state — no
-   state border/padding may shift its absolutely-positioned children
-   (the 2px armed border once right-shifted every rep by 2px). All
-   state accents are inset shadows. */
+/* THE STATE-METRICS LAW: a lane body's box never changes with state — a
+   state border or padding would shift its absolutely-positioned
+   children (a 2px border moves every rep 2px). Every state accent on a
+   lane body is an inset shadow or an outline. */
 .lane-body.armed-empty {
     box-shadow: inset 0 0 0 2px rgba(217, 79, 48, 0.45);
 }
@@ -1825,9 +1850,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     background: var(--rec);
     animation: recpulse 1.6s ease-in-out infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-    .arm-marker { animation: none; }
-}
 .arm-label {
     position: absolute;
     top: 50%;
@@ -1839,16 +1861,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     white-space: nowrap;
 }
 
-/* ===== 15. Effects panel (fx rail chip + expandable rack row) ===== */
-.rail-btn.fx-btn {
-    width: auto;
-    min-width: 30px;
-    padding: 0 6px;
-    font-size: 0.65rem;
-    font-weight: 600;
-}
-.rail-btn.fx-btn.on { color: var(--tape); border-color: var(--tape); background: var(--panel-2); }
-
+/* ===== 15. Effects panel (the rack row, VST3 chips, the plugin picker) ===== */
+/* (The fx chip that opens it: the chips, §11.) */
 /* Rack internals: the synthetic `.lane.lane-fx` row (grid template from
    .lane) holds an EFFECTS label rail (.fx-rail) and a wrapping row of
    .fx-card panels — one per rack slot (EQ/COMP/ECHO/VERB). Each card:
@@ -1935,41 +1949,118 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     accent-color: var(--tape);
     background: transparent;
 }
+/* VST3 chips and the plugin picker (docs/vst3.md): a .fx-vst3 chip is a
+   compact .fx-card — head only (power, name = open the editor, badge,
+   remove); the plugin's real UI lives in its native floating window.
+   The picker is the "+" chip's popover. */
+.fx-card.fx-vst3 {
+    flex: 0 0 auto;
+    min-width: 0;
+    align-self: flex-start;
+}
+.fx-card.fx-vst3 .fx-card-head { margin-bottom: 0; }
+.fx-vst3-name {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 2px;
+}
+.fx-card.fx-vst3.missing .fx-vst3-name {
+    color: var(--rec);
+    text-decoration: line-through;
+    cursor: default;
+}
+.fx-vst3-badge { font-size: 0.62rem; color: var(--text-dim); }
+/* Loaded but bypassed (it will not run in stereo): the name still opens
+   its editor, so only the badge warns and the name dims. */
+.fx-card.fx-vst3.unsupported .fx-vst3-name { color: var(--text-dim); }
+.fx-card.fx-vst3.unsupported .fx-vst3-badge { color: var(--rec); }
+.fx-remove {
+    width: 22px; height: 22px;
+    border: none; border-radius: 50%;
+    background: none; color: var(--text-dim);
+    cursor: pointer; padding: 0;
+}
+.fx-remove:hover { color: var(--rec); }
+.fx-add {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    min-width: 34px; height: 34px;
+    border: 1px dashed var(--lane-line);
+    border-radius: 10px;
+    background: none; color: var(--text-dim);
+    cursor: pointer;
+}
+.fx-add:hover { color: var(--tape); border-color: var(--tape); }
+.fx-picker {
+    position: absolute;
+    z-index: 60; /* above the popover tier */
+    background: var(--panel);
+    border: 1px solid var(--lane-line);
+    border-radius: 10px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 220px;
+    overflow-y: auto;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+.fx-picker-head { font-size: 0.62rem; color: var(--text-dim); padding: 2px 6px; }
+.fx-picker-empty { font-size: 0.72rem; color: var(--text-dim); padding: 4px 6px; }
+.fx-picker-item {
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 8px;
+    cursor: pointer;
+}
+.fx-picker-item:hover { background: var(--lane); }
 
 /* ===== 16. Loop window brackets & chips ===== */
-/* CASCADE NOTE: rule order in this section is load-bearing — .win-chip's
-   base block intentionally sits AFTER .win-heard-chip (equal
-   specificity; chips carry both classes). Do not reorder. */
-.win-dim {
+/* CASCADE NOTE: rule order in this section is load-bearing. A bracket
+   carries several modifier classes at once (.start/.end, .dragging,
+   .snap-ghost, .latent, .q-definer) at equal specificity, and the
+   suspended chip must out-order the toggle chip's hover: source order
+   settles them. Do not reorder. */
+/* The dim over excluded material — a lane window's, and the region
+   panel's (§9). */
+.win-dim,
+.region-dim {
     position: absolute; top: 0; bottom: 0;
     background: rgba(23, 19, 16, 0.62);
-    /* Toggling active/bypassed swaps dims in and out — fade them in so
-       the toggle reads as a lighting change, not a layout event */
-    animation: dimfade 160ms ease;
 }
+/* Toggling active/bypassed swaps a lane's dims in and out — they fade
+   in, so the toggle reads as a lighting change, not a layout event. */
+.win-dim { animation: dimfade 160ms ease; }
 @keyframes dimfade { from { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-    .win-dim { animation: none; }
-}
-.win-bracket {
+/* THE BRACKET: a lane window's drag handle, and the region panel's
+   (§9) — one shape and hit zone under two classes, so a lane-scoped
+   query never finds the panel's. */
+.win-bracket,
+.region-bracket {
     position: absolute; top: 2px; bottom: 2px;
     width: 8px;
     border: 2px solid var(--tape);
-    opacity: 0.7;
-    /* Brackets are the drag handles (overlay layer is otherwise inert) */
-    pointer-events: auto;
+    pointer-events: auto;   /* the opt-in law, §12 */
     cursor: ew-resize;
     touch-action: none;
 }
+.win-bracket { opacity: 0.7; }
 /* Instrument-in-hand hit zone: the visible bracket is 8px, the grab
    target is ~3x that (pseudo-element extends the element's hit box) */
-.win-bracket::after {
+.win-bracket::after,
+.region-bracket::after {
     content: "";
     position: absolute;
     inset: -6px -9px;
 }
-.win-bracket.start { border-right: none; border-radius: 4px 0 0 4px; }
-.win-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
+.win-bracket.start,
+.region-bracket.start { border-right: none; border-radius: 4px 0 0 4px; }
+.win-bracket.end,
+.region-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
 /* Two brackets on ONE line — a whole take whose seam sits mid-lane (its
    tile wraps the frame's end): "]" then "[". Each keeps its own side of
    the line; with the full hit zones the end bracket, later in the DOM,
@@ -1991,6 +2082,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .win-bracket.latent { opacity: 0; }
 .lane-body:hover .win-bracket.latent { opacity: 0.35; }
 .win-bracket.latent.dragging { opacity: 1; }
+/* A one-shot's INERT edge grip (the recording gate) keeps its resting
+   look and never hover-reveals: a handle you cannot take must not
+   offer itself. */
+.lane-body:hover .win-bracket.latent.trim-grip.inert { opacity: 0; }
 /* [ / ] teleport landing: blink the found handle so the eye arrives
    with the viewport. Applies to every walkable handle kind (window
    brackets, cut handles, seam handles). opacity is forced because
@@ -2003,9 +2098,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 @keyframes teleport-flash {
     0%, 100% { box-shadow: none; }
     20% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tape) 70%, transparent); }
-}
-@media (prefers-reduced-motion: reduce) {
-    .teleport-flash { animation: none; }
 }
 /* Q-definer (Q13): the sole committed clip's handles RE-ESTABLISH Q.
    Unlike ordinary windows they're a first-class affordance — visible at
@@ -2023,9 +2115,11 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     letter-spacing: 0.02em;
 }
 /* The heard-lane chip (readout + bypass toggle) pins to the lane's
-   RIGHT edge; lane_body positions every win-chip with an inline
-   `left`, so left:auto !important is required to beat that style. */
-.win-heard-chip {
+   RIGHT edge, and so does comp mode's "done" chip (§17); lane_body
+   positions every win-chip with an inline `left`, so left:auto
+   !important is required to beat that style. */
+.win-heard-chip,
+.win-chip.comp-done-chip {
     right: 4px;
     left: auto !important;
     cursor: pointer;
@@ -2058,14 +2152,16 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     pointer-events: none;
     transition: left 140ms linear;
 }
-@media (prefers-reduced-motion: reduce) {
-    .win-cursor { transition: none; }
-}
 .win-chip.at-end { transform: translateX(-100%); margin-left: -10px; }
 .win-chip.toggle { pointer-events: auto; cursor: pointer; }
 .win-chip.toggle:hover { color: var(--tape); }
+/* A window authored over a sequence's timeline is SUSPENDED while the
+   sequence is off (docs/sequencer.md §11.8): dimmed like bypass, and
+   cool-tinted so it reads as "waiting", not "off". */
+.lane-body.win-suspended .win-bracket { opacity: 0.3; border-style: dashed; }
+.lane-body.win-suspended .win-chip { color: var(--cyan-dim); }
 
-/* ===== 16b. Takes (docs/takes.md): the take chip, list and comp cells ===== */
+/* ===== 17. Takes (docs/takes.md): the take chip, list and comp cells ===== */
 /* The take chip: T<active>/<n> in the head row beside the period-source
    toggle (compact — every head pixel is the name's). Quiet with one
    take (hover-revealed), cyan-tinged when a comp is set, lit while the
@@ -2098,22 +2194,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .rail-btn.arm-btn.retake.on::after,
 .rail-btn.arm-btn.retake.recording::after { display: none; }
-/* The take list: the input-menu shape under the rail. */
-.take-menu {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 8px;
-    right: 8px;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    background: var(--panel-2);
-    border: 1px solid var(--btn-border);
-    border-radius: 8px;
-    padding: 4px;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
-}
+/* The take list (.take-menu: the in-rail menu, §11) and its rows. */
 .take-menu-note { padding: 6px 10px; font-size: 0.72rem; color: var(--text-dim); }
 .take-item { display: flex; align-items: center; gap: 4px; border-radius: 6px; }
 .take-item:hover { background: var(--lane); }
@@ -2151,14 +2232,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .take-comp-row:hover { background: var(--lane); }
 .take-comp-row.on { color: var(--tape); }
-/* A retaking lane's resting tiles: the slot is silent while the new
-   take is live — dimmed, dashed (an outline: the state-metrics law). */
-.rep.silent {
-    opacity: 0.3;
-    outline: 1px dashed var(--text-dim);
-    outline-offset: -1px;
-    border-radius: 3px;
-}
+/* (A retaking lane's resting tiles, .rep.silent: the dashed tiles, §12.) */
 /* Comp cells: one band per Q cell over the take tile. At rest only
    cells naming another take render (tinted in the take's hue, its
    slice drawn over); in comp mode every cell is a dim band with a
@@ -2198,15 +2272,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     z-index: 7;
 }
 .comp-cell.tint .comp-badge { color: var(--take-hue); }
-.win-chip.comp-done-chip {
-    right: 4px;
-    left: auto !important;
-    cursor: pointer;
-    color: var(--tape);
-    border-color: var(--tape);
-}
+/* Comp mode's "done" chip: the heard chip's corner (§16), lit. */
+.win-chip.comp-done-chip { color: var(--tape); border-color: var(--tape); }
 
-/* ===== 17. Playhead ===== */
+/* ===== 18. Playhead ===== */
 /* The one playhead (I8) */
 #playhead {
     position: absolute;
@@ -2224,9 +2293,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
        lockstep (wrap/commit jumps snap via inline override) */
     transition: left 140ms linear;
 }
-@media (prefers-reduced-motion: reduce) {
-    #playhead { transition: none; }
-}
 #playhead::before {
     content: "";
     position: absolute;
@@ -2242,7 +2308,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     box-shadow: none;
 }
 
-/* ===== 18. Create row & empty state ===== */
+/* ===== 19. Create row & empty state ===== */
 /* Creation row: persistent under the lanes — tracks and groups are
    made IN the canvas (the transport is transport). Same dashed voice
    as the in-group add-track rows. */
@@ -2259,18 +2325,18 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 #create-row button:hover { border-color: var(--tape); color: var(--tape); }
 
 /* The zero-lanes marker — the BOOT state (Q17, boot empty).
-   Deliberately WORDLESS (owner call: the + button is clear on its
-   own), and nearly weightless — the ruler row
-   hides with it (patch.js), so the ＋ Track row sits right up top
-   with no stray hairline or dead air above it. The sliver of padding
-   keeps the non-zero box the e2e visibility pins read. */
+   Deliberately WORDLESS (the + button is clear on its own) and nearly
+   weightless — the ruler row hides with it (patch.js), so the ＋ Track
+   row sits right up top with no stray hairline or dead air above it.
+   The sliver of padding keeps the non-zero box the e2e visibility pins
+   read. */
 #empty-state {
     text-align: center;
     padding: 4px 0;
     display: none;
 }
 
-/* ===== 19. Status strip ===== */
+/* ===== 20. Status strip ===== */
 #status-strip {
     position: relative; /* anchors .audio-panel */
     display: flex;
@@ -2283,33 +2349,17 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     font-size: 0.78rem;
     color: var(--text-dim);
 }
-/* Ready lamp: cyan, NOT green — colorblind-safe (design rule 1) */
-#ready-lamp {
-    flex: none;
-    width: 9px; height: 9px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, #8fdce8, #3f8fa0 70%);
-    box-shadow: 0 0 6px rgba(95, 201, 216, 0.6);
-}
 #log-line {
     flex: 1;
     font-family: var(--font-mono);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #status-strip button { padding: 6px 12px; font-size: 0.75rem; flex: none; }
-#calibration-status { flex: 0 1 auto; min-width: 0; max-width: 40ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* The button carries the live device + input count: "only 2 inputs" used
-   to be invisible until you opened a track's input menu. It SHRINKS
-   (ellipsis) before anything else on the strip clips — long device
-   names pushed Dump State offscreen at narrow widths. */
-#audio-device-btn { flex: 0 1 auto; min-width: 9ch; max-width: 34ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 900px) {
     #status-strip { gap: 10px; }
-    #audio-device-btn { max-width: 16ch; }
-    #calibration-status { max-width: 22ch; }
 }
 
-/* ===== 20. Popovers (project menu & audio device panel) ===== */
+/* ===== 21. Popovers (project menu, the panel chrome, preferences) ===== */
 /* Shared section-heading voice for both popovers; the paddings
    genuinely differ and stay per-panel below. */
 #project-menu .pm-head,
@@ -2356,16 +2406,19 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 #project-menu .pm-item:disabled { opacity: 0.35; cursor: default; }
 #project-menu .pm-sep { border-top: 1px solid var(--line); margin: 6px 0; }
 #project-menu .pm-inline { display: flex; gap: 6px; padding: 4px 10px 8px; }
-#project-menu .pm-inline input {
+/* An inline name field and its button: the project menu's, and the
+   creation menu's save row (§23). */
+#project-menu .pm-inline input,
+.creation-save-input {
     flex: 1;
     background: none;
     border: 1px solid var(--line);
     border-radius: 6px;
     color: var(--text);
     padding: 4px 8px;
-    font-size: 0.8rem;
 }
-#project-menu .pm-inline button {
+#project-menu .pm-inline button,
+.creation-save-btn {
     background: none;
     border: 1px solid var(--line);
     border-radius: 6px;
@@ -2373,9 +2426,11 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     padding: 4px 10px;
     cursor: pointer;
 }
+#project-menu .pm-inline input { font-size: 0.8rem; }
 
-/* Audio device panel (docs/performance.md §4) — opens UPWARD out of the
-   status strip, so it mirrors #project-menu's downward drop. */
+/* THE PANEL CHROME (.audio-panel): the plugin panel, which opens UPWARD
+   out of the status strip — mirroring #project-menu's downward drop —
+   and the preferences panel below. */
 .audio-panel {
     position: absolute;
     bottom: calc(100% + 6px);
@@ -2454,7 +2509,19 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text-dim);
 }
 #prefs-panel .ap-row button { flex: none; padding: 4px 10px; font-size: 0.75rem; }
-#prefs-panel #calibration-status { flex: 1 1 auto; min-width: 0; color: var(--text-dim); }
+/* The calibration verdict: one line, ellipsized past its cap. */
+#prefs-panel #calibration-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 40ch;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-dim);
+}
+@media (max-width: 900px) {
+    #prefs-panel #calibration-status { max-width: 22ch; }
+}
 #prefs-panel #projects-root {
     flex: 1 1 auto;
     min-width: 0;
@@ -2466,11 +2533,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text);
 }
 
-/* An OS file dragged over a lane body (import_drop.js, docs/import.md):
-   the body outlines in the material hue until the drop lands. */
-.lane-body.drop-file { outline: 1px dashed var(--amber); outline-offset: -2px; }
-
-/* ===== 21. Loading overlay ===== */
+/* ===== 22. Loading overlay ===== */
 /* Boot splash (session.css is a render-blocking <link>, so these
    styles apply as early as inline ones would). app.js hides
    #loading-overlay once modules land. Deliberately plain
@@ -2496,16 +2559,18 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     letter-spacing: 0.2em;
 }
 
-/* ===== Creation menu (Q17: every + is a template picker) =====
-   A FIXED-position popup anchored so the default "Track" row sits
+/* ===== 23. Creation menu (Q17: every + is a template picker) ===== */
+/* A FIXED-position popup anchored so the default "Track" row sits
    directly under the pointer (click-click = bare track). Same visual
    vocabulary as .input-menu; z above the rails, below the loading
-   overlay. */
+   overlay. It ends above the window's foot (creation_menu.js sets its
+   max-height) and scrolls to the rows that do not fit. */
 .creation-menu {
     position: fixed;
     z-index: 50;
     min-width: 220px;
     max-width: 300px;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -2544,148 +2609,23 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     white-space: normal;
 }
 .creation-menu-sep { border-top: 1px solid var(--line); margin: 4px 0; }
+/* The save row: the project menu's inline field and button (§21). */
 .creation-save-row { display: flex; gap: 6px; padding: 2px 4px 4px; }
-.creation-save-input {
-    flex: 1;
-    min-width: 0;
-    background: none;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--text);
-    padding: 4px 8px;
-    font-size: 0.75rem;
-}
-.creation-save-btn {
-    background: none;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--text);
-    padding: 4px 10px;
-    font-size: 0.75rem;
-    cursor: pointer;
-}
+.creation-save-input { min-width: 0; font-size: 0.75rem; }
+.creation-save-btn { font-size: 0.75rem; }
 .creation-save-btn:hover { background: var(--lane); }
 
-/* --- VST3 chips + plugin picker (docs/vst3.md phase 3) ------------
-   A .fx-vst3 chip is a compact .fx-card: head only (power, name =
-   open-editor, badge, remove) — the plugin's real UI lives in its
-   native floating window, not here. The picker is the "+" popover. */
-.fx-card.fx-vst3 {
-    flex: 0 0 auto;
-    min-width: 0;
-    align-self: flex-start;
-}
-.fx-card.fx-vst3 .fx-card-head { margin-bottom: 0; }
-.fx-vst3-name {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 2px 2px;
-}
-.fx-card.fx-vst3.missing .fx-vst3-name {
-    color: var(--rec);
-    text-decoration: line-through;
-    cursor: default;
-}
-.fx-vst3-badge { font-size: 0.62rem; color: var(--text-dim); }
-.fx-remove {
-    width: 22px; height: 22px;
-    border: none; border-radius: 50%;
-    background: none; color: var(--text-dim);
-    cursor: pointer; padding: 0;
-}
-.fx-remove:hover { color: var(--rec); }
-.fx-add {
-    flex: 0 0 auto;
-    align-self: flex-start;
-    min-width: 34px; height: 34px;
-    border: 1px dashed var(--lane-line);
-    border-radius: 10px;
-    background: none; color: var(--text-dim);
-    cursor: pointer;
-}
-.fx-add:hover { color: var(--tape); border-color: var(--tape); }
-.fx-picker {
-    position: absolute;
-    z-index: 60; /* above the popover tier */
-    background: var(--panel);
-    border: 1px solid var(--lane-line);
-    border-radius: 10px;
-    padding: 6px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    max-height: 220px;
-    overflow-y: auto;
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
-}
-.fx-picker-head { font-size: 0.62rem; color: var(--text-dim); padding: 2px 6px; }
-.fx-picker-empty { font-size: 0.72rem; color: var(--text-dim); padding: 4px 6px; }
-.fx-picker-item {
-    text-align: left;
-    background: none;
-    border: none;
-    border-radius: 6px;
-    color: var(--text);
-    padding: 4px 8px;
-    cursor: pointer;
-}
-.fx-picker-item:hover { background: var(--lane); }
-
-
-/* --- MIDI track chip (docs/vst3.md §8, phase 5) --------------------
-   The input picker's place on a MIDI track: a read-only "♪ MIDI" chip
-   — the take records notes into the instrument, no audio input to
-   choose. Disabled, but legible (not the picker's dimmed-while-
-   recording look). */
-.rail-btn.input-btn.midi:disabled {
-    opacity: 0.7;
-    cursor: default;
-}
-/* Lit = the keyboard plays this track (the MIDI target follows the
-   selection; app.js syncMidiTarget). */
-.rail-btn.input-btn.midi.on:disabled {
-    opacity: 1;
-    color: var(--tape);
-    border-color: var(--tape);
-}
-
-/* --- A one-shot's edge grips -------------------
-   (The mid-phase "] [" pair and its "↺ loop top" chip retired
-   2026-09-24 with the other lanes' grips: a splice handle and the ↺
-   say it now — splice_handles.js.) An INERT grip (the recording gate)
-   keeps its resting look but never hover-reveals: a handle you cannot
-   take must not offer itself. */
-.lane-body:hover .win-bracket.latent.trim-grip.inert { opacity: 0; }
-
-/* ===== 22. Sequencer (docs/sequencer.md - the fractal pad grid) ===== */
-/* The rail chip: ghost 'seq' until a sequence exists; lit map-amber
-   while active; struck while bypassed (the jam). */
-.rail-btn.seq-btn {
-    width: auto;
-    min-width: 30px;
-    padding: 0 6px;
-    font-size: 0.65rem;
-    font-weight: 600;
-}
-.rail-btn.seq-btn.on {
-    color: var(--map-amber);
-    border-color: var(--map-amber);
-    background: var(--panel-2);
-}
-.rail-btn.seq-btn.bypassed {
-    color: var(--text-dim);
-    text-decoration: line-through;
-}
-
+/* ===== 24. Sequencer (docs/sequencer.md — the fractal pad grid) ===== */
+/* (The seq chips that open a grid, a rail's and the root's: §11.) */
 /* The synthetic `.lane.lane-seq` row (grid template from .lane): a
    SEQUENCER label rail + the grid body. Rows = children, columns =
-   steps (flex-grow proportional to lenQ), pads = gates. */
-/* TIME-HONEST LAYOUT: pads span the FULL
-   body column — step boundaries sit on the shared time axis. The rail
-   column mirrors the body's rows at the same fixed heights (label
-   beside the header, one name beside each pad row); the append verb
-   lives in the footer, so nothing non-temporal steals timeline width. */
+   the program's visits (placed by left/width percent — seq_grid.js),
+   pads = gates.
+   TIME-HONEST LAYOUT: pads span the FULL body column — step boundaries
+   sit on the shared time axis. The rail column mirrors the body's rows
+   at the same fixed heights (label beside the header, one name beside
+   each pad row); the append verb lives in the footer, so nothing
+   non-temporal steals timeline width. */
 .seq-rail {
     display: flex;
     flex-direction: column;
@@ -2760,32 +2700,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .seq-hlen { color: var(--map-amber); cursor: pointer; }
 .seq-hlen:hover { text-decoration: underline dotted; }
-/* The FADES popover (§15): two Q inputs under the length chip. */
-.seq-fade-pop {
-    position: absolute;
-    top: 100%;
-    z-index: 30;
-    min-width: 150px;
-    margin-top: 3px;
-    padding: 6px 8px;
-    border-radius: 8px;
-    background: var(--panel-2);
-    border: 1px solid var(--map-amber);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-    font-size: 0.64rem;
-}
-.seq-fade-title { color: var(--map-amber); margin-bottom: 4px; }
-.seq-fade-line { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
-.seq-fade-line label { flex: 1; color: var(--text-dim); }
-.seq-fade-q {
-    width: 48px;
-    font: inherit;
-    font-size: 0.64rem;
-    color: var(--text);
-    background: var(--lane);
-    border: 1px solid var(--hairline);
-    border-radius: 3px;
-}
 /* The step-resize grip: a VISIBLE bracket-style handle (a hairline is
    not discoverable). Wide hit area; the bar brightens on hover like
    the loop brackets. */
@@ -2811,14 +2725,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     background: var(--map-amber);
     box-shadow: 0 0 6px var(--map-amber-40);
 }
-.seq-addstep {
-    width: auto;
-    padding: 1px 8px;
-    border-radius: 4px;
-    color: var(--text-dim);
-    font-size: 0.62rem;
-}
-.seq-addstep:hover { color: var(--map-amber); border-color: var(--map-amber); }
 .seq-col {
     position: absolute;
     top: 0;
@@ -2859,13 +2765,17 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .seq-total { color: var(--amber-bright); }
 .seq-lock { color: var(--record-hi); }
+/* The footer's two verbs: append a step, bypass the sequence. */
+.seq-addstep,
 .seq-bypass {
     width: auto;
     padding: 1px 8px;
     border-radius: 4px;
     font-size: 0.62rem;
-    color: var(--cyan);
 }
+.seq-addstep { color: var(--text-dim); }
+.seq-addstep:hover { color: var(--map-amber); border-color: var(--map-amber); }
+.seq-bypass { color: var(--cyan); }
 .seq-start {
     width: auto;
     align-self: flex-start;
@@ -2888,9 +2798,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     background: rgba(16, 22, 25, 0.68);
     animation: dimfade 160ms ease;
 }
-@media (prefers-reduced-motion: reduce) {
-    .seq-dim { animation: none; }
-}
 /* PER-STEP FADES (docs/sequencer.md §15): the ramp at a gate run's
    edge — a gradient out of the dim (fade in) or into it (fade out).
    Display only (pure projection of the envelope). */
@@ -2898,103 +2805,60 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .seq-fade.in { background: linear-gradient(to right, rgba(16, 22, 25, 0.68), transparent); }
 .seq-fade.out { background: linear-gradient(to right, transparent, rgba(16, 22, 25, 0.68)); }
 
-/* The ROOT sequencer chip: the session's own song. It lives in the
-   ruler row's rail spacer — the root stack's "rail" — right above the
-   track rails, so the transport bar never crowds (the odometer is the
-   row's designated shrinker and must keep its numbers). */
-#ruler-row .rail-spacer {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    padding-right: 4px;
-}
-#root-seq-btn {
-    width: auto;
-    min-width: 34px;
-    height: 24px;
-    padding: 0 8px;
-    border-radius: 5px;
-    font-size: 0.65rem;
-    font-weight: 600;
-    color: var(--text-dim);
-}
-#root-seq-btn.on {
-    color: var(--map-amber);
-    border-color: var(--map-amber);
-    background: var(--panel-2);
-}
-#root-seq-btn.bypassed { text-decoration: line-through; }
-#root-seq-btn.open { box-shadow: inset 0 0 0 1px var(--map-amber); }
-
-/* --- THE STEP AUDITION (docs/sequencer.md §11.2): ⟲ on the step header
-   loops that step. Hidden until hover (the cut-band hover grammar), lit
-   cyan while looping — the loop-region colour, because it IS one. --- */
-.seq-loop {
-    width: auto;
-    height: 16px;
-    padding: 0 5px;
-    border-radius: 4px;
-    font-size: 0.6rem;
-    color: var(--cyan);
-    opacity: 0;
-    transition: opacity 0.12s;
-}
-.seq-hcell:hover .seq-loop, .seq-loop.on { opacity: 1; }
-.seq-loop.on {
-    border-color: var(--cyan);
-    background: color-mix(in srgb, var(--cyan) 18%, transparent);
-}
-.seq-hcell.looping {
-    border-color: var(--cyan);
-    border-bottom-color: var(--cyan);
-    box-shadow: inset 0 -12px 16px -14px var(--cyan);
-}
-
-/* --- CUE (docs/sequencer.md §3, S22): the ⇤ pip on the step header
-   toggles gate-mode ↔ cue-mode. Amber — the map/re-frame colour,
-   because a cued step IS a derived time-map (the per-step re-base).
-   Hidden until hover like ⟲; always lit while cued. --- */
-.seq-cue {
-    width: auto;
-    height: 16px;
-    padding: 0 5px;
-    border-radius: 4px;
-    font-size: 0.62rem;
-    color: var(--map-amber);
-    opacity: 0;
-    transition: opacity 0.12s;
-}
-.seq-hcell:hover .seq-cue, .seq-cue.on { opacity: 1; }
-.seq-cue.on {
-    border-color: var(--map-amber);
-    background: color-mix(in srgb, var(--map-amber) 18%, transparent);
-}
-.seq-hcell.cued {
-    border-top-color: var(--map-amber);
-    box-shadow: inset 0 12px 16px -14px var(--map-amber);
-}
-
-/* --- SUCCESSORS (docs/sequencer.md §14): the → pip on the step header
-   opens the popover naming what may follow the step. Lit when the step
-   carries its own list; the popover is one row per step (toggle +
-   weight). A radio's grid shows the graph (one column per step); an
-   orphan (unreachable) step waits in the footer as a chip. --- */
+/* --- THE HEADER PIPS: three small buttons on a step's header, hidden
+   until the cell is hovered and always shown while lit.
+     ⟲  THE STEP AUDITION (§11.2) loops that step — cyan, the
+        loop-region colour, because it IS one;
+     ⇤  CUE (§3) toggles gate mode ↔ cue mode — map amber, because a
+        cued step IS a derived time map (the per-step re-base);
+     →  SUCCESSORS (§14) opens the popover naming what may follow —
+        lit when the step carries its own list. --- */
+.seq-loop,
+.seq-cue,
 .seq-next {
     width: auto;
     height: 16px;
     padding: 0 5px;
     border-radius: 4px;
     font-size: 0.62rem;
-    color: var(--text-dim);
     opacity: 0;
     transition: opacity 0.12s;
 }
+.seq-loop { font-size: 0.6rem; color: var(--cyan); }
+.seq-cue { color: var(--map-amber); }
+.seq-next { color: var(--text-dim); }
+.seq-hcell:hover .seq-loop, .seq-loop.on,
+.seq-hcell:hover .seq-cue, .seq-cue.on,
 .seq-hcell:hover .seq-next, .seq-next.on { opacity: 1; }
+.seq-loop.on {
+    border-color: var(--cyan);
+    background: color-mix(in srgb, var(--cyan) 18%, transparent);
+}
+.seq-cue.on {
+    border-color: var(--map-amber);
+    background: color-mix(in srgb, var(--map-amber) 18%, transparent);
+}
 .seq-next.on {
     color: var(--amber-bright);
     border-color: var(--amber-bright);
     background: color-mix(in srgb, var(--amber-bright) 16%, transparent);
 }
+/* The header cell itself glows from below while its step loops, from
+   above while it is cued. */
+.seq-hcell.looping {
+    border-color: var(--cyan);
+    box-shadow: inset 0 -12px 16px -14px var(--cyan);
+}
+.seq-hcell.cued {
+    border-top-color: var(--map-amber);
+    box-shadow: inset 0 12px 16px -14px var(--map-amber);
+}
+/* --- THE GRID'S POPOVERS: fades (§15 — two Q fields under the length
+   chip, map amber) and successors (§14 — one line per step: name,
+   branch toggle, weight; bright amber). They hang under their step's
+   header cell; an orphan's successors popover sits in the footer
+   beside its chip (.in-foot). --- */
+.seq-fade-pop,
 .seq-next-pop {
     position: absolute;
     top: 100%;
@@ -3004,13 +2868,29 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     padding: 6px 8px;
     border-radius: 8px;
     background: var(--panel-2);
-    border: 1px solid var(--amber-bright);
+    border: 1px solid var(--map-amber);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
     font-size: 0.64rem;
 }
+.seq-next-pop { border-color: var(--amber-bright); }
 .seq-next-pop.in-foot { position: relative; top: auto; margin: 0 6px; }
-.seq-next-title { color: var(--amber-bright); margin-bottom: 4px; }
+.seq-fade-title,
+.seq-next-title { margin-bottom: 4px; color: var(--map-amber); }
+.seq-next-title { color: var(--amber-bright); }
+.seq-fade-line,
 .seq-next-line { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.seq-fade-line label { flex: 1; color: var(--text-dim); }
+.seq-fade-q,
+.seq-next-w {
+    width: 48px;
+    font: inherit;
+    font-size: 0.64rem;
+    color: var(--text);
+    background: var(--lane);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+}
+.seq-next-w { width: 40px; }
 .seq-next-opt {
     flex: 1;
     text-align: left;
@@ -3034,15 +2914,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text-dim);
 }
 .seq-next-add:hover { color: var(--amber-bright); border-color: var(--amber-bright); }
-.seq-next-w {
-    width: 40px;
-    font: inherit;
-    font-size: 0.64rem;
-    color: var(--text);
-    background: var(--lane);
-    border: 1px solid var(--hairline);
-    border-radius: 3px;
-}
 .seq-next-hint { margin-top: 4px; color: var(--text-dim); font-size: 0.58rem; }
 .seq-radio { color: var(--amber-bright); }
 .seq-reroll, .seq-orphan {
@@ -3054,7 +2925,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .seq-orphan { color: var(--text-dim); border-style: dashed; }
 .seq-reroll:hover, .seq-orphan:hover { border-color: var(--amber-bright); }
-.lane-seq.radio .seq-total { color: var(--amber-bright); }
 
 /* The lane echo of a cued span: a top hairline + pip, NOT a dim (the
    span still sounds — it re-bases). Display only (pure projection). */
@@ -3069,33 +2939,11 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--map-amber);
     opacity: 0.85;
 }
-.rail-btn.seq-btn.looping, #root-seq-btn.looping {
-    color: var(--cyan);
-    border-color: var(--cyan);
-}
-/* The root's looping step on the ruler (the root has no lane). */
-.ruler-root-window {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    box-sizing: border-box;
-    border-left: 2px solid var(--cyan);
-    border-right: 2px solid var(--cyan);
-    background: color-mix(in srgb, var(--cyan) 10%, transparent);
-    pointer-events: auto;
-}
-.ruler-root-window-label {
-    position: absolute;
-    left: 4px;
-    top: 1px;
-    font-size: 0.58rem;
-    color: var(--cyan);
-    white-space: nowrap;
-}
 
 /* --- THE FRAME-HEALTH BADGE (docs/sequencer.md §11.6): amber for the
    blowup face (a length that explodes the parent frame), a cooler amber
-   ↯ for the drifting pass. Shown only when warranted. --- */
+   ↯ for the drifting pass. Shown only when warranted. (Its face on a
+   lane's rail, .rail-sub.health-warn: §11.) --- */
 .seq-health {
     font-size: 0.62rem;
     white-space: nowrap;
@@ -3111,27 +2959,22 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-color: var(--map-amber-45);
 }
 .seq-health-fix:hover { background: color-mix(in srgb, var(--map-amber) 18%, transparent); }
-.rail-sub.health-warn {
-    color: var(--map-amber);
-    text-shadow: 0 0 6px var(--map-amber-40);
-    cursor: help;
+
+/* ===== 25. Reduced motion ===== */
+/* Every glide and animation in this sheet is switched off HERE, and
+   only here: a new one adds its selector to this block. */
+@media (prefers-reduced-motion: reduce) {
+    #master-monitor .vu .needle,
+    .reps-layer .rep,
+    .win-cursor,
+    #playhead { transition: none; }
+    .rail-sub.recording,
+    .rail-btn.arm-btn.recording,
+    .lane-body.inspecting .reps-layer,
+    .lane-body.inspecting .grid-layer,
+    .rep.recording-bar,
+    .arm-marker,
+    .win-dim,
+    .teleport-flash,
+    .seq-dim { animation: none; }
 }
-/* ↯ DRIFTING (Q22): a loop whose length fits no whole number of Qs —
-   information, not a fault: the cool echo tone, with a help cursor for
-   the tooltip. */
-.rail-sub.drift {
-    color: var(--cyan);
-    cursor: help;
-}
-/* The trim view with company (Q22): outside the handed-Q definer's
-   selection, other lanes do not play against its buffer this pass. */
-.trim-dims { position: absolute; inset: 0; pointer-events: none; }
-.rail-btn.seq-btn.drift::after, #root-seq-btn.drift::after {
-    content: ' ↯';
-    color: var(--amber-bright);
-}
-/* S16 (docs/sequencer.md §11.8): a window authored over a sequence
-   timeline, suspended while the sequence is off — dimmed like bypass,
-   cool-tinted so it reads as "waiting", not "off". */
-.lane-body.win-suspended .win-bracket { opacity: 0.3; border-style: dashed; }
-.lane-body.win-suspended .win-chip { color: var(--cyan-dim); }

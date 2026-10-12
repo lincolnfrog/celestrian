@@ -1,17 +1,15 @@
 /**
  * Playhead dead-reckoning clock (docs/session_view.md law 10 coda).
  *
- * The published masterPos arrives every ~50ms; drawing it with a CSS
- * glide lags the target by the transition time, so the sweep would
- * visually wrap ~5% before the loop end and restart past zero.
- * Instead, between polls the playhead ADVANCES at the
- * estimated transport velocity and wraps EXACTLY at the audible cycle;
- * each poll corrects the position. Velocity is estimated from observed
- * masterPos deltas — never assumed — so a static mock scene stays
- * static and a manual seek reads as a teleport, not a burst of speed.
+ * Between polls the playhead ADVANCES at the estimated transport
+ * velocity and wraps EXACTLY at the audible cycle; each poll corrects
+ * it. (A CSS glide toward each polled position lags by its transition
+ * time, so the sweep would wrap before the loop end and restart past
+ * zero.) Velocity is estimated from observed masterPos deltas, never
+ * assumed: a static scene stays static, and a seek reads as a
+ * teleport, not a burst of speed.
  *
- * Everything here is pure (unit-tested); the rAF loop lives in the
- * patch layer.
+ * Pure; the rAF loop lives in the patch layer.
  */
 import { posMod } from './math_utils.js';
 
@@ -40,9 +38,8 @@ export function forwardDelta(targetQ, lastQ, loopQ) {
 
 /**
  * Blend an instantaneous velocity observation into the estimate.
- * `deltaQ` is the forward wrap-aware target movement over `dtMs`.
- * Movement far beyond real-time playback (2× nominal) is a TELEPORT —
- * a seek or a test's setMasterPos — and must not become velocity.
+ * `deltaQ` is the forward wrap-aware target movement over `dtMs`; a
+ * teleport (TELEPORT_VEL_FACTOR) never becomes velocity.
  * Returns { vel, teleport }.
  */
 export function estimateVelocity(prevVel, deltaQ, dtMs, nominalQperMs) {

@@ -1,56 +1,46 @@
 /**
- * Live recording peaks, TIME-INDEXED (docs/session_view.md).
- *
- * The naive approach — push one peak per poll tick — couples waveform
- * geometry to poll cadence: the bar's width tracks the engine's
- * `duration` (real time), so whenever polls jitter or drop, the peak
- * count and elapsed time diverge and the stretched-to-fit content
- * visibly drifts sideways while recording.
- *
- * Here each sample lands at an index derived from `duration` itself
- * (PEAKS_PER_SECOND resolution), so a peak's position in the array — and
- * therefore on screen — is a pure function of WHEN it happened. Skipped
- * polls leave gaps that are back-filled with the current value; repeated
- * polls at the same index max-pool.
+ * Live recording peaks, TIME-INDEXED (docs/session_view.md): each
+ * level lands at the index its position in the take names
+ * (PEAKS_PER_SECOND resolution), so where a peak sits in the array —
+ * and on screen — is a function of WHEN it happened, not of how often
+ * the poll ran. One peak pushed per poll would tie the waveform's
+ * geometry to the poll cadence, and it would drift sideways whenever
+ * polls jitter or drop.
  */
+
+import { boostForMax } from './display_boost.js';
+import { FALLBACK_SAMPLE_RATE } from './sample_rate.js';
 
 export const PEAKS_PER_SECOND = 50;
 
-// Normalization targets shared with the committed renderer: waveforms
-// draw to PEAK_HEADROOM of full scale (a hairline of air above the
-// loudest peak), and near-silent takes are never boosted past MAX_BOOST
-// — beyond that the "waveform" is just amplified noise floor.
-const PEAK_HEADROOM = 0.95;
-const MAX_BOOST = 8;
+/** How far a live bar's boost moves toward its target per poll. */
+const BOOST_EASE = 0.3;
 
 /**
- * Smoothed display boost for a LIVE waveform. The committed renderer
- * normalizes a clip to its peak (boost = 0.95/max, capped 8×); drawing
- * the live bar un-normalized popped to full frame at commit, and
- * re-normalizing per poll pumped the whole waveform on every new max.
- * The ratchet: since the running max only ever RISES, the target boost
- * only ever FALLS — easing toward it (30%/poll) settles gently, needs no
- * extra hysteresis, and CONVERGES to the committed value, so the commit
- * handoff is seamless by construction.
+ * The display boost for a LIVE waveform, eased from `prevBoost`. The
+ * running max of a take only rises, so its target boost
+ * (display_boost.js) only falls: easing toward it never pumps the
+ * waveform when a louder peak arrives, and it settles on the value the
+ * committed tile is drawn at, so the commit does not pop.
  */
 export function liveBoost(prevBoost, peaks) {
     let max = 0;
     for (let i = 0; i < peaks.length; i++) if (peaks[i] > max) max = peaks[i];
-    const target = max > 0 ? Math.min(PEAK_HEADROOM / max, MAX_BOOST) : 1;
+    const target = boostForMax(max);
     if (prevBoost === undefined || prevBoost === null) return target;
-    return prevBoost + (target - prevBoost) * 0.3;
+    return prevBoost + (target - prevBoost) * BOOST_EASE;
 }
 
 /**
  * Record `peak` as the level at `durationSamples` into the take.
- * Mutates and returns `arr` (the lane's live peak array).
+ * Polls landing on one index max-pool; skipped indices sustain the
+ * PREVIOUS level (the new one would smear a fresh transient backwards).
+ * Mutates and returns `arr`.
  */
 export function appendLivePeak(arr, durationSamples, sampleRate, peak) {
-    const sr = sampleRate > 0 ? sampleRate : 44100;
+    const sr = sampleRate > 0 ? sampleRate : FALLBACK_SAMPLE_RATE;
     const p = Math.min(1, Math.abs(peak) || 0);
     const idx = Math.max(0, Math.floor((durationSamples / sr) * PEAKS_PER_SECOND));
-    // Gaps sustain the PREVIOUS level — filling with the new value would
-    // smear a fresh transient backwards over every skipped slot
     const last = arr.length ? arr[arr.length - 1] : 0;
     while (arr.length < idx) arr.push(last);
     if (arr.length === idx) arr.push(p);

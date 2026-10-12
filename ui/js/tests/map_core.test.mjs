@@ -1,5 +1,5 @@
 /**
- * THE MOVE LAWS (session_view/map_core.js) — the edit functions both
+ * THE MOVE LAWS (session_view/map_moves.js) — the edit functions both
  * editing surfaces (the lane's same-scale reveal, the region panel)
  * run their raw-time gestures through. Pure: raw Q in, pending segments
  * + follow + badge out. What this pins: (a) TRIM snaps the PERIOD to
@@ -16,8 +16,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { trimMoveFn, slideMoveFn, seamMoveFn, lengthMoveFn, viewPct,
-         timingText, fmtSignedQ, fmtFineQ }
+import { trimMoveFn, slideMoveFn, seamMoveFn, bandMoveFn, lengthMoveFn }
+    from '../session_view/map_moves.js';
+import { viewPct, laneMapActive, timingText, fmtSignedQ, fmtFineQ }
     from '../session_view/map_core.js';
 import { cutBounds } from '../map_edit.js';
 
@@ -118,6 +119,57 @@ test('seam: slide keeps the cut length; ⌥ resizes the end on the grid', () => 
     assert.equal(r.follow.b, 7.7);            // raw edge under the hand
     assert.equal(r.active.q, 8);              // the whole-Q landing
     assert.equal(r.active.ghost, true);
+});
+
+test('band: the chip slides the cut from where it was grabbed; a handle resizes its own edge', () => {
+    const segs = [[2, 5], [6, 10]];         // a 1Q cut at [5, 6)
+    const s2 = { ...st, segs, periodQ: 7 };
+    const [lo, hi] = cutBounds(segs, [5, 6], 12);
+    // SLIDE, grabbed at the chip (5.5): the cut moves by the hand's travel.
+    const slide = bandMoveFn(s2, [5, 6], null, 5.5, lo, hi);
+    let r = slide(null);
+    assert.deepEqual(r.segs, segs, 'at rest: the map as it is');
+    assert.deepEqual(r.follow, { kind: 'band', a: 5, b: 6 });
+    r = slide(5.5);
+    assert.deepEqual(r.segs, segs, 'no travel, no move');
+    r = slide(7.75);                          // +2.25Q, free
+    assert.deepEqual(r.segs, [[2, 7.25], [8.25, 10]]);
+    assert.deepEqual([r.follow.a, r.follow.b], [7.25, 8.25]);
+    assert.equal(r.active.ghost, false);
+    r = slide(20);                            // clamped to its neighbourhood
+    assert.deepEqual(r.segs, [[2, 9]]);
+    // RESIZE the START edge: the hand at 3.2 proposes 2.8Q → 3Q.
+    const start = bandMoveFn(s2, [5, 6], 'start', 5, lo, hi);
+    r = start(3.2);
+    assert.deepEqual(r.segs, [[2, 3], [6, 10]]);
+    assert.deepEqual([r.follow.a, r.follow.b], [3.2, 6], 'the raw edge under the hand');
+    assert.equal(r.active.q, 3, 'the whole-Q landing');
+    assert.equal(r.active.ghost, true);
+    assert.match(r.active.text, /3Q cut/);
+    // RESIZE the END edge, mirrored; back at its own length, no ghost.
+    const end = bandMoveFn(s2, [5, 6], 'end', 6, lo, hi);
+    r = end(7.7);
+    assert.deepEqual(r.segs, [[2, 5], [8, 10]]);
+    assert.deepEqual([r.follow.a, r.follow.b], [5, 7.7]);
+    assert.equal(r.active.q, 8);
+    r = end(6);
+    assert.deepEqual(r.segs, segs);
+    assert.equal(r.active.ghost, false);
+});
+
+test('laneMapActive: only a map that sounds — not bypassed, not suspended', () => {
+    const win = extra => ({ window: { active: true, bypassed: false,
+                                      suspended: false, ...extra } });
+    assert.equal(laneMapActive({ windowChipQ: 4 }), true, 'a heard lane');
+    assert.equal(laneMapActive(win()), true);
+    assert.equal(laneMapActive(win({ bypassed: true })), false);
+    assert.equal(laneMapActive(win({ suspended: true })), false);
+    // A group's multi-segment map, resting raw-framed.
+    const segs = [[0, 2], [4, 6]];
+    assert.equal(laneMapActive({ mapSegs: segs }), true);
+    assert.equal(laneMapActive({ mapSegs: segs, mapBypassed: true }), false);
+    assert.equal(laneMapActive({ mapSegs: segs, mapSuspended: true }), false);
+    assert.equal(laneMapActive({}), false, 'a plain loop');
 });
 
 test('viewPct: a view maps raw Q into its span', () => {

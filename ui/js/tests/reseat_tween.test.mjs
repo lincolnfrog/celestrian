@@ -43,23 +43,11 @@ import { posMod } from '../math_utils.js';
 import { reseatOptions, noteReseat, reseatInMotion, reseatState,
          resetReseat, RESEAT_MS } from '../session_view/reseat_tween.js';
 import { seekApplied } from '../seek.js';
-import { SCENE_Q as Q, PERF } from './helpers.mjs';
+import { SCENE_Q as Q, PERF, clipAt as clip, windowed, island as scene, laneOf,
+         near as nearTo } from './helpers.mjs';
 
 const EPS = 1e-9;
-const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-6, `${msg}: ${a} ≉ ${b}`);
-
-const clip = (id, originQ, durationQ, extra = {}) => ({
-    id, name: id, type: 'clip', origin: Math.round(originQ * Q),
-    duration: Math.round(durationQ * Q), effectiveQuantum: Q,
-    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-    isMuted: false, isRecording: false, isPendingStart: false,
-    periodSource: 'own', ...extra,
-});
-const windowed = (id, originQ, durationQ, [aQ, bQ], extra = {}) =>
-    clip(id, originQ, durationQ, {
-        loopStart: Math.round(aQ * Q), loopEnd: Math.round(bQ * Q),
-        windowActive: true, ...extra,
-    });
+const near = (a, b, msg) => nearTo(a, b, msg, 1e-6);
 
 /** A 1Q loop; B — a 56Q take from 11Q looped to `lenQ` Qs from raw
  * (44 + slideQ): the first loop longer than Q, so it PLACES the frame,
@@ -68,18 +56,12 @@ const windowed = (id, originQ, durationQ, [aQ, bQ], extra = {}) =>
  * (the island zero and every origin move together). */
 function island({ slideQ = 0, lenQ = 5, seekQ = 0, extra = {} } = {}) {
     const at = q => q - seekQ;
-    return {
-        id: 'root', type: 'stack', quantum: Q, islandZero: Math.round(at(0) * Q),
-        definerId: '', isPlaying: true, masterPos: 0,
-        islandPos: Math.round(55.3 * Q), perf: PERF,
-        nodes: [
-            clip('A', at(0), 1),
-            windowed('B', at(11), 56, [44 + slideQ, 44 + slideQ + lenQ]),
-            clip('C', at(58), 5, extra.C || {}),
-        ],
-    };
+    return scene([
+        clip('A', at(0), 1),
+        windowed('B', at(11), 56, [44 + slideQ, 44 + slideQ + lenQ]),
+        clip('C', at(58), 5, extra.C || {}),
+    ], { clockQ: 55.3, islandZero: Math.round(at(0) * Q) });
 }
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
 
 /** One app render (app.js deriveFrame) at `now`. */
 function render(state, { now = 0, handDown = false, reducedMotion = false,
@@ -281,41 +263,29 @@ test('(d) a re-layout jumps: the frame\'s length, or Q, changed in the same step
     assert.equal(reseatInMotion(), false);
 });
 
-test('(d) under a take, live or armed, the frame jumps', () => {
-    resetReseat();
-    render(island(), { now: 0 });
-    const armed = island({ slideQ: 1, extra: { C: { isPendingStart: true } } });
-    let vm = render(armed, { now: 100 });
-    assert.equal(vm.mapEditsLocked, true);
-    assert.equal(vm.frameZeroSource, 'seat', 'armed: the seat, at once');
-    assert.equal(vm.frameZero, 56 * Q);
-    assert.equal(reseatInMotion(), false);
-    resetReseat();
-    render(island(), { now: 0 });
-    const rec = island({ slideQ: 1 });
-    rec.nodes.push(clip('R', 60, 0.5, { isRecording: true }));
-    vm = render(rec, { now: 100 });
-    assert.equal(vm.frameZeroSource, 'seat', 'recording: the seat, at once');
-    assert.equal(reseatInMotion(), false);
-});
-
-test('(d) another island, reduced motion and a hidden page jump', () => {
-    resetReseat();
-    render(island(), { now: 0 });
-    const other = { ...island({ slideQ: 1 }), id: 'another-root' };
-    let vm = render(other, { now: 100 });
-    assert.equal(vm.frameZeroSource, 'seat', 'nothing carried over');
-    assert.equal(vm.frameZero, 56 * Q);
-    assert.equal(reseatInMotion(), false);
-    for (const env of [{ reducedMotion: true }, { hidden: true }]) {
+/* The seat moves one Q where no move may run — [what, the next state,
+ * the render's setting, the recording gate is up]: the frame jumps. */
+const recordingBeside = state => {
+    state.nodes.push(clip('R', 60, 0.5, { isRecording: true }));
+    return state;
+};
+for (const [what, next, env, gated] of [
+    ['an armed take', () => island({ slideQ: 1, extra: { C: { isPendingStart: true } } }), {}, true],
+    ['a live take', () => recordingBeside(island({ slideQ: 1 })), {}, true],
+    ['another island', () => ({ ...island({ slideQ: 1 }), id: 'another-root' }), {}, false],
+    ['reduced motion', () => island({ slideQ: 1 }), { reducedMotion: true }, false],
+    ['a hidden page', () => island({ slideQ: 1 }), { hidden: true }, false],
+]) {
+    test(`(d) ${what}: the frame jumps`, () => {
         resetReseat();
         render(island(), { now: 0, ...env });
-        vm = render(island({ slideQ: 1 }), { now: 100, ...env });
-        assert.equal(vm.frameZeroSource, 'seat', JSON.stringify(env));
+        const vm = render(next(), { now: 100, ...env });
+        assert.equal(vm.mapEditsLocked, gated);
+        assert.equal(vm.frameZeroSource, 'seat', 'the seat, at once');
         assert.equal(vm.frameZero, 56 * Q);
         assert.equal(reseatInMotion(), false);
-    }
-});
+    });
+}
 
 /* ---------- (e) never under a hand ---------- */
 

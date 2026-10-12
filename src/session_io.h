@@ -13,48 +13,37 @@
 namespace celestrian::session_io {
 
 /**
- * Save / Load. Plain message-thread serialization of the graph; no
- * snapshots. A session is a BUNDLE directory:
+ * Save / Load: plain message-thread serialization of the graph. A
+ * session is a BUNDLE directory:
  *
- *   <dir>/session.json      canonical state (below)
- *   <dir>/audio/<uuid>.wav  each committed clip's buffer (32-bit float;
- *                           channel count follows the content — stereo
- *                           takes save as stereo WAVs)
+ *   <dir>/session.json           the island facts and the node tree
+ *                                (a MIDI take's notes are inline)
+ *   <dir>/audio/<uuid>.wav       an audio clip's take 0 (32-bit float,
+ *                                as many channels as the take)
+ *   <dir>/audio/<uuid>.take<k>.wav   its later takes
  *
- * The format is device-independent (Q12): every musical fact is
- * stored as QTime — a clip's origin as an offset from the island zero,
- * its period, its window segments, and the take's contextCycle — through
- * the Phase A projection helpers. Physical facts (the island exchange
- * rate `qSamples`, the zero, the sample rate) are stored in samples and
- * used to reconstruct the sample-domain state on load at the SAME rate
- * (cross-rate resample is future; the QTime storage is what makes it
- * possible without a re-cut).
+ * THE BUNDLE LEVEL holds only the project identity and the ISLAND facts
+ * (Q, the zero, the Q hand-off's designation, the sample rate). THE
+ * ROOT IS ONE NODE RECORD like every stack beneath it (`root`): each
+ * node's record is every key serializeNode writes, and every key is
+ * additive — absent, it loads as the node's default.
  *
- * CANONICAL (serialized): node type, uuid, name, child order,
- * inputChannel, mute, loop points + bypass, fx params, originQ/periodQ/
- * windowQ, contextCycle, a clip's top + re-time (loopTopQ/retimeQ,
- * additive), island quantum + zero, the Q hand-off's designation
- * (`definer`, additive — written only when set). The ROOT is one node
- * record like every stack (`root`, audit D7-3): the bundle level holds
- * only the island facts and the project identity.
- * DERIVED (never): launchPoint, anchors, cycle projections, clip x/y px.
- * TRANSIENT (never): island take-lifecycle counters, rec-state,
- * view-freeze bookkeeping.
+ * The format is device-independent (Q12): musical facts are stored as
+ * QTime (an origin as an offset from the island zero); only the island
+ * facts are in samples. Nothing derived or transient is stored — no
+ * launch point, no cycle, no view state, no take in flight.
  */
 
 /** The bundle format version this build writes. A bundle whose
  * `version` is NEWER is refused on load (it may carry facts this build
- * cannot honor, and the 3 s mirror would then overwrite it with a
- * lossy re-serialization); older and unversioned bundles load.
+ * cannot honor, and the mirror would then overwrite it with a lossy
+ * re-serialization); older and unversioned bundles load.
  *   1  the root's facts at bundle level (`rootMuted`/`rootGain`/
- *      `rootPan`/`rootEffects`/`rootSequence`) beside `nodes`
- *   2  the root is ONE node record, `root` (audit D7-3): every fact a
- *      nested stack persists — window, map, bypass, period source,
- *      window domain, rack, sequence, output stage — persists on the
- *      root the same way. Version-1 bundles load (their bundle-level
- *      keys are read as the root's record).
- *   3  the island zero's key is `zero` (docs/frame.md §7: the
- *      "epoch" rename); a bundle's legacy `epoch` key still loads. */
+ *      `rootPan`/`rootEffects`/`rootSequence`) beside `nodes`; read as
+ *      the root's record
+ *   2  the root is one node record, `root`
+ *   3  the island zero's key is `zero` (docs/frame.md §7); an earlier
+ *      bundle's `epoch` key still loads. */
 constexpr int kSessionVersion = 3;
 
 /** Result of a load: the island facts, the root's own record, and the
@@ -64,49 +53,44 @@ struct LoadedSession {
   bool ok = false;
   int64_t q_samples = 0;
   int64_t zero = 0;
+  // The rate the bundle's takes were recorded at (its `sampleRate`; the
+  // device's when the bundle names none) — a loaded clip's own rate.
+  // NOT the rate racks run at: that is the device's.
   double sample_rate = 44100.0;
-  // The root's serialized record (the `root` block; synthesized from a
-  // version-1 bundle's bundle-level keys). The engine applies it to
-  // its LIVE root with applyNodeFacts — the root's identity never
-  // changes across a load.
+  // The root's record, for the engine to apply to its LIVE root
+  // (applyNodeFacts): the root node itself is never replaced by a load.
   juce::var root;
-  // THE ROOT'S ANCHOR (docs/frame.md §4): a root that carried a song
-  // was anchored at the zero the song was authored on; its record
-  // stores it like any stack's (`anchored` + `originQ` from the
-  // zero). Absent = unanchored (no song, or a bundle from before
-  // 2026-09-17). Resolved here because the zero is a load-level fact.
+  // The root's anchor (docs/frame.md §4), from its record's `anchored`
+  // and `originQ`; resolved here because the zero is a load-level fact.
   bool root_anchored = false;
   int64_t root_origin = 0;
-  // THE Q HAND-OFF'S DESIGNATION (Q22): the uuid the bundle's `definer`
-  // key names, empty when absent (none). An island fact beside the zero;
-  // applied after the graph (one naming a missing node falls through,
-  // engine_internal::definer).
+  // The Q hand-off's designation (Q22): the uuid the bundle's `definer`
+  // names, empty for none. Applied after the graph; one naming a
+  // missing node falls through (engine_internal::definer).
   juce::String definer;
   std::vector<std::unique_ptr<AudioNode>> children;
-  juce::String display_name;  // project display name (docs/projects.md)
-  juce::String created;       // creation stamp, echoed verbatim
 };
 
 /** Project-model options (docs/projects.md). */
 struct SaveOptions {
   juce::String display_name;  // stored as "name" — rename never moves dirs
   juce::String created;       // stored as "created"
-  // Template save: keep STRUCTURE (names, order, inputs, mute, fx) and
-  // drop every PERFORMANCE fact (audio, durations, origins, windows,
-  // Q/zero). A template is a project with no performances — and since
-  // Q is born from the first take, it is pre-Q by construction.
+  // Template save (docs/projects.md rule 2): keep STRUCTURE (names,
+  // order, inputs, mute, fx) and drop every PERFORMANCE fact (audio,
+  // durations, origins, windows, tops, Q and the zero).
   bool strip_performances = false;
-  // Mirror save: a committed take's audio is immutable (no overdub), so
-  // skip rewriting a wav whose on-disk length already matches the
-  // clip's duration. (A Q13 lock-collapse CHANGES the duration, so the
-  // mismatch triggers the rewrite exactly when needed.)
+  // The MIRROR's save: committed audio is immutable, so a take's wav
+  // that exists is left alone unless its clip marks its files dirty
+  // (ClipNode::takeFilesDirty), and a save that wrote every take clears
+  // the mark. Any other save rewrites every wav and leaves the mark —
+  // it says nothing about the mirror's files.
   bool incremental = false;
 };
 
 /**
- * Serialize `root` (its island quantum/zero read from the node) to a
- * bundle at `dir`. `device_sample_rate` is stored so a clip's buffer can
- * be recreated at the right size on load. Returns false on I/O failure.
+ * Serialize `root` (its island Q and zero read from the node) to a
+ * bundle at `dir`; `device_sample_rate` is stored as the takes' rate.
+ * False when session.json or any take's wav could not be written.
  */
 bool save(const StackNode& root, double device_sample_rate,
           const juce::File& dir, const SaveOptions& opts = {});
@@ -120,12 +104,14 @@ struct BundleInfo {
 };
 BundleInfo readBundleInfo(const juce::File& dir);
 
-/** Parse a bundle. `ok` is false on any failure (missing/invalid json).
- * `clock` is the live transport clock: the saved zero is an ABSOLUTE
- * clock reading from the run that saved it, so one AHEAD of `clock` (a
- * relaunch restarts the clock) is seated AT `clock` — the island loads
- * at its top, and every origin, stored zero-relative, rides along. A
- * zero at or behind the clock loads as saved. */
+/** Parse a bundle. `ok` is false on any failure (missing or invalid
+ * json, a newer version). `device_sample_rate` is the rate the device
+ * runs at: the children's racks are prepared for it. `clock` is the
+ * live transport clock: the saved zero is an ABSOLUTE clock reading
+ * from the run that saved it, so one AHEAD of `clock` (a relaunch
+ * restarts the clock) is seated AT `clock` — the island loads at its
+ * top, and every origin, stored zero-relative, rides along. A zero at
+ * or behind the clock loads as saved. */
 LoadedSession load(const juce::File& dir, double device_sample_rate,
                    int64_t clock = std::numeric_limits<int64_t>::max());
 
@@ -134,35 +120,23 @@ LoadedSession load(const juce::File& dir, double device_sample_rate,
 enum class SequenceScope { ROOT, NESTED };
 
 /**
- * Install a sequence block (the `sequence` shape sequenceVar writes) on
- * `stack`, materialized against `q`. The old sequence pointer, if any,
- * goes to `retire` — the engine hands the reclaimer for a live root; a
- * pre-graph node deletes inline.
- */
-void applySequenceVar(StackNode& stack, const juce::var& block, int64_t q,
-                      SequenceScope scope,
-                      const std::function<void(const Sequence*)>& retire);
-
-/**
- * Apply a node record's FACTS to `node` — the tail every deserialized
- * node gets and the ONE path the live root takes on load: uuid, mute,
- * output stage, period source, window, map, bypass, window domain, the
- * rack, and (stacks) the sequence at `scope`. Content (takes, children,
- * a stack's anchored origin) is the caller's. `retire_fx` /
- * `retire_seq` take the displaced objects — the engine reclaimer for a
- * LIVE node, null for a pre-graph one (deleted inline). Message thread.
+ * Apply a node record's FACTS to `node`: everything in the record but
+ * its content (takes, children, a stack's anchored origin — the
+ * caller's). Every deserialized node ends here, and it is the ONE path
+ * the live root takes on load.
+ *
+ * The record REPLACES what the node carried, key by key: an absent key
+ * is the node's default (no window, no top, the default rack, no song —
+ * only an absent `id` leaves the uuid alone), so nothing of a previous
+ * session stays on a live root. The rack's
+ * slots are prepared at `rack_rate`, the rate the device runs at.
+ * `retire_fx` / `retire_seq` take the displaced objects — the engine
+ * reclaimer for a LIVE node, null for a pre-graph one (deleted
+ * inline). Message thread.
  */
 void applyNodeFacts(AudioNode& node, const juce::var& record, int64_t q,
-                    double sample_rate, SequenceScope scope,
+                    double rack_rate, SequenceScope scope,
                     const std::function<void(dsp::FxChain*)>& retire_fx,
                     const std::function<void(const Sequence*)>& retire_seq);
-
-/** Rebuild a node's fx chain from a saved chain array (docs/vst3.md
- * §6; fillParams() keys match setParam() keys, so replay is generic).
- * Publishes a fresh chain and hands the OLD one to `retire` — pass the
- * engine reclaimer for a LIVE node (the root on load), or null for a
- * pre-graph node (deleted inline). Message thread. */
-void applyEffects(AudioNode& node, const juce::var& blob, double sample_rate,
-                  const std::function<void(dsp::FxChain*)>& retire);
 
 }  // namespace celestrian::session_io

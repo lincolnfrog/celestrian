@@ -1,14 +1,25 @@
 /**
  * Shared view context: the callback table injected by app.js, the
  * static chrome elements, and the two long-lived caches. Every
- * session-view module imports { ctx } instead of owning globals —
- * the one place the split's shared mutable state lives.
+ * session-view module imports { ctx } instead of owning globals.
  *
- * CONVENTIONS THE MODULES SHARE (the expando protocol — render CACHES
- * ride the DOM node they describe, so they live and die with the
- * node; gesture LATCHES live in gesture.js module state — a latch that
- * gates other code must be released on every failure path, which the
- * gesture runner owns):
+ * THE PATCH LAWS every module here keeps — stated here, cited by name
+ * elsewhere:
+ *
+ *   BUILT ONCE, PATCHED IN PLACE — a lane's rail and its synthetic rows
+ *     are built once and never rebuilt: each poll (the ~50ms tick)
+ *     writes values into the same nodes, and writes nothing that did
+ *     not change (sv_util setText). So a popover hung from a rail, or
+ *     an editor open in it, outlives the tick.
+ *   A HELD CONTROL IS THE USER'S — while a control is held
+ *     (`control._hot`, press … release: sv_util holdControl) or a lane's
+ *     rename editor is open (`row._renaming`), the patch does not write
+ *     the engine's value over it.
+ *
+ * THE EXPANDO PROTOCOL: render CACHES ride the DOM node they describe,
+ * so they live and die with it. Gesture LATCHES live in gesture.js
+ * module state — a latch that gates other code must be released on
+ * every failure path, which the gesture runner owns:
  *
  *   gesture.isOverlayFrozen(body) — a drag holds pointer capture on an
  *                     overlay element (or a commit is awaiting the
@@ -17,13 +28,9 @@
  *                     captured node would orphan the gesture).
  *   overlay._key    — reconcileMarkers' rebuild key. A gesture that
  *                     draws its own preview POISONS it (sets a value
- *                     no legitimate key equals, e.g. 'expanded-drag')
+ *                     no legitimate key equals, e.g. 'raw-drag')
  *                     so the next patch after release reconciles from
  *                     settled state.
- *   control._hot    — the control is mid-gesture (pointerdown …
- *                     pointerup): the 50ms patch tick must not write
- *                     the engine value over the user's drag (the
- *                     fx-slider / rename-editor lesson).
  *
  * Other per-node expandos (_lane, _peaksRef, _dk, _phase, …) are
  * private to their owning module and documented there.

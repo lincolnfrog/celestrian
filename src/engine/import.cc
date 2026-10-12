@@ -1,10 +1,8 @@
-// AudioEngine — AUDIO FILE IMPORT (docs/import.md) and the MIDI note
-// readout for the lane (docs/vst3.md §11). A WAV/AIFF/FLAC decodes on
-// the message thread into an exact-size buffer at the device rate and
-// commits like a take: a first take of an empty clip (placed on the Q
-// grid, snapped by the hysteresis law, establishing Q on a pre-Q
-// island) or a new take of a committed slot (cut to the period). Only
-// the idle-clip buffer swap touches shared state. Message thread only.
+// AudioEngine — AUDIO FILE IMPORT (docs/import.md). A WAV/AIFF/FLAC
+// decodes on the message thread into an exact-size buffer at the device
+// rate and commits like a take: a first take of an empty clip, or a new
+// take of a committed slot. Only the idle-clip buffer swap touches
+// shared state. Message thread only.
 
 #include "../audio_engine.h"
 
@@ -12,9 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <map>
 #include <memory>
-#include <vector>
 
 #include "../clip_node.h"
 #include "../stack_node.h"
@@ -54,8 +50,21 @@ std::unique_ptr<juce::AudioBuffer<float>> decodeAudioFile(
     error = "the file holds no audio";
     return nullptr;
   }
-  if (length > celestrian::ClipNode::kMaxTakeSamples) {
+  // The take ceiling binds the file as stored AND as it will be at the
+  // device's rate — judged from the header, before anything is decoded.
+  const double source_rate = reader->sampleRate;
+  const bool same_rate =
+      source_rate <= 0 || std::abs(source_rate - target_rate) < 1e-6;
+  const int64_t out_length =
+      same_rate ? length
+                : (int64_t)std::llround((double)length * target_rate /
+                                        source_rate);
+  if (std::max(length, out_length) > celestrian::ClipNode::kMaxTakeSamples) {
     error = "the file is longer than a take may be";
+    return nullptr;
+  }
+  if (out_length <= 0) {
+    error = "the file is too short to resample";
     return nullptr;
   }
   juce::AudioBuffer<float> raw(source_channels, (int)length);
@@ -80,28 +89,20 @@ std::unique_ptr<juce::AudioBuffer<float>> decodeAudioFile(
     }
   }
 
-  const double source_rate = reader->sampleRate;
-  const bool same_rate =
-      source_rate <= 0 || std::abs(source_rate - target_rate) < 1e-6;
   if (same_rate) {
     auto out = std::make_unique<juce::AudioBuffer<float>>(channels, (int)length);
     for (int c = 0; c < channels; ++c) out->copyFrom(c, 0, folded, c, 0, (int)length);
     return out;
   }
-  const int out_length =
-      (int)std::llround((double)length * target_rate / source_rate);
-  if (out_length <= 0) {
-    error = "the file is too short to resample";
-    return nullptr;
-  }
-  auto out = std::make_unique<juce::AudioBuffer<float>>(channels, out_length);
+  auto out =
+      std::make_unique<juce::AudioBuffer<float>>(channels, (int)out_length);
   out->clear();
   const double ratio = source_rate / target_rate;
   for (int c = 0; c < channels; ++c) {
     juce::LagrangeInterpolator interpolator;
     interpolator.reset();
     interpolator.process(ratio, folded.getReadPointer(c),
-                         out->getWritePointer(c), out_length);
+                         out->getWritePointer(c), (int)out_length);
   }
   return out;
 }
@@ -111,35 +112,25 @@ std::unique_ptr<juce::AudioBuffer<float>> decodeAudioFile(
 bool AudioEngine::importAudio(const juce::String& uuid,
                               const juce::String& path,
                               int64_t origin_samples) {
-  if (root_node == nullptr) return false;
+  const auto refuse = [](const juce::String& why) {
+    juce::Logger::writeToLog("AudioEngine: import refused - " + why);
+    return false;
+  };
   if (root_node->hasActiveTake() || root_node->isArmedOrRecording()) {
-    juce::Logger::writeToLog("AudioEngine: import refused - a take is live");
-    return false;
+    return refuse("a take is live");
   }
-  celestrian::AudioNode* node = findNodeByUuid(root_node.get(), uuid);
-  if (node == nullptr) {
-    juce::Logger::writeToLog("AudioEngine: import refused - no node " + uuid);
-    return false;
-  }
+  celestrian::AudioNode* node = findNodeByUuid(uuid);
+  if (node == nullptr) return refuse("no node " + uuid);
   auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
   auto* stack = clip == nullptr ? dynamic_cast<celestrian::StackNode*>(node)
                                 : nullptr;
   if (clip != nullptr) {
-    if (clip->isArmedOrRecording()) {
-      juce::Logger::writeToLog("AudioEngine: import refused - " + uuid +
-                               " has a take in flight");
-      return false;
-    }
     if (clip->isMidiClip()) {
-      juce::Logger::writeToLog("AudioEngine: import refused - " + uuid +
-                               " is a MIDI track (it takes notes, not audio)");
-      return false;
+      return refuse(uuid + " is a MIDI track (it takes notes, not audio)");
     }
     if (clip->getIntrinsicDuration() > 0 &&
         clip->takeCount() >= celestrian::ClipNode::kMaxTakes) {
-      juce::Logger::writeToLog("AudioEngine: import refused - " + uuid +
-                               " holds the maximum number of takes");
-      return false;
+      return refuse(uuid + " holds the maximum number of takes");
     }
   } else if (stack == nullptr) {
     return false;
@@ -151,19 +142,24 @@ bool AudioEngine::importAudio(const juce::String& uuid,
   juce::String error;
   std::unique_ptr<juce::AudioBuffer<float>> audio =
       decodeAudioFile(file, currentSampleRateOrFallback(), error);
-  if (audio == nullptr) {
-    juce::Logger::writeToLog("AudioEngine: import refused - " + path + ": " +
-                             error);
-    return false;
-  }
+  if (audio == nullptr) return refuse(path + ": " + error);
 
-  const int64_t q = root_node->getQuantum();
-  const int64_t zero = root_node->getZero();
+  celestrian::engine_internal::CommittedTake take;
+  take.q_before = root_node->getQuantum();
+  take.zero_before = root_node->getZero();
+  const int64_t q = take.q_before;
+  const int64_t zero = take.zero_before;
 
+  // Settled takes enter the log BEFORE this import's entry.
+  reconcileTakes();
+
+  // A stack target gains a fresh clip child named after the file — the
+  // createNode shape (the node object is retained through the edit, so
+  // the pointer stays valid). The Insert is applied here and logged with
+  // the take as ONE entry: its inverse rides the take's as the edit that
+  // follows it (Edit::then), so one undo removes the take and the clip.
+  celestrian::Edit insert_inverse;
   if (stack != nullptr) {
-    // A stack target gains a fresh clip child named after the file —
-    // the createNode shape (one undoable Insert; the node object is
-    // retained through the edit, so the pointer stays valid).
     auto fresh = std::make_unique<celestrian::ClipNode>(
         file.getFileNameWithoutExtension(), cached_sample_rate_.load());
     fresh->setParent(stack);
@@ -172,13 +168,16 @@ bool AudioEngine::importAudio(const juce::String& uuid,
     e.parentUuid = stack->getUuid();
     e.index = stack->getNumChildren();
     e.node = std::move(fresh);
-    record(std::move(e));
+    insert_inverse = applyEdit(std::move(e));
+    if (insert_inverse.kind == celestrian::Edit::Kind::Nop) return false;
   }
+  take.clips = {clip};
 
   if (clip->getIntrinsicDuration() > 0) {
     // THE SECOND FORM: a new take of the slot (docs/takes.md) — the
     // file cut or zero-padded to the period, placed behind the shared
     // content base like a recorded new take, appended and made active.
+    // Its re-time stands: a file was not performed against the slot.
     const int64_t period = clip->getIntrinsicDuration();
     const int64_t base = clip->getContentBase();
     const int channels = audio->getNumChannels();
@@ -188,44 +187,30 @@ bool AudioEngine::importAudio(const juce::String& uuid,
     for (int c = 0; c < channels; ++c) {
       cut.copyFrom(c, (int)base, *audio, c, 0, copy);
     }
-    const int prev_active = clip->activeTake();
+    take.new_take = true;
+    take.prev_active = {clip->activeTake()};
     clip->appendLoadedTake(cut);
-    const int index = clip->takeCount() - 1;
-    if (!clip->selectTake(index)) {
+    if (!clip->selectTake(clip->takeCount() - 1)) {
       juce::Logger::writeToLog("AudioEngine: import failed - the new take of " +
                                uuid + " could not be selected");
       return false;
     }
-    celestrian::Edit inv(celestrian::Edit::Kind::Untake);
-    celestrian::Edit::TakePayload tp;
-    tp.uuid = clip->getUuid();
-    tp.take_index = index;
-    tp.prev_active = prev_active;
-    inv.takes.push_back(std::move(tp));
-    inv.setsIsland = true;
-    inv.iq = q;
-    inv.izero = zero;
-    reconcileTakes();  // log order: settled takes enter BEFORE this entry
-    pushUndo(std::move(inv));
-    clearRedo();
+    pushUndo(celestrian::engine_internal::settleCommittedTake(*this, *root_node,
+                                                             take));
     juce::Logger::writeToLog("AudioEngine: imported " + file.getFileName() +
-                             " as take " + juce::String(index + 1) + " of " +
-                             uuid + " (cut to the slot's period)");
+                             " as take " + juce::String(clip->takeCount()) +
+                             " of " + uuid + " (cut to the slot's period)");
     return true;
   }
 
-  // THE FIRST FORM: a first take of an empty clip. The view names the
-  // origin in absolute samples — computed from the frame zero it seated
-  // (docs/frame.md); the engine reads no frame — and the engine snaps
-  // it to the nearest Q boundary of the island grid, whose phase is the
-  // island zero (Q11: arm targets are Q boundaries). A pre-Q island
-  // takes the clock as the origin and the file's length as Q, exactly
-  // as a first recorded take.
+  // THE FIRST FORM: a first take of an empty clip, at `origin_samples`
+  // snapped to the nearest Q boundary of the island grid (Q11); a pre-Q
+  // island takes the clock as the origin and the file's length as Q, as
+  // a first recorded take does. Like a recorded commit it authors no
+  // map: only an unsnapped length leaves the provisional [0, L) window
+  // (loop_end 0 = none).
   const int64_t length = audio->getNumSamples();
   int64_t duration = length;
-  // Like a recorded commit (audit D4-7) no map is authored on the take;
-  // only an unsnapped length leaves the provisional [0, L) window
-  // (0 = none).
   int64_t loop_end = 0;
   if (q > 0) {
     const celestrian::timing::SnapResult snap =
@@ -252,97 +237,25 @@ bool AudioEngine::importAudio(const juce::String& uuid,
             : global_transport_pos.load();
   const int64_t context_cycle = q > 0 ? calculateEffectiveCycleLength() : 0;
 
-  // Commit like a take: the island snapshots its pre-take cycles
-  // (takeArmed), the content lands, the first take establishes the
-  // island, and the commit event runs the growth re-base.
+  // Commit like a take: the island counts one while the content lands
+  // and a first take establishes the island. (A callback that falls
+  // inside the bracket reads a live take and holds the cursor view's
+  // base for that block.)
   root_node->takeArmed();
   retireOwned(clip->installImportedTake(std::move(audio), origin, duration,
                                         loop_end, context_cycle));
   if (q == 0) root_node->establishIsland(duration, origin);
-  root_node->takeCommitted(origin, root_node->getIntrinsicDuration());
+  root_node->takeCommitted();
 
-  // The log entry (reconcileTakes' shape): the inverse Untake names the
-  // clip and carries the island facts as they were before the import.
-  celestrian::Edit inv(celestrian::Edit::Kind::Untake);
-  celestrian::Edit::TakePayload tp;
-  tp.uuid = clip->getUuid();
-  inv.takes.push_back(std::move(tp));
-  inv.setsIsland = true;
-  inv.iq = q;
-  inv.izero = zero;
-  settleAnchors(inv);
-  reconcileTakes();  // log order: settled takes enter BEFORE this entry
-  pushUndo(std::move(inv));
-  clearRedo();
-  if (q <= 0 && root_node->getQuantum() > 0) {
-    scrubIncoherentGeometry(root_node->getQuantum());
+  celestrian::Edit inv = celestrian::engine_internal::settleCommittedTake(
+      *this, *root_node, take);
+  if (insert_inverse.kind != celestrian::Edit::Kind::Nop) {
+    inv.then = std::make_unique<celestrian::Edit>(std::move(insert_inverse));
   }
+  pushUndo(std::move(inv));
   juce::Logger::writeToLog(
       "AudioEngine: imported " + file.getFileName() + " into " + uuid +
       " - origin " + juce::String(origin) + ", duration " +
       juce::String(duration) + (q == 0 ? " (establishes Q)" : ""));
   return true;
-}
-
-juce::var AudioEngine::getMidiNotes(const juce::String& uuid) const {
-  juce::Array<juce::var> rows;
-  auto* self = const_cast<AudioEngine*>(this);
-  auto* clip = dynamic_cast<celestrian::ClipNode*>(
-      self->findNodeByUuid(root_node.get(), uuid));
-  if (clip == nullptr || clip->recState() != celestrian::ClipNode::RecState::Idle ||
-      clip->contentKind() != celestrian::ClipNode::ContentKind::Midi) {
-    return rows;
-  }
-  const int64_t duration = clip->getIntrinsicDuration();
-  const int64_t q = root_node->getQuantum();
-  if (duration <= 0 || q <= 0) return rows;
-  const int64_t base = clip->getContentBase();
-  const celestrian::MidiSequence& seq = clip->midiSequence();
-
-  struct Note {
-    int64_t pos = 0, len = 0;
-    int note = 0, velocity = 0;
-  };
-  struct Open {
-    int64_t pos = 0;
-    int velocity = 0;
-  };
-  std::vector<Note> notes;
-  std::map<int, std::vector<Open>> open;  // (channel, pitch) -> note-ons
-  for (int i = 0; i < seq.count(); ++i) {
-    const celestrian::MidiEvent& e = seq[i];
-    const int64_t pos = e.pos - base;
-    if (pos < 0 || pos >= duration) continue;
-    const int key = e.channel0() * 128 + e.note();
-    if (e.isNoteOn()) {
-      open[key].push_back({pos, e.velocity()});
-    } else if (e.isNoteOff()) {
-      auto it = open.find(key);
-      if (it == open.end() || it->second.empty()) continue;
-      const Open on = it->second.back();
-      it->second.pop_back();
-      notes.push_back({on.pos, pos - on.pos, e.note(), on.velocity});
-    }
-  }
-  // Unpaired note-ons run to the take end.
-  for (const auto& [key, stack] : open) {
-    for (const Open& on : stack) {
-      notes.push_back({on.pos, duration - on.pos, key % 128, on.velocity});
-    }
-  }
-  std::stable_sort(notes.begin(), notes.end(),
-                   [](const Note& a, const Note& b) { return a.pos < b.pos; });
-  for (const Note& n : notes) {
-    const celestrian::timing::QTime pos = celestrian::timing::fromSamples(n.pos, q);
-    const celestrian::timing::QTime len = celestrian::timing::fromSamples(n.len, q);
-    juce::Array<juce::var> row;
-    row.add((double)pos.num);
-    row.add((double)pos.den);
-    row.add(n.note);
-    row.add(n.velocity);
-    row.add((double)len.num);
-    row.add((double)len.den);
-    rows.add(juce::var(row));
-  }
-  return rows;
 }

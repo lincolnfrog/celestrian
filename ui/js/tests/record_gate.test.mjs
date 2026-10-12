@@ -1,6 +1,6 @@
 /**
  * THE RECORDING GATE (docs/time_maps.md §7 "Gates and refusals";
- * view_model.js bandGate).
+ * vm/lane_common.js bandGate).
  *
  * While any take records — or is armed, waiting for its boundary —
  * every loop region is display-only: the engine refuses every map edit
@@ -25,44 +25,23 @@ import assert from 'node:assert/strict';
 
 import { deriveViewModel } from '../view_model.js';
 import { bandState } from '../session_view/map_core.js';
-
-const Q = 48000;
-const clip = (id, originQ, durationQ, extra = {}) => ({
-    id, name: id, type: 'clip', origin: Math.round(originQ * Q),
-    duration: Math.round(durationQ * Q), effectiveQuantum: Q,
-    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-    isMuted: false, isRecording: false, isPendingStart: false, ...extra,
-});
-const windowed = (id, originQ, durationQ, [a, b], extra = {}) =>
-    clip(id, originQ, durationQ, { loopStart: a * Q, loopEnd: b * Q,
-                                   windowActive: true, ...extra });
+import { SCENE_Q as Q, clipAt as clip, windowed, mapped, groupAt, island as scene,
+         laneOf } from './helpers.mjs';
 
 /** A 1Q scratch loop, a heard window, a raw 8Q take, a multi-segment
  * map, and a windowed group — plus whatever `extra` nodes. */
-function island(extra = []) {
-    return {
-        id: 'root', type: 'stack', quantum: Q, islandZero: 0, definerId: '',
-        isPlaying: true, masterPos: 0, islandPos: Math.round(0.3 * Q),
-        perf: { sampleRate: Q },
-        nodes: [
-            clip('A', 0, 1),
-            windowed('B', 0, 12, [4, 8]),
-            clip('R', 0, 8),
-            clip('M', 0, 8, { windowActive: true,
-                              segments: [0, 2 * Q, 3 * Q, 5 * Q] }),
-            {
-                id: 'G', name: 'G', type: 'stack', anchored: true, origin: 0,
-                windowActive: true, loopStart: 0, loopEnd: 2 * Q,
-                loopBypassed: false, effectiveQuantum: Q, duration: 0,
-                nodes: [clip('g1', 0, 4)],
-            },
-            ...extra,
-        ],
-    };
-}
+const island = (extra = []) => scene([
+    clip('A', 0, 1),
+    windowed('B', 0, 12, [4, 8]),
+    clip('R', 0, 8),
+    mapped('M', 0, 8, [[0, 2], [3, 5]]),
+    groupAt('G', 0, [clip('g1', 0, 4)], {
+        windowActive: true, loopStart: 0, loopEnd: 2 * Q, loopBypassed: false,
+        duration: 0 }),
+    ...extra,
+], { clockQ: 0.3 });
 const EDITABLE = ['B', 'R', 'M', 'G'];
 const lanesOf = vm => vm.lanes.filter(l => l.kind === 'clip' || l.kind === 'group');
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
 
 test('at rest: the map lanes are editable, nothing is locked', () => {
     const vm = deriveViewModel(island());

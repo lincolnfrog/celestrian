@@ -1,19 +1,16 @@
 /**
  * THE SEAT: THE TOP'S MOMENT, AT OR JUST BEFORE IT (docs/frame.md §1;
- * loop_selection.md §9.3–§9.4, P2.7). Phase 1's name for this file was
- * seat_nearest.test.mjs; the NEAREST rule it pinned is superseded
- * (2026-09-24).
+ * loop_selection.md §9.3–§9.4, P2.7).
  *
  * The frame's zero seats on the first lane's bar lines — the grid line
  * AT OR BEFORE a lane's top, a top up to ¼Q early a PICKUP to the next
  * line: [x]grid = gridPhase + ⌊(x − gridPhase)/Q + ¼⌋·Q. The top read
  * is the ↺'s MOMENT, origin + a0 + heardOffset(segs, loopTop); with no
- * `loopTop` (an old engine), or one the kept set does not play, it is
- * the region start — every picture of before Phase 2.
+ * `loopTop`, or one the kept set does not play, it is the region start.
  *
  * What this pins:
- *   (a) the field topology (a 1Q scratch loop, a 56Q take windowed to
- *       5Q that seats the frame, a later 5Q loop 3Q in): slides inside
+ *   (a) the three-loop topology (a 1Q scratch loop, a 56Q take windowed
+ *       to 5Q that seats the frame, a later 5Q loop 3Q in): slides inside
  *       [−¼Q, +¾Q) of the bar leave the zero, the later lane and the
  *       cursor where they were; past either end the frame re-seats on
  *       the neighbouring line, always on the grid;
@@ -31,40 +28,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deriveViewModel, SEAT_PICKUP_Q } from '../view_model.js';
-import { SCENE_Q as Q, PERF } from './helpers.mjs';
+import { deriveViewModel } from '../view_model.js';
+import { SCENE_Q as Q, clipAt as clip, windowed, mapped, groupAt, island as scene,
+         laneOf, near } from './helpers.mjs';
 
 const EPS = 1e-9;
-const near = (a, b, msg) => assert.ok(Math.abs(a - b) < EPS, `${msg}: ${a} ≉ ${b}`);
-
-const clip = (id, originQ, durationQ, extra = {}) => ({
-    id, name: id, type: 'clip', origin: Math.round(originQ * Q),
-    duration: Math.round(durationQ * Q), effectiveQuantum: Q,
-    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-    isMuted: false, isRecording: false, isPendingStart: false,
-    periodSource: 'own', ...extra,
-});
-const windowed = (id, originQ, durationQ, [aQ, bQ], extra = {}) =>
-    clip(id, originQ, durationQ, {
-        loopStart: Math.round(aQ * Q), loopEnd: Math.round(bQ * Q),
-        windowActive: true, ...extra,
-    });
-const mapped = (id, originQ, durationQ, segsQ, extra = {}) =>
-    clip(id, originQ, durationQ, {
-        segments: segsQ.flat().map(v => Math.round(v * Q)),
-        windowActive: true, ...extra,
-    });
 const topAt = q => ({ loopTop: Math.round(q * Q) });
 // The raw clock sits 0.3Q into the seated frame's current pass.
-const island = (nodes, clockQ = 55.3) => ({
-    id: 'root', type: 'stack', quantum: Q, islandZero: 0, definerId: '',
-    isPlaying: true, masterPos: 0, islandPos: Math.round(clockQ * Q),
-    perf: PERF, nodes,
-});
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
+const island = (nodes, clockQ = 55.3) => scene(nodes, { clockQ });
 const zeroQ = vm => vm.frameZero / Q;
 
-/** The field topology with B's window slid by `slideQ` from [44, 49). */
+/** The three-loop topology with B's window slid by `slideQ` from [44, 49). */
 function videoTopology(slideQ = 0) {
     return island([
         clip('A', 0, 1),                                   // 1Q scratch loop
@@ -72,10 +46,6 @@ function videoTopology(slideQ = 0) {
         clip('C', 58, 5),                                  // 3Q into B's frame
     ]);
 }
-
-test('the pickup is a quarter of a Q', () => {
-    assert.equal(SEAT_PICKUP_Q, 0.25);
-});
 
 test('(a) at rest: the windowed take seats the frame; C sits 3Q in', () => {
     const vm = deriveViewModel(videoTopology());
@@ -88,31 +58,24 @@ test('(a) at rest: the windowed take seats the frame; C sits 3Q in', () => {
     near(vm.playheadQ, 0.3, 'cursor');
 });
 
-for (const slideQ of [-0.25, -0.15, +0.15, +0.49, +0.74]) {
-    test(`(a) a ${slideQ > 0 ? '+' : '−'}${Math.abs(slideQ)}Q slide stays on the bar`, () => {
-        const rest = deriveViewModel(videoTopology());
+/* [slide, the zero, B's top, C's top, the cursor]. Inside [−¼Q, +¾Q) of
+ * the bar only B's seam moves (early: a pickup at the right end). Past
+ * the pickup the frame seats on the line before, more than ¾Q late on
+ * the next one — and the later lane and the cursor follow (frame.md §5). */
+for (const [slideQ, zero, bTop, cTop, cursor] of [
+    [-0.25, 55, 4.75, 3, 0.3], [-0.15, 55, 4.85, 3, 0.3], [+0.15, 55, 0.15, 3, 0.3],
+    [+0.49, 55, 0.49, 3, 0.3], [+0.74, 55, 0.74, 3, 0.3],
+    [-0.3, 54, 0.7, 4, 1.3],
+    [+0.8, 56, 4.8, 2, 4.3],
+]) {
+    test(`(a) a ${slideQ > 0 ? '+' : '−'}${Math.abs(slideQ)}Q slide seats the frame on ${zero}Q`, () => {
         const slid = deriveViewModel(videoTopology(slideQ));
-        assert.equal(zeroQ(slid), zeroQ(rest), 'the zero does not re-seat');
-        near(laneOf(slid, 'B').takeStartQ, slideQ < 0 ? 5 + slideQ : slideQ,
-            'only B\'s seam moved (early: a pickup at the right end)');
-        near(laneOf(slid, 'C').takeStartQ, 3, 'the later lane stays put');
-        near(slid.playheadQ, rest.playheadQ, 'the cursor stays put');
+        assert.equal(zeroQ(slid), zero, 'the zero, on the grid');
+        near(laneOf(slid, 'B').takeStartQ, bTop, 'B\'s top');
+        near(laneOf(slid, 'C').takeStartQ, cTop, 'the later lane');
+        near(slid.playheadQ, cursor, 'the cursor');
     });
 }
-
-test('(a) past the pickup, a slide seats the frame on the line before', () => {
-    const vm = deriveViewModel(videoTopology(-0.3));
-    assert.equal(zeroQ(vm), 54, 'the zero moved one Q, and stays on the grid');
-    near(laneOf(vm, 'B').takeStartQ, 0.7, 'B\'s top just after the left edge');
-    near(laneOf(vm, 'C').takeStartQ, 4, 'the later lane follows (frame.md §5)');
-});
-
-test('(a) more than ¾Q late, the top is a pickup to the next line', () => {
-    const vm = deriveViewModel(videoTopology(+0.8));
-    assert.equal(zeroQ(vm), 56);
-    near(laneOf(vm, 'B').takeStartQ, 4.8, 'B\'s top 0.2Q before the frame end');
-    near(laneOf(vm, 'C').takeStartQ, 2, 'the later lane follows');
-});
 
 test('(a) the zero is the grid line at or before the top, ¼Q pickup', () => {
     for (let k = -39; k <= 39; k++) {
@@ -148,7 +111,7 @@ test('(b) the first lane seats on the line at or before its top', () => {
     assert.equal(zeroQ(vm), 14);
     near(laneOf(vm, 'B').takeStartQ, 0.3, 'top 0.3Q in');
     vm = at(0.6);
-    assert.equal(zeroQ(vm), 14, 'nearest would have taken the next line');
+    assert.equal(zeroQ(vm), 14, 'at or before the top — not the nearest line');
     near(laneOf(vm, 'B').takeStartQ, 0.6, 'top 0.6Q in');
     vm = at(0.8);
     assert.equal(zeroQ(vm), 15);
@@ -204,14 +167,11 @@ test('(c) an unmapped take plays whole — its top is any raw sample', () => {
     near(laneOf(vm, 'B').takeStartQ, 5, 'raw 0 sounds 5Q in');
 });
 
-test('(c) a group seats at its ↺ exactly like a clip (fractal, 2026-09-29)', () => {
-    const member = clip('m', 10, 8);
-    const group = {
-        id: 'G', name: 'G', type: 'stack', anchored: true,
-        origin: 10 * Q, effectiveQuantum: Q, nodes: [member],
+test('(c) a group seats at its ↺ exactly like a clip (fractal)', () => {
+    const group = groupAt('G', 10, [clip('m', 10, 8)], {
         loopStart: 4 * Q, loopEnd: 8 * Q, windowActive: true,
         loopBypassed: false, loopTop: 6 * Q,  // the stored top, 2Q in
-    };
+    });
     const vm = deriveViewModel(island([group]));
     assert.equal(zeroQ(vm), 16, 'the group seats from its ↺: origin + a0 + 2Q');
     const g = laneOf(vm, 'G');
@@ -232,9 +192,9 @@ const drums = (segsQ, extra = {}) => island([
     mapped('drums', 4.025, 8, segsQ, extra),
 ], 4.3);
 
-/* Since 2026-09-29 (owner) the bass — the first loop longer than Q —
- * places the frame, and every other loop's ↺ is where it STARTS
- * PLAYING: the sample it plays at the frame's left edge. */
+/* The bass — the first loop longer than Q — places the frame, and every
+ * other loop's ↺ is where it STARTS PLAYING: the sample it plays at the
+ * frame's left edge. */
 test('(d) the drums’ ↺ is where they start: the sample on the bass’s bar', () => {
     const vm = deriveViewModel(drums([[0, 2], [2, 4]]));
     assert.equal(zeroQ(vm), 0, 'the bass (the first loop longer than Q) places the frame');
@@ -287,11 +247,17 @@ test('(e) a free re-time moves the lane continuously; the zero stays on the grid
     near(laneOf(plain, 'P').reps[0].endQ, 1.37, 'its wrapped predecessor ends there');
 });
 
-test('(f) frame.md §2 pictures are unchanged (every top on the grid)', () => {
+test('(f) the frame.md §2 pictures (every top on the grid)', () => {
     const cases = [
         // A is 1Q; B recorded, then shortened to 6Q..10Q → B |6|7|8|9|.
         { nodes: [clip('A', 0, 1), windowed('B', 1, 10, [6, 10])],
           cycleQ: 4, tops: { A: 0, B: 0 } },
+        // …then its end pulled in to 9Q: a 3Q loop from the same top.
+        { nodes: [clip('A', 0, 1), windowed('B', 1, 10, [6, 9])],
+          cycleQ: 3, tops: { A: 0, B: 0 } },
+        // …and, beside a later 6Q take, cut to 6Q..8Q: the cycle is 6Q.
+        { nodes: [clip('A', 0, 1), windowed('B', 1, 10, [6, 8]), clip('C', 11, 6)],
+          cycleQ: 6, tops: { A: 0, B: 0 } },
         // A is a 4Q loop; B an 8Q take recorded on A's third Q.
         { nodes: [clip('A', 0, 4), clip('B', 2, 8)],
           cycleQ: 8, tops: { A: 0, B: 2 } },
@@ -306,8 +272,8 @@ test('(f) frame.md §2 pictures are unchanged (every top on the grid)', () => {
           cycleQ: 12, tops: { A: 0, C: 2 } },
         // A is a 2Q loop; B an 8Q take recorded 1Q late, windowed to
         // 1Q..5Q: B's top falls 2Q after A's. A — the first loop longer
-        // than Q — places the frame; B slots in there (owner
-        // 2026-09-29: a later loop never moves the frame).
+        // than Q — places the frame; B slots in there (a later loop
+        // never moves the frame).
         { nodes: [clip('A', 0, 2), windowed('B', 1, 8, [1, 5])],
           cycleQ: 4, tops: { A: 0, B: 2 } },
     ];
@@ -324,9 +290,9 @@ test('(f) frame.md §2 pictures are unchanged (every top on the grid)', () => {
 });
 
 test('(g) the first loop LONGER than Q places the frame; a 1Q loop never ' +
-     'does, and editing a later loop never moves it (owner 2026-09-29)', () => {
-    // The field project: a 1Q bass at 0, a 2Q drum loop whose ↺ sounds
-    // at 21 + 84 = 105Q, and a long third loop recorded later.
+     'does, and editing a later loop never moves it', () => {
+    // A 1Q bass at 0, a 2Q drum loop whose ↺ sounds at 21 + 84 = 105Q,
+    // and a long third loop recorded later.
     const nodes = cStart => [
         clip('bass', 0, 1),
         windowed('drums', 21, 95, [83.57, 85.57], { loopTop: 84 * Q }),
@@ -351,11 +317,9 @@ test('(g) the first loop LONGER than Q places the frame; a 1Q loop never ' +
 
 /* A NEW TAKE of a committed slot (docs/takes.md §2) keeps the slot's
  * origin, period and top and commits back into them: it seats as the
- * loop it IS, never as a growing take. Field audit 2026-10-01: counted
- * as a growing take, a new take of the 1Q scratch loop shown above the
- * placing loop took the frame — every lane jumped at its start and back
- * at its commit. Both published shapes: the mock keeps `duration` the
- * slot's; the engine publishes the live captured length (0, then
+ * loop it IS, never as a growing take — so a new take of a loop shown
+ * above the placing loop never takes the frame. Both published shapes:
+ * `duration` held at the slot's, and the live captured length (0, then
  * growing) with the slot's own on `periodQ`. */
 const retaking = (id, originQ, slotQ, capturedQ) => ({
     mock: clip(id, originQ, slotQ, { isRecording: true }),

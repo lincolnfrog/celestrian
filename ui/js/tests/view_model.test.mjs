@@ -2,28 +2,26 @@
  * View Model tests (docs/session_view.md §5 phase 1).
  *
  * Everything asserts in Q units — the model's contract is that no pixel
- * exists below the patch layer. Includes the first executable I2/I8
- * check: every lane's reps tile the SAME cycle frame exactly (no gaps,
- * no overlaps, no out-of-frame values), and the model carries exactly
- * one playhead.
+ * exists below the patch layer. Includes the executable I2/I8 check:
+ * every lane's reps tile the SAME cycle frame exactly (no gaps, no
+ * overlaps, no out-of-frame values), and the model carries exactly one
+ * playhead.
  *
- * Coverage lesson from the kernel arc applies here too: scenes use a
- * masterPos well past t=0 (sustained playback) so absolute and
- * cycle-relative values never coincide by accident.
+ * Scenes use a masterPos well past t=0 (sustained playback), and a
+ * quantum that is not the mock's rate, so absolute, cycle-relative and
+ * Q-relative values never coincide by accident.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { deriveViewModel, unrollReps, windowDragTarget } from '../view_model.js';
-// SCENE_Q (a quantum deliberately ≠ the mock's own rate, so absolute
-// and Q-relative values never coincide) + minimal engine-shaped
-// builders + the tiling invariant — shared in helpers.mjs (this file
-// was their birthplace).
-import { SCENE_Q as Q, clip, stack, state, assertTilesCycle, makeLcg }
+import { SCENE_Q as Q, clip, stack, state, assertTilesCycle, makeLcg, near }
     from './helpers.mjs';
 
-test('recording.md island: 1Q + 4Q + 3Q → cycle 12Q, correct rep counts', () => {
+const groupLane = vm => vm.lanes.find(l => l.kind === 'group');
+
+test('recording.md island: 1Q + 4Q + 3Q → cycle 12Q, correct rep counts, one playhead in frame (I8)', () => {
     const vm = deriveViewModel(state([clip(1), clip(4), clip(3)]));
     assert.equal(vm.cycleQ, 12);
     assert.equal(vm.quantum, Q);
@@ -33,11 +31,8 @@ test('recording.md island: 1Q + 4Q + 3Q → cycle 12Q, correct rep counts', () =
     assert.equal(k.reps.length, 4);
     assert.equal(d.reps.filter(r => r.ghost).length, 11);
     vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
-});
-
-test('one playhead, in-frame, deep into playback (I8)', () => {
-    const vm = deriveViewModel(state([clip(1), clip(4), clip(3)]));
-    assert.equal(vm.playheadQ, 5.25); // (25·12 + 5.25) mod 12
+    // Deep into playback: (25·12 + 5.25) mod 12.
+    assert.equal(vm.playheadQ, 5.25);
     assert.ok(vm.playheadQ >= 0 && vm.playheadQ < vm.cycleQ);
 });
 
@@ -52,191 +47,204 @@ test('arm target is the next Q boundary (Q11), wrapping at the cycle top', () =>
     assert.equal(deriveViewModel(s).armAtQ, 8);
 });
 
-test('take marking: performed PHASE is kept; whole cycles fold away', () => {
-    // Owner ruling 2026-07-10 ("it doesn't matter how many times I let
-    // clip 1 loop before recording clip 2") + refinement 2026-07-16
-    // ("clip 3 recorded at 2Q must anchor 2Q→4Q, not jump to 0Q"):
-    // whole CYCLES never matter, but the performed phase WITHIN the
-    // cycle does. A take performed at heard 2Q marks its bright tile at
-    // 2Q — folding by the clip's own period erased it.
-    const vm = deriveViewModel(state([clip(4), clip(1, { origin: 2 * Q })]));
-    assert.equal(vm.cycleQ, 4);
-    const lane = vm.lanes[1];
-    const take = lane.reps.find(r => !r.ghost);
-    assert.equal(take.startQ, 2); // where it was performed
-    assert.equal(take.endQ, 3);
-    assertTilesCycle(lane, 4);
+/* TAKE MARKING. A take's bright tile marks where it was PERFORMED: the
+ * phase within the cycle is kept, whole cycles fold away (a 2Q loop
+ * sounds at 0 AND at 2Q — the tile says which was played). A committed
+ * take carries `contextCycle`, its heard frame, so its heard phase
+ * survives a frame that grows later. A take from before the zero has no
+ * performed position in this frame: its first full repetition.
+ * Rows: the scene; per lane the take tile — [startQ, endQ], a bare
+ * startQ, or null (unchecked); `tiles`, the lanes that must tile the
+ * cycle exactly (I2). */
+const Z = 100 * Q;  // a nonzero island zero
+const TAKE_MARKS = [
+    { name: 'a 1Q take performed at heard 2Q of a 4Q cycle',
+      nodes: [clip(4), clip(1, { origin: 2 * Q })],
+      cycleQ: 4, takes: [null, [2, 3]], tiles: [1] },
+    { name: 'a 4Q loop performed 2Q in keeps its grid ≡ 2 (mod 4): its head wraps',
+      nodes: [clip(4), clip(4, { origin: 2 * Q })], takes: [null, 2],
+      more: vm => assert.equal(vm.lanes[1].reps[0].ghost, true, 'wrapped head [0, 2)') },
+    { name: 'a 2Q take performed at heard 2Q, two cycles past a nonzero zero, marks at 2Q, not 0',
+      nodes: [clip(1, { origin: 0 }),                     // from before the zero
+              clip(4, { origin: Z }),                     // the zero's own take
+              clip(2, { origin: Z + (2 * 4 + 2) * Q })],
+      extra: { islandZero: Z }, cycleQ: 4, takes: [0, 0, [2, 4]], tiles: 'all',
+      more: vm => assert.equal(vm.lanes[2].reps.find(r => r.ghost).startQ, 0,
+          'ghost fills 0–2Q') },
+    // 1Q, 4Q, 2Q performed at heard 2Q, then 5Q performed at a heard
+    // cycle TOP three cycles later: the frame grows to 20Q. The 4Q clip
+    // — the first loop longer than Q — places the frame at its top
+    // (1Q); every later loop slots in where it falls. Clip 3 stays at
+    // [2, 4) though its origin now precedes the zero; clip 4 sits at
+    // its performed top, 12Q into the frame.
+    { name: 'heard phases survive a polyrhythmic frame explosion',
+      nodes: [clip(1, { origin: 0 }),
+              clip(4, { origin: 1 * Q, contextCycle: 1 * Q }),
+              clip(2, { origin: 7 * Q, contextCycle: 4 * Q }),
+              clip(5, { origin: 13 * Q, contextCycle: 4 * Q })],
+      extra: { islandZero: 13 * Q, masterPos: 5.5 * Q },
+      cycleQ: 20, takes: [0, 0, [2, 4], [12, 17]], tiles: 'all',
+      more: vm => {
+          assert.equal(vm.frameZero, 1 * Q, 'the 4Q clip places the frame');
+          // takeStartQ: the lane's content-frame origin — window
+          // brackets and dims anchor here.
+          assert.equal(vm.lanes[2].takeStartQ, 2);
+          assert.equal(vm.lanes[3].takeStartQ, 12);
+          assert.equal(vm.lanes[0].takeStartQ, 0);
+      } },
+    // A 1Q loop + a 4Q take recorded from absolute 3Q: the view seats
+    // the take at its own top (docs/frame.md) — the 1Q loop constrains
+    // nothing. The tile draws the whole take from its top (a raw tile's
+    // mapping: raw_tile_mapping.test.mjs).
+    { name: 'a take recorded 3Q in is ONE solid tile, not 3Q of ghost',
+      nodes: [clip(1, { origin: 0 }), clip(4, { origin: 3 * Q })],
+      extra: { origin: 0, islandZero: 3 * Q, masterPos: 1.1 * Q }, cycleQ: 4, takes: [],
+      more: vm => assert.deepEqual(vm.lanes[1].reps,
+          [{ startQ: 0, endQ: 4, ghost: false, wrapped: false,
+             srcSegs: [[0, 1]], srcTopFrac: 0 }]) },
+    // masterPos arrives as the engine's zero-corrected VIEW.
+    { name: 'tile origins are zero-relative under a nonzero island zero',
+      nodes: [clip(4, { origin: 300000 }), clip(4, { origin: 300000 + 2 * Q })],
+      extra: { origin: 300000, masterPos: 1.5 * Q }, takes: [null, 2],
+      more: vm => assert.equal(vm.playheadQ, 1.5) },
+];
+for (const { name, nodes, extra, cycleQ, takes, tiles = [], more } of TAKE_MARKS) {
+    test(`take marking: ${name}`, () => {
+        const vm = deriveViewModel(state(nodes, extra));
+        if (cycleQ) assert.equal(vm.cycleQ, cycleQ);
+        takes.forEach((want, i) => {
+            if (want === null) return;
+            const take = vm.lanes[i].reps.find(r => !r.ghost);
+            assert.equal(take.startQ, [].concat(want)[0], `lane ${i}: the take tile starts`);
+            if (Array.isArray(want)) assert.equal(take.endQ, want[1], `lane ${i}: …and ends`);
+        });
+        vm.lanes.forEach((l, i) => {
+            if (tiles === 'all' || tiles.includes(i)) assertTilesCycle(l, vm.cycleQ);
+        });
+        if (more) more(vm);
+    });
+}
 
-    // A clip whose phase is offset (origin ≢ 0 mod period) keeps its
-    // grid: the performed-position tile is the main one, the head wraps
-    const shifted = deriveViewModel(
-        state([clip(4), clip(4, { origin: 2 * Q })])).lanes[1];
-    const t2 = shifted.reps.find(r => !r.ghost);
-    assert.equal(t2.startQ, 2); // grid ≡ 2 (mod 4)
-    assert.equal(shifted.reps[0].ghost, true); // wrapped head [0,2)
+/* ---------- THE WINDOW LANE ----------
+ * An ACTIVE window is the part: the lane's period, the frame and the
+ * audible loop follow it; the lane rests in the HEARD view (tiles carry
+ * the window's slice — no brackets, no second cursor) and the chip
+ * reads the part's length. BYPASSED, the raw take returns with its
+ * brackets. A full-span window is no window. */
+const win = (aQ, bQ, extra = {}) =>
+    ({ loopStart: aQ * Q, loopEnd: bQ * Q, windowActive: true, loopBypassed: false, ...extra });
+const bypassed = (aQ, bQ, extra = {}) =>
+    ({ loopStart: aQ * Q, loopEnd: bQ * Q, windowActive: false, loopBypassed: true, ...extra });
+/** The bracket descriptor of a one-segment window, bypassed. */
+const bypassedBrackets = (aQ, bQ) => ({
+    startQ: aQ, endQ: bQ, bypassed: true, active: false, suspended: false,
+    segs: [[aQ, bQ]], periodQ: bQ - aQ, multi: false,
 });
 
-test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', () => {
-    // The 4-clip flow: 1Q, 4Q (zero definer), 2Q performed at heard 2Q,
-    // then 5Q performed at a heard cycle TOP three old cycles later. The
-    // frame explodes to 20Q. The 4Q clip — the first loop longer than Q
-    // — places the frame at its top (1Q); every later loop slots in
-    // where it falls (owner 2026-09-29). Each committed take carries
-    // `contextCycle` (its heard frame): the bright tile marks at the
-    // heard PHASE — clip 3 STILL at [2,4) even though its rel is now
-    // negative, clip 4 at its performed top, 12Q into the frame.
-    const E = 13 * Q; // zero after clip 4's commit (= clip 4's origin)
-    const vm = deriveViewModel(state([
-        clip(1, { origin: 0 }),                          // pre-zero, ctx 0
-        clip(4, { origin: 1 * Q, contextCycle: 1 * Q }), // rel −12
-        clip(2, { origin: 7 * Q, contextCycle: 4 * Q }), // rel −6, heard 2Q
-        clip(5, { origin: 13 * Q, contextCycle: 4 * Q }),// rel 0, heard top
-    ], { islandZero: E, masterPos: 5.5 * Q }));
-    assert.equal(vm.cycleQ, 20);
-    const [c1, c2, c3, c4] = vm.lanes;
-
-    assert.equal(vm.frameZero, 1 * Q, 'the 4Q clip places the frame');
-    const take4 = c4.reps.find(r => !r.ghost);
-    assert.equal(take4.startQ, 12, 'clip 4 reads from the top it was performed at');
-    assert.equal(take4.endQ, 17);
-
-    const take3 = c3.reps.find(r => !r.ghost);
-    assert.equal(take3.startQ, 2, 'clip 3 keeps its heard 2Q anchor (rel −6, ctx 4)');
-    assert.equal(take3.endQ, 4);
-
-    assert.equal(c2.reps.find(r => !r.ghost).startQ, 0,
-        'clip 2 (heard frame 1Q) marks at the top');
-    assert.equal(c1.reps.find(r => !r.ghost).startQ, 0,
-        'pre-zero, no ctx: first full repetition');
-    vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
-
-    // takeStartQ: the lane's content-frame origin — window brackets/dims
-    // anchor here (field 2026-07-16c: they drew a phase off otherwise)
-    assert.equal(c3.takeStartQ, 2);
-    assert.equal(c4.takeStartQ, 12);
-    assert.equal(c1.takeStartQ, 0);
-});
-
-test('HEARD VIEW (law 13 amended): a windowed lane shows what sounds', () => {
-    // 2026-07-19k: the window's CONTENT is the lane's material, tiled
-    // where it audibly sounds (period = window length, anchored at
-    // origin + start). Every tile carries the segment src; no brackets
-    // in the resting view (the edit view holds the raw take).
-    const vm = deriveViewModel(state([
-        clip(4),
-        clip(2, {
-            origin: 2 * Q, contextCycle: 4 * Q,
-            loopStart: 1 * Q, loopEnd: 2 * Q,
-            windowActive: true, loopBypassed: false,
-        }),
-    ]));
+test('HEARD VIEW: a windowed lane shows what sounds; comp mode shows the raw take; a bypass the raw ghosts', () => {
+    // The window's CONTENT is the lane's material, tiled where it
+    // audibly sounds (period = window length, anchored at origin +
+    // start).
+    const scene = window => state([clip(4),
+        clip(2, { origin: 2 * Q, contextCycle: 4 * Q, ...window })]);
+    const vm = deriveViewModel(scene(win(1, 2)));
     assert.equal(vm.cycleQ, 4);
     const lane = vm.lanes[1];
     assert.equal(lane.periodQ, 1, 'displayed period = window length');
     assert.equal(lane.reps.length, 4, 'window content tiles the frame');
-    // Phase 3 (2026-07-23c): reps carry the content SLICES (srcSegs)
-    // plus the phase rotation (srcTopFrac) — tiles sit on the frame
-    // grid, phase baked as rotation, no wrap slivers.
+    // Reps carry the content SLICES (srcSegs) plus the phase rotation
+    // (srcTopFrac): tiles sit on the frame grid, no wrap slivers.
     assert.ok(lane.reps.every(r => r.srcSegs && r.srcSegs.length === 1 &&
         r.srcSegs[0][0] === 0.5 && r.srcSegs[0][1] === 1),
         'every tile draws the window SEGMENT (second half of the take)');
     assert.ok(lane.reps.every(r => r.srcTopFrac === 0),
         'window at a period-aligned phase: no rotation');
     assert.equal(lane.window, null, 'no brackets at rest');
-    assert.equal(lane.windowChipQ, 1, 'the chip advertises the edit view');
+    assert.equal(lane.windowChipQ, 1, 'the chip reads the part length');
     assertTilesCycle(lane, vm.cycleQ);
 
-    // EDIT VIEW: the lane expands to its full raw duration on its own
-    // scale, with the selection brackets — the seed track's trim view.
-    const editState = state([
-        clip(4),
-        clip(2, {
-            origin: 2 * Q, contextCycle: 4 * Q,
-            loopStart: 1 * Q, loopEnd: 2 * Q,
-            windowActive: true, loopBypassed: false,
-        }),
-    ]);
-    const editId = editState.nodes[1].id;
-    // Comp mode is the one remaining raw-lane view (the chip-click
-    // inspector retired 2026-09-13 — the region panel shows the take).
-    const vmE = deriveViewModel(editState, { compMode: new Set([editId]) });
-    const editing = vmE.lanes[1];
+    // COMP MODE, the raw-lane view: the lane expands to its full raw
+    // duration on its own scale, with the selection brackets.
+    const editState = scene(win(1, 2));
+    const editing = deriveViewModel(editState,
+        { compMode: new Set([editState.nodes[1].id]) }).lanes[1];
     assert.equal(editing.windowEditing, true, 'lane enters the raw view');
     assert.equal(editing.frameQ, 2, 'per-lane scale = the full take');
     assert.deepEqual([editing.window.startQ, editing.window.endQ], [1, 2],
         'brackets select over the raw material');
 
     // Bypassed window: plain raw-take ghosts return (nothing baked, I9)
-    const byp = deriveViewModel(state([
-        clip(4),
-        clip(2, {
-            origin: 2 * Q, contextCycle: 4 * Q,
-            loopStart: 1 * Q, loopEnd: 2 * Q,
-            windowActive: false, loopBypassed: true,
-        }),
-    ])).lanes[1];
+    const byp = deriveViewModel(scene(bypassed(1, 2))).lanes[1];
     assert.ok(byp.reps.every(r => !r.echo), 'bypassed: no echoes');
     assert.equal(byp.reps.filter(r => r.ghost).length, 1, 'raw ghost at [0,2)');
 });
 
-test('FIELD 2026-07-16: a 2Q take performed at heard 2Q marks at 2Q, not 0', () => {
-    // The report: 1Q clip, 4Q clip, then a 2Q take armed just before the
-    // heard 2Q — it displayed at 2Q while recording, then JUMPED to
-    // 0Q–2Q at commit (its origin mod its own 2Q period is 0). The audio
-    // is identical either way (a 2Q loop sounds at 0 AND 2Q); the take
-    // tile must mark where it was PERFORMED.
-    const E = 100 * Q; // nonzero island zero (re-based to clip 2's origin)
-    const vm = deriveViewModel(state([
-        clip(1, { origin: 0 }),                    // pre-zero take
-        clip(4, { origin: E }),                    // the zero definer
-        clip(2, { origin: E + (2 * 4 + 2) * Q }),  // heard 2Q, 2 cycles later
-    ], { islandZero: E }));
-    assert.equal(vm.cycleQ, 4);
-    const [c1, c2, c3] = vm.lanes;
-
-    const take3 = c3.reps.find(r => !r.ghost);
-    assert.equal(take3.startQ, 2, 'take drawn where it was performed (2Q)');
-    assert.equal(take3.endQ, 4);
-    assert.equal(c3.reps.find(r => r.ghost).startQ, 0, 'ghost fills 0–2Q');
-
-    // Whole-cycle counts still fold away (the 2 extra cycles above)
-    assert.equal(c2.reps.find(r => !r.ghost).startQ, 0);
-    // Pre-zero takes have no honest performed position in this frame:
-    // first full repetition (the 2026-07-10 behavior survives for them)
-    assert.equal(c1.reps.find(r => !r.ghost).startQ, 0);
-    vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
-});
-
-test('a take recorded 3Q in is ONE solid tile, not 3Q of ghost (field bug)', () => {
-    // Screenshot 2026-07-09: 1Q loop + a 4Q take recorded from absolute
-    // 3Q. The view seats the take at its own top (docs/frame.md) — the
-    // 1Q loop constrains nothing — so it draws as one tile from 0, never
-    // as [0,3) ghost + [3,4) take.
-    const s = state(
-        [clip(1, { origin: 0 }), clip(4, { origin: 3 * Q })],
-        { origin: 0, islandZero: 3 * Q, masterPos: 1.1 * Q },
-    );
-    const vm = deriveViewModel(s);
-    assert.equal(vm.cycleQ, 4);
-    const lane4Q = vm.lanes[1];
-    // One tile, whole take, solid — anchored at the re-based cycle top
-    assert.deepEqual(lane4Q.reps, [{ startQ: 0, endQ: 4, ghost: false, wrapped: false }]);
-});
-
-test('nonzero island zero: tile origins are zero-relative', () => {
-    // Island re-based: zero at 300000 samples; clip origin 2Q after
-    // zero. masterPos arrives as the engine's zero-corrected VIEW.
-    const zero = 300000;
-    const s = state(
-        [clip(4, { origin: zero }), clip(4, { origin: zero + 2 * Q })],
-        { origin: zero, masterPos: 1.5 * Q },
-    );
-    const vm = deriveViewModel(s);
-    assert.equal(vm.playheadQ, 1.5);
-    // The phase-shifted 4Q clip's grid runs ≡ 2 (mod 4) — zero-relative
-    const take = vm.lanes[1].reps.find(r => !r.ghost);
-    assert.equal(take.startQ, 2);
-});
+/* One row per window state × lane kind: the nodes, the lane under test
+ * (an index, or the first group), the frame's facts and the lane's. */
+const WINDOW_LANES = [
+    { name: 'a windowed clip collapses to its audible loop — the frame IS that loop',
+      nodes: [clip(4, win(1, 2, { playhead: 0.25 })), clip(1)], lane: 0,
+      frame: { cycleQ: 1 }, fields: { window: null, periodQ: 1, windowPhase: 0 } },
+    { name: 'a windowed group has no second cursor',
+      nodes: [stack([clip(2)], win(0, 1, { playhead: 0.75 }))],
+      fields: { windowPhase: 0 } },
+    { name: '…nor does a bypassed one',
+      nodes: [stack([clip(2)], bypassed(0, 1, { playhead: 0.75 }))],
+      fields: { windowPhase: 0 } },
+    // Two DIFFERENT children: a sole committed clip — or one group take
+    // — is the Q13 provisional definer, whose trim view frames the raw
+    // buffer by design.
+    { name: 'a lone 2Q stack windowed to 1Q IS a 1Q part: frame and audible loop',
+      nodes: [stack([clip(2), clip(1)], win(0, 1))], extra: { masterPos: 0.5 * Q },
+      frame: { cycleQ: 1, loopCycleQ: 1 }, fields: { periodQ: 1 } },
+    { name: '…bypassed, it is its raw length again and the brackets stay',
+      nodes: [stack([clip(2), clip(1)], bypassed(0, 1))],
+      frame: { cycleQ: 2, loopCycleQ: 2 }, fields: { window: bypassedBrackets(0, 1) } },
+    { name: 'beside a 4Q clip a 2Q window folds in: LCM(4Q, 2Q), frame and loop alike',
+      nodes: [clip(4), stack([clip(2), clip(3)], win(0, 2))],
+      frame: { cycleQ: 4, loopCycleQ: 4 }, fields: {} },
+    { name: 'a windowed group inside a group shortens the parent\'s cycle too (fractal)',
+      nodes: [stack([stack([clip(2), clip(3)], win(0, 2)), clip(4)])],
+      frame: { cycleQ: 4 }, fields: { periodQ: 4 } },
+    // Commit sets loopEnd = duration on every clip; [0, period)
+    // restricts nothing and draws no brackets.
+    { name: 'a full-span window on a clip is a no-op and is not shown',
+      nodes: [clip(4, { loopStart: 0, loopEnd: 4 * Q }), clip(1)], lane: 0,
+      fields: { window: null, periodQ: 4 } },
+    { name: 'a full-span ACTIVE window on a stack is equally a no-op',
+      nodes: [clip(4), stack([clip(2), clip(3)], win(0, 6))],
+      frame: { cycleQ: 12 }, fields: { window: null, periodQ: 6 } },
+    { name: 'a BYPASSED window on a clip changes nothing about the cycle',
+      nodes: [clip(4), clip(3, bypassed(1, 2))], lane: 1,
+      frame: { cycleQ: 12 }, fields: { periodQ: 3, window: bypassedBrackets(1, 2) } },
+    // "A windowed composite behaves as a 2Q clip in its parent's LCM" is
+    // the engine's fact AND the display's. The lane's extent is its
+    // material (the window); the grips edit over the raw inner cycle.
+    { name: 'a window SETS THE PART\'S LENGTH: the group\'s period, chip and frame follow it',
+      nodes: [clip(4), stack([clip(2), clip(3)], win(2, 4))],
+      frame: { cycleQ: 4 },
+      fields: { periodQ: 2, window: null, windowChipQ: 2, intrinsicQ: 2, bandTotalQ: 6,
+                bandSegs: [[2, 4]] },
+      more: (vm, g) => {
+          assert.deepEqual(g.reps.map(r => [r.startQ, r.endQ, r.ghost]),
+              [[0, 2, false], [2, 4, true]], 'window content tiled at its period');
+          assert.deepEqual(g.reps[0].srcSegs, [[2 / 6, 4 / 6]],
+              'every tile draws the window slice of the composite');
+          assert.equal(vm.lanes[0].intrinsicQ, 4, 'a clip\'s intrinsic period is its duration');
+      } },
+    { name: '…bypassed, the group\'s extent is its inner cycle',
+      nodes: [clip(4), stack([clip(2), clip(3)], bypassed(2, 4))],
+      fields: { intrinsicQ: 6 } },
+];
+for (const { name, nodes, extra, lane, frame = {}, fields, more } of WINDOW_LANES) {
+    test(`window lane: ${name}`, () => {
+        const vm = deriveViewModel(state(nodes, extra));
+        const l = lane === undefined ? groupLane(vm) : vm.lanes[lane];
+        for (const [k, want] of Object.entries(frame)) assert.equal(vm[k], want, `vm.${k}`);
+        for (const [k, want] of Object.entries(fields)) assert.deepEqual(l[k], want, `lane.${k}`);
+        if (more) more(vm, l);
+    });
+}
 
 test('nested group: composite period = children LCM; fold hides children', () => {
     const grp = stack([clip(2), clip(3)], { name: 'Perc' });
@@ -263,92 +271,6 @@ test('nested group: composite period = children LCM; fold hides children', () =>
     assert.deepEqual(folded.lanes[1].reps, g.reps);
 });
 
-test('a window SETS THE PART\'S LENGTH: group period and frame follow it (2026-08-21)', () => {
-    // E-C ("a windowed composite behaves as a 2Q clip in its parent's
-    // LCM") is the engine's fact AND the display's (owner ruling
-    // 2026-08-21, reversing 2026-07-11): the group lane's period is
-    // the window, the frame is the audible cycle, and the lane shows
-    // the HEARD view — no brackets, the chip reads the part length.
-    const grp = stack([clip(2), clip(3)], {
-        loopStart: 2 * Q, loopEnd: 4 * Q, windowActive: true,
-    });
-    const vm = deriveViewModel(state([clip(4), grp]));
-    const g = vm.lanes.find(l => l.kind === 'group');
-    assert.equal(g.periodQ, 2);           // the window IS the part
-    assert.equal(vm.cycleQ, 4);           // LCM(4Q, 2Q) — the audible cycle
-    assert.equal(g.window, null);         // heard view: no brackets
-    assert.equal(g.windowChipQ, 2);       // the chip reads the part length
-    assert.equal(g.bandTotalQ, 6);        // the grips edit over the inner cycle
-    assert.deepEqual(g.bandSegs, [[2, 4]]);
-    assert.deepEqual(g.reps.map(r => [r.startQ, r.endQ, r.ghost]),
-        [[0, 2, false], [2, 4, true]], 'window content tiled at its period');
-    assert.deepEqual(g.reps[0].srcSegs, [[2 / 6, 4 / 6]],
-        'every tile draws the window slice of the composite');
-});
-
-test('a window reframes the timeline honestly (reverses field bug 2026-07-11)', () => {
-    // A lone 2Q stack windowed to 1Q IS a 1Q part: the frame follows
-    // (the engine wraps the transport there) and the lane shows the
-    // heard 1Q — the raw 2Q is one grab away (the edit view), which is
-    // what the 2026-07-11 "hidden content" concern actually needed.
-    // (Two DIFFERENT children: a sole committed clip — or one group
-    // take, same origin + duration — is the Q13 provisional definer,
-    // whose trim view frames the raw buffer by design.)
-    const active = stack([clip(2), clip(1)], {
-        loopStart: 0, loopEnd: 1 * Q, windowActive: true,
-    });
-    const vmA = deriveViewModel(state([active]));
-    assert.equal(vmA.cycleQ, 1);
-    assert.equal(vmA.lanes.find(l => l.kind === 'group').periodQ, 1);
-
-    const bypassed = stack([clip(2), clip(1)], {
-        loopStart: 0, loopEnd: 1 * Q, windowActive: false, loopBypassed: true,
-    });
-    const vmB = deriveViewModel(state([bypassed]));
-    assert.equal(vmB.cycleQ, 2); // bypass: the part is its raw length again
-    assert.deepEqual([vmB.lanes[0].window.startQ, vmB.lanes[0].window.endQ,
-        vmB.lanes[0].window.bypassed], [0, 1, true], 'bypassed brackets stay');
-});
-
-test('a default full-span window is a no-op and is not shown', () => {
-    // Commit sets loopEnd = duration on every clip; [0, period) restricts
-    // nothing and must not render brackets (it reads as misalignment)
-    const c = clip(4, { loopStart: 0, loopEnd: 4 * Q });
-    const vm = deriveViewModel(state([c, clip(1)]));
-    assert.equal(vm.lanes[0].window, null);
-    assert.equal(vm.lanes[0].periodQ, 4);
-
-    // A full-span ACTIVE window on a stack is equally a no-op
-    const grp = stack([clip(2), clip(3)], {
-        loopStart: 0, loopEnd: 6 * Q, windowActive: true,
-    });
-    const vm2 = deriveViewModel(state([clip(4), grp]));
-    const g = vm2.lanes.find(l => l.kind === 'group');
-    assert.equal(g.window, null);
-    assert.equal(g.periodQ, 6);
-    assert.equal(vm2.cycleQ, 12);
-});
-
-test('intrinsicQ / bandTotalQ: the brackets\' clamp bound rides every lane', () => {
-    const grp = stack([clip(2), clip(3)], {
-        loopStart: 2 * Q, loopEnd: 4 * Q, windowActive: true,
-    });
-    const vm = deriveViewModel(state([clip(4), grp]));
-    const g = vm.lanes.find(l => l.kind === 'group');
-    // Heard view: the lane's extent is its material (the window);
-    // the raw inner cycle the grips clamp to rides bandTotalQ.
-    assert.equal(g.intrinsicQ, 2);
-    assert.equal(g.bandTotalQ, 6);
-    // Clips carry it too (their intrinsic period is the duration)
-    assert.equal(vm.lanes[0].intrinsicQ, 4);
-    // Bypassed: the raw-framed lane, intrinsicQ = the inner cycle.
-    const byp = stack([clip(2), clip(3)], {
-        loopStart: 2 * Q, loopEnd: 4 * Q, windowActive: false, loopBypassed: true,
-    });
-    const vmB = deriveViewModel(state([clip(4), byp]));
-    assert.equal(vmB.lanes.find(l => l.kind === 'group').intrinsicQ, 6);
-});
-
 test('windowDragTarget: Q-snap, clamps, and the 1Q minimum', () => {
     const win = { startQ: 1, endQ: 4, maxQ: 6 };
     // Nearest-Q snapping on both edges
@@ -366,77 +288,6 @@ test('windowDragTarget: Q-snap, clamps, and the 1Q minimum', () => {
         { startQ: 3, endQ: 4 });
     assert.deepEqual(windowDragTarget({ edge: 'end', rawQ: 0, ...win }),
         { startQ: 1, endQ: 2 });
-});
-
-test('heard view is fractal: a windowed clip collapses to its audible loop', () => {
-    // 2026-07-19k (supersedes the intrinsic-period assertion of law 13):
-    // the displayed period is the WINDOW length; the window's frame
-    // position is an edit fact, not a playback fact — brackets and the
-    // amber cursor live in the edit view.
-    const c = clip(4, {
-        loopStart: 1 * Q, loopEnd: 2 * Q, windowActive: true, playhead: 0.25,
-    });
-    const vm = deriveViewModel(state([c, clip(1)]));
-    const lane = vm.lanes[0];
-    assert.equal(lane.window, null, 'no brackets at rest');
-    assert.equal(lane.periodQ, 1, 'displayed period = the audible loop');
-    assert.equal(lane.windowPhase, 0, 'no second cursor — the white one is honest');
-    assert.equal(vm.cycleQ, 1, 'the frame IS the audible loop');
-});
-
-test('windowPhase: heard view has no second cursor; the edit view carries it', () => {
-    const grp = stack([clip(2)], {
-        loopStart: 0, loopEnd: 1 * Q, windowActive: true, playhead: 0.75,
-    });
-    // Heard view (groups as clips, 2026-08-21): the white cursor is
-    // honest on the lane — no amber cursor.
-    const vmA = deriveViewModel(state([grp]));
-    assert.equal(vmA.lanes.find(l => l.kind === 'group').windowPhase, 0);
-
-    const bypassed = stack([clip(2)], {
-        loopStart: 0, loopEnd: 1 * Q, windowActive: false,
-        loopBypassed: true, playhead: 0.75,
-    });
-    const vmB = deriveViewModel(state([bypassed]));
-    assert.equal(vmB.lanes.find(l => l.kind === 'group').windowPhase, 0);
-});
-
-test('loopCycleQ: the audible cycle IS the frame (windows are part lengths)', () => {
-    // Lone 2Q stack windowed to 1Q: the transport wraps at 1Q (the
-    // playhead must never sail past the window — field 2026-07-11),
-    // and since 2026-08-21 the display frame agrees: one cycle.
-    const grp = stack([clip(2), clip(1)], {
-        loopStart: 0, loopEnd: 1 * Q, windowActive: true,
-    });
-    const vm = deriveViewModel(state([grp], { masterPos: 0.5 * Q }));
-    assert.equal(vm.cycleQ, 1);
-    assert.equal(vm.loopCycleQ, 1);
-
-    // Bypassed: back to the raw length, frame and loop alike
-    const byp = stack([clip(2), clip(1)], {
-        loopStart: 0, loopEnd: 1 * Q, windowActive: false, loopBypassed: true,
-    });
-    const vmB = deriveViewModel(state([byp]));
-    assert.equal(vmB.cycleQ, 2);
-    assert.equal(vmB.loopCycleQ, 2);
-
-    // Multi-lane: LCM(4Q clip, 2Q window) = 4Q, frame and loop alike
-    const grp2 = stack([clip(2), clip(3)], {
-        loopStart: 0, loopEnd: 2 * Q, windowActive: true,
-    });
-    const vm2 = deriveViewModel(state([clip(4), grp2]));
-    assert.equal(vm2.cycleQ, 4);
-    assert.equal(vm2.loopCycleQ, 4);
-
-    // NESTED: a windowed group inside a group shortens the parent's
-    // inner cycle too (fractal, all the way up).
-    const inner = stack([clip(2), clip(3)], {
-        loopStart: 0, loopEnd: 2 * Q, windowActive: true,
-    });
-    const outer = stack([inner, clip(4)]);
-    const vm3 = deriveViewModel(state([outer]));
-    assert.equal(vm3.lanes.find(l => l.id === outer.id).periodQ, 4);
-    assert.equal(vm3.cycleQ, 4);
 });
 
 test('effects: fx rows from view state, fxCount on lanes', () => {
@@ -513,59 +364,53 @@ test('GROWING FRAME is PHASE-PRESERVING: no rotation for mid-cycle takes', () =>
     assert.deepEqual(committed2.reps.map(r => [r.startQ, r.endQ]), [[0, 4]]);
 });
 
-test('PENDING must not stretch the frame (record-start stretch/squish)', () => {
-    // Armed, waiting for the boundary: the unwrapped view crosses the
-    // cycle top with duration still 0 — the frame must stay settled and
-    // the playhead wraps (old ceil(playhead) stretched +1Q for a beat)
-    const pending = clip(0, { isRecording: true, duration: 0 });
-    const vm = deriveViewModel(state([clip(4), pending], { masterPos: 4.3 * Q }));
-    assert.equal(vm.cycleQ, 4);
-    assert.equal(vm.frameExtended, false);
-    assert.ok(Math.abs(vm.playheadQ - 0.3) < 1e-9); // wrapped, in frame
-});
-
-test('FINISHING settles the frame at the known boundary (no layout snap)', () => {
-    // Field before/after 2026-07-10: stop requested at 1.8Q (target 2Q);
-    // the cursor ran past 2.0Q during the finishing wait and the frame
-    // stretched to 3Q, then snapped back to 2Q at commit. Once stop is
-    // requested the commit boundary is KNOWN: the frame settles NOW.
-    const mk = (lenQ, viewQ, awaiting) => deriveViewModel(state(
-        [clip(1), clip(0, {
-            isRecording: true, duration: lenQ * Q, isAwaitingStop: awaiting,
-        })],
-        { masterPos: viewQ * Q }));
-
-    // Finishing, cursor past the 2Q target: frame HOLDS at 2Q, playhead clamps
-    const vm = mk(1.98, 2.04, true);
-    assert.equal(vm.cycleQ, 2);
-    assert.equal(vm.playheadQ, 2);
-    // Same overshoot while actively recording (no stop): frame extends
-    assert.equal(mk(2.04, 2.04, false).cycleQ, 3);
-    // Early in the finishing window the settle equals the ceil — no
-    // discontinuity at the stop click itself
-    assert.equal(mk(1.6, 1.6, true).cycleQ, 2);
-});
-
-test('frame extends AT the boundary — the take is never off-screen', () => {
-    // Delaying extension by the stop hysteresis recorded ~0.15Q blind at
-    // every crossing (field regression). Extension is immediate; a stop
-    // that hysteresis-snaps back down settles via one animated morph.
-    const mk = lenQ => deriveViewModel(state(
-        [clip(1), clip(0, { isRecording: true, duration: lenQ * Q })],
-        { masterPos: lenQ * Q }));
-    assert.equal(mk(0.95).cycleQ, 1);
-    assert.equal(mk(1.05).cycleQ, 2); // crossed: extend immediately
-    assert.equal(mk(2.01).cycleQ, 3);
-    // The playhead is never past the frame edge (nothing to record blind)
-    const vm = mk(1.05);
-    assert.ok(vm.playheadQ <= vm.cycleQ);
-});
+/* THE FRAME UNDER A TAKE. [what, the committed loop (Q), the take
+ * ({lenQ, isAwaitingStop}), masterPos (Q), the frame's facts, the take
+ * lane's facts]. Armed and waiting (length 0) the frame stays settled
+ * and the cursor wraps. Recording, the frame extends AT the boundary —
+ * the take is never off-screen, the cursor never past the frame's edge.
+ * Once a stop is requested the commit boundary is KNOWN: the frame
+ * settles there at once and the cursor clamps to it (no stretch, then
+ * snap, at commit). A recording lane never changes the cycle (I4). */
+const TAKE_FRAMES = [
+    ['armed, waiting for its boundary: the frame stays settled, the cursor wraps',
+     4, { lenQ: 0 }, 4.3, { cycleQ: 4, frameExtended: false, playheadQ: 0.3 }, {}],
+    ['a pending start (armed, length 0) is flagged, not a zero-length bar',
+     4, { lenQ: 0 }, 2.5, {}, { pendingStart: true, recordingLengthQ: 0 }],
+    ['a take that is writing is no pending start',
+     4, { lenQ: 0.5 }, 2.5, {}, { pendingStart: false }],
+    ['the recording lane is excluded from the cycle and exposes its growing length',
+     4, { lenQ: 2.5 }, 2.5, { cycleQ: 4, lcmQ: 4 },
+     { recording: true, recordingLengthQ: 2.5, reps: [] }],
+    ['short of the boundary the frame holds', 1, { lenQ: 0.95 }, 0.95, { cycleQ: 1 }, {}],
+    ['crossed, it extends at once', 1, { lenQ: 1.05 }, 1.05, { cycleQ: 2 }, {}],
+    ['…and at every boundary after', 1, { lenQ: 2.01 }, 2.01, { cycleQ: 3 }, {}],
+    ['finishing, the cursor past its 2Q target: the frame HOLDS at 2Q, the cursor clamps',
+     1, { lenQ: 1.98, isAwaitingStop: true }, 2.04, { cycleQ: 2, playheadQ: 2 }, {}],
+    ['the same overshoot with no stop requested: the frame extends',
+     1, { lenQ: 2.04, isAwaitingStop: false }, 2.04, { cycleQ: 3 }, {}],
+    ['early in the finishing window the settle equals the ceil: no jump at the stop click',
+     1, { lenQ: 1.6, isAwaitingStop: true }, 1.6, { cycleQ: 2 }, {}],
+];
+for (const [name, loopQ, { lenQ, ...take }, posQ, frame, fields] of TAKE_FRAMES) {
+    test(`frame under a take: ${name}`, () => {
+        const rec = clip(0, { isRecording: true, duration: lenQ * Q, ...take });
+        const vm = deriveViewModel(state([clip(loopQ), rec], { masterPos: posQ * Q }));
+        for (const [k, want] of Object.entries(frame)) {
+            if (Number.isInteger(want) || typeof want !== 'number') assert.equal(vm[k], want, `vm.${k}`);
+            else near(vm[k], want, `vm.${k}`);
+        }
+        assert.ok(vm.playheadQ <= vm.cycleQ, 'the cursor is never past the frame\'s edge');
+        const lane = vm.lanes[1];
+        for (const [k, want] of Object.entries(fields)) assert.deepEqual(lane[k], want, `lane.${k}`);
+    });
+}
 
 test('take anchor snaps to the Q boundary, cancelling latency wobble', () => {
-    // Field dump 2026-07-09: Q=131584 @48k, take origin at a clean 3Q,
-    // but view start = playhead − duration ≈ 1.0507Q — the 0.05Q is the
-    // calibrated 139ms pre-record compensation baked into live duration.
-    // The anchor must snap to 1Q so the bar sits on the downbeat.
+    // Q=131584 @48k, take origin at a clean 3Q, but view start =
+    // playhead − duration ≈ 1.0507Q — the 0.05Q is the calibrated 139 ms
+    // pre-record compensation baked into the live duration. The anchor
+    // snaps to 1Q so the bar sits on the downbeat.
     const Qd = 131584;
     const rec = clip(0, { isRecording: true, duration: 673772, effectiveQuantum: Qd,
                           origin: Qd });
@@ -593,32 +438,6 @@ test('idle masterPos is trusted but defensively wrapped into the frame', () => {
     const vm = deriveViewModel(state([clip(4)], { masterPos: 305.25 * Q }));
     assert.ok(vm.playheadQ >= 0 && vm.playheadQ < vm.cycleQ);
     assert.equal(vm.playheadQ, 1.25); // 305.25 mod 4
-});
-
-test('pending start (armed, duration 0) is flagged, not a zero-length bar', () => {
-    const rec = clip(0, { isRecording: true, duration: 0 });
-    const vm = deriveViewModel(state([clip(4), rec], { masterPos: 2.5 * Q }));
-    const lane = vm.lanes.find(l => l.recording);
-    assert.equal(lane.pendingStart, true);
-    assert.equal(lane.recordingLengthQ, 0);
-
-    const writing = clip(0, { isRecording: true, duration: 0.5 * Q });
-    const vm2 = deriveViewModel(state([clip(4), writing], { masterPos: 2.5 * Q }));
-    assert.equal(vm2.lanes.find(l => l.recording).pendingStart, false);
-});
-
-test('a BYPASSED window changes nothing about the cycle', () => {
-    const keys = clip(3, { loopStart: 1 * Q, loopEnd: 2 * Q, loopBypassed: true });
-    const vm = deriveViewModel(state([clip(4), keys]));
-    assert.equal(vm.cycleQ, 12);
-    const k = vm.lanes[1];
-    assert.equal(k.periodQ, 3);
-    // Phase 3: the window descriptor is the map superset (segs/periodQ/
-    // multi ride along; single windows carry their one segment).
-    assert.deepEqual(k.window, {
-        startQ: 1, endQ: 2, bypassed: true, active: false, suspended: false,
-        segs: [[1, 2]], periodQ: 1, multi: false,
-    });
 });
 
 test('group arm aggregates ARMABLE (empty) descendants: none/some/all (Q7)', () => {
@@ -709,17 +528,6 @@ test('FIRST TAKE frame: no Q yet → the growing take is the timeline', () => {
     assert.equal(committed.ruler.ticks.length, 5);
 });
 
-test('recording lane: excluded from cycle, exposes growing length', () => {
-    const rec = clip(0, { isRecording: true, duration: 2.5 * Q, name: 'take' });
-    const vm = deriveViewModel(state([clip(4), rec], { masterPos: 2.5 * Q }));
-    assert.equal(vm.cycleQ, 4); // recording never changes the LCM (I4)
-    assert.equal(vm.lcmQ, 4);
-    const r = vm.lanes[1];
-    assert.equal(r.recording, true);
-    assert.equal(r.recordingLengthQ, 2.5);
-    assert.deepEqual(r.reps, []);
-});
-
 test('solo and mute pass through (Q16: per-node additive flags)', () => {
     const a = clip(4, { isSoloed: true }),
         b = clip(3, { isMuted: true, isSoloed: true });
@@ -761,4 +569,70 @@ test('unrollReps: main tile is the first full tile, grid wraps exactly', () => {
         [7, 10, true, false],
         [10, 12, true, true],  // clipped at the cycle end
     ]);
+});
+
+test('unrollReps: a sliver of float noise at a frame edge is no tile', () => {
+    // A period one ulp short of the frame: one whole tile, nothing after.
+    assert.deepEqual(
+        unrollReps({ periodQ: 3.9999999999999996, offsetQ: 0, cycleQ: 4, takeQ: 0 })
+            .map(r => [r.startQ, r.endQ, r.ghost, r.wrapped]),
+        [[0, 4, false, false]]);
+    // A phase a hair past the frame's left edge: two whole tiles that
+    // start at 0, abut and end at the cycle — no sliver before them,
+    // and neither is a wrap.
+    const reps = unrollReps({ periodQ: 2, offsetQ: 1e-12, cycleQ: 4 });
+    assert.equal(reps.length, 2);
+    assert.equal(reps[0].startQ, 0);
+    assert.equal(reps[0].endQ, reps[1].startQ);
+    assert.equal(reps[1].endQ, 4);
+    assert.deepEqual(reps.map(r => [r.ghost, r.wrapped]),
+        [[false, false], [true, false]]);
+});
+
+test('a window\'s period is ONE division of its sample length, wherever it starts', () => {
+    // A 4Q window slid off the grid by a few samples is still exactly
+    // 4Q long: the lane is one whole tile of a 4Q frame.
+    const q = 44100;
+    const windowed = ls => ({
+        id: 'root', quantum: q, islandZero: 0, islandPos: 0, masterPos: 0,
+        definerId: '',
+        nodes: [
+            { id: 'w', type: 'clip', duration: 8 * q, origin: 0, loopStart: ls,
+              loopEnd: ls + 4 * q, windowActive: true, loopTop: ls },
+            { id: 'x', type: 'clip', duration: 4 * q, origin: 0,
+              loopStart: 0, loopEnd: 0, windowActive: false },
+        ],
+    });
+    for (let ls = 1; ls < q; ls += 97) {
+        const vm = deriveViewModel(windowed(ls));
+        const w = vm.lanes.find(l => l.id === 'w');
+        assert.equal(vm.cycleQ, 4, `start ${ls}: the frame`);
+        assert.equal(w.periodQ, 4, `start ${ls}: the lane period`);
+        assert.equal(w.windowChipQ, 4, `start ${ls}: the chip`);
+        assert.equal(w.bandPeriodQ, 4, `start ${ls}: the heard period`);
+        assert.deepEqual(w.reps.map(r => [r.startQ, r.endQ, r.ghost]),
+            [[0, 4, false]], `start ${ls}: one whole tile`);
+    }
+});
+
+test('a song\'s length in Q is ONE division of its sample sum', () => {
+    // Ten steps of a tenth of a Q: ten float tenths sum short of 1; the
+    // sample lengths sum to exactly Q.
+    const q = 44100;
+    const steps = Array.from({ length: 10 }, (_, i) => ({ name: 's' + i, len: q / 10 }));
+    const plain = id => ({ id, type: 'clip', duration: q, origin: 0,
+                           loopStart: 0, loopEnd: 0, windowActive: false });
+    const vm = deriveViewModel({
+        id: 'root', quantum: q, islandZero: 0, islandPos: 0, masterPos: 0,
+        definerId: '', nodes: [plain('a'), plain('b')],
+        // `a` rests in the last step only.
+        sequence: { steps, gates: { a: steps.map((_, i) => i !== 9) } },
+    }, { seqOpen: new Set(['root']) });
+    const grid = vm.lanes.find(l => l.kind === 'seq');
+    assert.equal(grid.totalQ, 1, 'the grid row');
+    assert.equal(vm.rootSeq.totalQ, 1, 'the transport chip');
+    assert.equal(grid.visits[9].startQ, 0.9, 'each visit starts at its sample bound');
+    const dims = vm.lanes.find(l => l.id === 'a').seqDims[0];
+    assert.equal(dims.periodQ, 1, 'the lane overlay tiles at the same length');
+    assert.deepEqual(dims.offSegsQ, [[0.9, 1]], 'and its spans end on the song\'s end');
 });

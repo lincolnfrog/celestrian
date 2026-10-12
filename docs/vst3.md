@@ -117,14 +117,33 @@ republish.
 
 `prepare()` runs on the message thread before a slot can be enabled or a
 chain published. For plugin slots that means `setRateAndBufferSizeDetails`
-+ `prepareToPlay(rate, maxBlock)` with the device's maximum block size
-(cached in `audioDeviceAboutToStart` alongside the rate); processing
-shorter blocks than prepared is legal. A device rate/block change
-re-prepares every chain on the message thread before audio restarts.
++ `prepareToPlay(rate, maxBlock)` with the ONE block ceiling
+(`kMaxBlockSamples`, 8192, `dsp/fx_chain.h` — the same number sizes the
+clip's and the stack's scratch and the chain's promotion buffer;
+performance.md §1); processing shorter blocks than prepared is legal.
+
+**A slot is prepared once, and FOLLOWS the device's rate after that.**
+`FxSlot::prepare` is the slot's first prepare only: a prepared slot is
+left alone whatever rate is asked, so the lazy prepare a verb makes
+(`prepareEffects`) can never reallocate a slot the audio thread may be
+running. Moving a prepared slot to another rate is a separate call,
+`followRate` (slot, chain, scope), made only where no callback can run
+the slot:
+
+- at **device start** (`audioDeviceAboutToStart`): a sweep over the
+  whole ownership tree, the root's rack included, before audio
+  restarts — so effects are timed on the rate the device runs at (a
+  hosted plugin is released before it is prepared again, or JUCE's
+  wrapper treats the second prepare as a no-op);
+- where a detached node or slot **re-enters the graph** — the undo of a
+  delete, the redo of an add, a Combine reusing its stack: nodes parked
+  in the undo log are not reached by the device-start sweep;
+- at **load**: a session's racks are prepared at the DEVICE's rate,
+  whatever rate the bundle was saved at.
 
 ### 3.3 The audio-thread process path
 
-The chain keeps the rack's call shape, so `clip_node.cc` and
+The chain keeps the rack's call shape, so `clip_node_render.cc` and
 `stack_node.cc` stay simple: `chain->process(l, n)` and
 `chain->processStereo(l, r, n)`, in-place, no-op when nothing is live.
 Each enabled slot runs in order; a plugin slot wraps the channel pointers
@@ -134,6 +153,10 @@ pointer-referencing constructor — no copies, no allocation) and calls
 
 **Channel shape.** Plugin effect slots are always instantiated and
 prepared **stereo (2 in / 2 out)** — the overwhelmingly supported layout.
+The slot asks for that arrangement and CHECKS what the plugin accepted:
+one that will not run with at most two inputs and exactly two outputs
+is hard-bypassed — the chain plays on without it — and published
+`unsupported: true` (§6).
 On a node whose fx path is running mono (`process`), the chain **promotes
 to stereo at the first enabled plugin slot**: the mono signal is copied
 into a preallocated right-channel scratch inside the chain, both channels
@@ -176,10 +199,17 @@ compensation** — Q-V2 (§9).
   user-added path (`startScan(path, include_default_locations)`; tests
   confine themselves to one folder). Progress and results reach the UI
   through the status poll.
-- Instantiation is `createPluginInstanceAsync` on the message thread; the
-  completion lambda builds the slot, prepares it, and publishes the
-  successor chain (§3.2). The UI shows the slot as "loading" from the
-  optimistic add until the publish event.
+- Instantiation is ONE function,
+  `PluginHostService::instantiateAsync(uid, rate, done)`: it finds the
+  registry description, calls `createPluginInstanceAsync` on the message
+  thread at (rate, the block ceiling), and hands `done` the instance and
+  the REGISTRY description; the caller builds the slot, prepares it, and
+  publishes the successor chain (§3.2). `addPluginToChain` and the
+  load-time revival (§6) both go through it. The UI shows the slot as
+  "loading" from the optimistic add until the publish event. A load that
+  fails hands `done` a null instance; `addPluginToChain` answers when the
+  slot lands (true) or cannot (false: unknown plugin, failed load, the
+  node gone), and the status line says `added` or `not added`.
 
 ### Out-of-process scanning
 
@@ -200,6 +230,7 @@ file every 100 ms and watches the child's liveness:
 |---|---|
 | Plugin **crashes** | BEGIN with no END → blacklist that file, start a fresh worker on the remainder |
 | Plugin **hangs** | file silent past the probe timeout (60 s) → kill the worker, treat the file the same |
+| Worker **never starts probing** | silent with NO file in flight past the worker's own idle allowance (`setWorkerIdleTimeoutMs`, 60 s — separate from the probe timeout, since a loaded machine can take seconds to start a worker) → kill it, end the scan with `error`, blame no plugin |
 | Worker exits having probed nothing | end the scan with `error`; blame no plugin, never respawn forever |
 | No worker command configured | a scan with anything to probe ends with `error` and loads nothing |
 
@@ -215,6 +246,11 @@ no window.
 The status var carries `crashed` (file names excluded this scan),
 `crashedCount`, `error`, and `outOfProcess`; the plugin panel names the
 excluded plugins in its scan-done line. There is no dead-man's-pedal file.
+**A scan outlives its panel:** any press outside the plugin panel closes
+it, so the panel's status poll runs until the scan ENDS, not until the
+panel closes — the status line still reports the result, and a panel
+reopened mid-scan shows the scan running (Scan disabled, progress) and
+re-reads the list when it ends.
 
 > **Field notes.** A JUCE 8 scan never even loads a bundle that ships
 > `moduleinfo.json` — descriptions come from the manifest — so the plugins
@@ -232,8 +268,13 @@ live in **floating native windows**. One
 `PluginEditorWindow : juce::DocumentWindow` per open slot owns
 `plugin->createEditorIfNeeded()`; close deletes the editor, never the
 instance, and reopening recreates it. Windows are message-thread objects
-keyed by slot uuid in `PluginHostService`; closing a node or slot closes
-its window first — editor before instance, always.
+keyed by slot uuid (`PluginEditorWindows`, `src/plugin_editor_windows.h`);
+closing a node or slot closes its window first — editor before instance,
+always. The window also HOLDS A SHARE of its slot, and destroys the
+editor before it lets the share go, so a window can never outlive the
+plugin instance its editor draws — whatever order the chain and the
+undo log release the slot in. `openPluginEditor` answers false when
+there is no editor to show (no such slot, a missing plugin).
 
 Plugins without an editor get JUCE's `GenericAudioProcessorEditor` in the
 same window. The web UI has no generic parameter panel; the built-ins keep
@@ -262,7 +303,22 @@ keeps `uid` / `fileOrIdentifier` / `format` / `state` verbatim, so
 save → load → save never sheds a plugin the user merely hasn't installed
 on this machine. If a scan later finds it, the placeholder is revived in
 place — publish a successor chain with a live slot restored from the kept
-state.
+state. The load-time revival sweep is `bridge::revivePlaceholders`
+(`src/bridge_dispatch.cc`, GUI-free): every placeholder whose plugin the
+registry knows gets a live instance as it arrives. Both hosts hook it to
+`AudioEngine::setOnSessionLoaded` — the app shell after closing the
+editors, and the headless engine server.
+
+**A plugin that will not run stereo** is the other flag a chain entry
+can carry: `unsupported: true`. The plugin IS loaded (its editor
+opens), but it refused the stereo layout, so the slot is hard-bypassed
+and the chain plays on without it. The chip reads `no stereo` with a
+tooltip saying so (class `unsupported`; `missing` wins when both are
+set).
+
+**A load replaces, never merges.** A node record with no readable rack
+gets the DEFAULT rack, not the previous project's; racks are prepared
+at the device's rate (§3.2).
 
 **Undo.** Chain *structure* edits (add / remove / move slot) are undoable
 Edit events (`Edit::Kind::MoveSlot`, `AddSlot`, `RemoveSlot`); enable flips
@@ -275,22 +331,27 @@ invalidation frees it through the reclaimer.
 
 ## 7. Bridge & UI surface
 
-Bridge methods (webview native functions, same adapters as the rest):
-`getKnownPlugins()`, `scanPlugins(paths?)`, `addPluginSlotToChain(nodeUuid,
-pluginUid, index)` (`addVst3SlotToChain` aliases it),
+Bridge methods (entries of the bridge table, `src/bridge_dispatch.cc`;
+`openPluginEditor` is a window verb, `src/main_component.cc`):
+`getKnownPlugins()`, `scanPlugins(paths?)`, `addPluginToChain(nodeUuid,
+pluginUid, index)` (the engine verb is `addPluginSlotToChain`),
 `removeChainSlot(nodeUuid, slotUuid)`, `moveChainSlot(nodeUuid, slotUuid,
 newIndex)`, `openPluginEditor(nodeUuid, slotUuid)`,
 `setSlotEnabled(nodeUuid, slotUuid, on)`, and `setSlotParam(nodeUuid,
 slotUuid, key, value)`. Addressing is **by slot uuid throughout**.
 Parameters remain built-in-only — plugin parameters belong to their
-editors.
+editors. A built-in's parameters are ONE table per effect
+(`kEqParams`, `kCompressorParams`, `kEchoParams`, `kReverbParams` in
+`src/dsp/fx_chain.cc`: key, atomic, min, max on one row) — the only
+statement of a range in the engine; `ui/js/effect_schema.js` is held to
+those rows by `effect_contract.test.mjs`.
 
 **Effects bar** (session_view.md): renders the chain array from node
 metadata in order — built-ins with their mini-panels
 (`effect_schema.js`), plugin slots as named chips with enable toggle and
-missing/loading badges, click-to-open-editor, and a "+" chip opening the
-picker fed by `getKnownPlugins`. Reorder by drag within the bar. Latency
-badge when `totalLatencySamples > 0`.
+missing / `no stereo` / loading badges, click-to-open-editor, and a "+"
+chip opening the picker fed by `getKnownPlugins`. Reorder by drag within
+the bar. Latency badge when `totalLatencySamples > 0`.
 
 ---
 
@@ -306,7 +367,16 @@ timing model unchanged. What is new is capture, storage, and rendering.
 drop-and-count overflow). The engine is the all-devices
 `MidiInputCallback`; device enabling happens in the APP shell at startup
 and heartbeat, so headless tests stay device-free. One drain per callback
-fills a preallocated MidiBuffer riding `ProcessContext.live_midi`.
+fills a preallocated MidiBuffer riding `ProcessContext.live_midi`,
+reserved for the most one drain can deliver — a full queue
+(`engine_internal::kLiveMidiDrainBytes`) — so the drain never
+allocates. **A stack that splits its block hands each seam run its own
+slice** of the live MIDI (`StackNode::forEachSeamRun`): every event
+belongs to exactly one run and arrives at its offset within that run,
+so an instrument under a windowed or sequenced group hears each live
+note once. A parent's gate ramp is cut the same way: each run gets its
+stretch of the block's one ramp, so a seam inside a fade never restarts
+the envelope.
 
 Instrument slots are `Vst3Slot(is_instrument)`: prepared 0-in/2-out, they
 consume MIDI via `FxSlot::processStereoMidi` and **overwrite** the buffer —
@@ -342,7 +412,9 @@ take has no audio input.
 **Content.** A fixed-capacity `MidiSequence` of POD events
 `{pos, bytes, size}` in the origin frame — samples in the engine, QTime in
 the save format (Q-V4) — reached through one atomic pointer, D4 verbatim;
-arm-time reservation, drop-and-count at the wall.
+arm-time reservation (`MidiSequence::kMaxEvents`). A FULL sequence
+refuses the event and keeps what it holds; the clip says so in the log,
+once per take, at the first refusal.
 
 **Capture** is the note twin of the pre-record ring. The engine drains the
 FIFO by **arrival timestamp** (sub-block offsets, the
@@ -379,18 +451,35 @@ Multi-segment lock-collapse splices the sequence too (`spliceMidiToMap`,
 
 ### 8.3 Sound-off edges
 
-**Any content discontinuity releases the notes the content had sounding**
-(`HeldNotes`) — loop seam, map seam, one-shot rest, transport stop,
-duration truncation. This is the general "hanging notes closed at the
-seam" rule.
+Two classes of edge, and the difference is what the instrument is sent.
 
-When a MIDI clip's content stops sounding — transport stop, the S7 gate
-landing closed (mute, solo-silence, a sequence cut), the new-take silence,
-a bounce tail, or a device stop (`requestMidiSoundOff`, walked from
-`audioDeviceStopped`) — the instrument gets the held notes' note-offs plus
-CC 123 and CC 120 on the channels in use, **once per closing edge**, never
-per block (`renderMidi`'s `closingEdge`). The gate edge lands where the
-ramp reaches zero, so there is no pop; a muted instrument keeps being fed.
+**A content DISCONTINUITY releases the notes the content had sounding**
+(`HeldNotes`), and nothing else — loop seam, map seam, a one-shot's
+rest, duration truncation. This is the general "hanging notes closed at
+the seam" rule. **A one-shot GROUP's rest is a discontinuity too, not a
+stop** (`ProcessContext::resting`, set by the resting stack for its
+subtree): a MIDI member's recorded notes get their note-offs once, at
+the rest's top; no CC 123 / CC 120 is sent there or through the rest,
+so a LIVE note the player holds across the rest's top keeps sounding;
+the content stays "active", so the instrument and the rack run on
+through the whole rest; and the next firing strikes again.
+
+**When a MIDI clip's content STOPS sounding** — transport stop, the S7
+gate landing closed (mute, solo-silence, a sequence cut), the new-take
+silence, a bounce tail (`content_silent` with no rest: a bounce tail
+that begins inside a resting group is still a stop), or a device stop
+(`requestMidiSoundOff`, walked from `audioDeviceStopped`) — the
+instrument gets the held notes' note-offs plus CC 123 and CC 120 on the
+channels in use, **once per closing edge**, never per block
+(`renderMidi`'s `closingEdge`). The gate edge lands where the ramp
+reaches zero, so there is no pop; a muted instrument keeps being fed.
+
+**The device-stop edge leads its block.** The request is taken up in
+the control phase into an audio-thread latch, and render sends the pair
+at the block's TOP, ahead of the block's own notes. So a note struck on
+the first sample of the first block after a device start — the note at
+the very top of every bounce made on a real device — is not released
+by the edge that preceded it.
 
 ### 8.4 Boundary notes and undo
 

@@ -1,13 +1,10 @@
 /**
- * THE MASTER STRIP (B5), mock/VM side:
+ * THE MASTER STRIP, mock/VM side:
  *  - the view model exposes `rootGain` (the root stack's output-stage
- *    fader), defaulting ABSENT to unity (pre-gain states must not read
- *    as silent), and `rootFxCount` (the master fx chip's count),
- *  - setNodeGain on the root ('mock-root') round-trips through the mock
- *    and clamps to [0, 1] like every node (engine parity:
- *    AudioEngine::setNodeGain — the root is findByUuid's self match),
- *  - the master fader is NOT undoable (a mixer knob, like pan/gain on
- *    every rail),
+ *    fader), defaulting ABSENT to unity (a state without the field must
+ *    not read as silent), and `rootFxCount` (the master fx chip's count);
+ *    the fader's clamp and its place outside the undo log are pinned
+ *    with every node's in gain.test.mjs,
  *  - the root publishes its rack; fxOpen on rootId renders the master fx
  *    row FIRST and slot edits address the root's chain,
  *  - the meter memory (vu_meter.js meterStep): the peak-hold tick parks
@@ -33,30 +30,9 @@ test('view model exposes rootGain, defaulting absent to unity', () => {
     state.gain = 0.4;
     assert.equal(deriveViewModel(state).rootGain, 0.4);
 
-    delete state.gain;  // a pre-gain state dump
+    delete state.gain;  // a state without the field
     assert.equal(deriveViewModel(state).rootGain, 1,
         'absent gain reads as unity, never 0');
-});
-
-test('setNodeGain on the root round-trips and clamps to [0, 1]', async () => {
-    loadScenario('stack-with-clips');
-    await callNative('setNodeGain', ROOT, 0.3);
-    assert.equal(getState().gain, 0.3);
-    assert.equal(deriveViewModel(getState()).rootGain, 0.3);
-
-    await callNative('setNodeGain', ROOT, 3);
-    assert.equal(getState().gain, 1, 'clamps high to unity (no boost)');
-
-    await callNative('setNodeGain', ROOT, -2);
-    assert.equal(getState().gain, 0, 'clamps low to silence');
-});
-
-test('the master fader is not undoable (mixer knob)', async () => {
-    loadScenario('stack-with-clips');
-    const couldUndo = getState().canUndo;
-    await callNative('setNodeGain', ROOT, 0.5);
-    assert.equal(getState().canUndo, couldUndo,
-        'a master fader tweak must not grow the undo log');
 });
 
 test('a scenario load resets the master fader to unity', async () => {

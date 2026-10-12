@@ -4,121 +4,101 @@
  * drums rail's unlit Q lamp hands Q to the drums (they open the
  * first-take trim view), their brackets trim the drummer's loop freely,
  * and the keyboard — which no longer fits — is badged drifting (↯).
- * Every gesture here is a REAL mouse action (hit-tested): the lamp is
+ * Every gesture is a REAL mouse action (hit-tested): the lamp is
  * hover-revealed chrome, the brackets sit on the lane overlay.
  */
 
 import { test, expect } from '@playwright/test';
+import { boot, call, root, node, laneOf, centre, dragTo } from './helpers.js';
 
-const state = page => page.evaluate(() => window.celestrian.getState());
-const nodeOf = (page, id) => page.evaluate(i =>
-    window.celestrian.getState().nodes.find(n => n.id === i), id);
+const KEYS = 'keys';     // a 1Q loop at 0: it set Q
+const DRUMS = 'drums';   // a 5Q take from 2Q
 
-async function loadKeysThenDrums(page) {
-    await page.goto('/index_test.html');
-    await page.waitForSelector('#test-controls', { timeout: 5000 });
-    await page.click('button:has-text("Keys then Drums")');
-    await page.waitForFunction(
-        () => document.querySelectorAll('.lane[data-kind="clip"]').length === 2,
-        { timeout: 5000 });
-}
-
-const laneOf = (page, name) => page.locator('.lane', {
-    has: page.locator('.rail-name', { hasText: name }) });
-
-/** Hover the rail, then click its (hover-revealed) Q lamp. */
-async function handQTo(page, name) {
-    const lane = laneOf(page, name);
+/** Hover the drums' rail, then click its (hover-revealed) Q lamp. */
+async function handQToDrums(page) {
+    const lane = laneOf(page, DRUMS);
     await lane.locator('.lane-rail').hover();
     const lamp = lane.locator('.tempo-chip.offer');
     await expect(lamp).toBeVisible();
     await lamp.click();
+    await expect.poll(async () => (await root(page)).definerId).toBe(DRUMS);
 }
 
+/** Drag `handle` to `frac` of the lane `body`'s width — grabbed once it
+ * has a box: after a commit the overlay is rebuilt from the settled
+ * state, and a rebuild detaches the handle just measured. */
 async function dragToFrac(page, handle, body, frac) {
-    // After a commit the overlay is held, then rebuilt from the settled
-    // state: grab the handle once the rebuilt one has a box (a rebuild
-    // can detach the one just measured — measure again).
     let from = null;
     await expect.poll(async () => !!(from = await handle.boundingBox())).toBe(true);
     const box = await body.boundingBox();
-    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * frac, box.y + box.height / 2,
-                          { steps: 8 });
-    await page.mouse.up();
+    await dragTo(page, centre(from), box.x + box.width * frac, { steps: 8 });
 }
 
-test('the Q lamp hands Q to the drums: their loop is Q, nothing moves', async ({ page }) => {
-    await loadKeysThenDrums(page);
-    const Q0 = (await state(page)).quantum;
-    const drums = laneOf(page, 'Drums');
+test.beforeEach(async ({ page }) => {
+    await boot(page, { scenario: 'keys-then-drums', lanes: 2 });
+});
+
+test('the Q lamp hands Q to the drums: their loop is Q, nothing moves; undo walks it back in one step', async ({ page }) => {
+    const Q0 = (await root(page)).quantum;
+    const drums = laneOf(page, DRUMS);
     // No lamp before the hover-offer: the definer has none either (two
     // takes, Q locked).
     await expect(drums.locator('.tempo-chip.offer')).toHaveCSS('opacity', '0');
-    await handQTo(page, 'Drums');
-    await expect.poll(async () => (await state(page)).definerId).toBe('drums');
-    const s = await state(page);
+    await handQToDrums(page);
+    const s = await root(page);
     expect(s.quantum).toBe(5 * Q0);
     expect(s.islandZero).toBe(2 * Q0);
-    expect((await nodeOf(page, 'drums')).origin).toBe(2 * Q0);
+    expect((await node(page, DRUMS)).origin).toBe(2 * Q0);
     // The drums open the first-take trim view: lit lamp, "sets tempo".
     await expect(drums.locator('.win-chip.q-definer')).toContainText('sets tempo');
     await expect(drums.locator('.tempo-chip')).not.toHaveClass(/offer/);
     // …and the keys can still take it back.
-    await laneOf(page, 'Keys').locator('.lane-rail').hover();
-    await expect(laneOf(page, 'Keys').locator('.tempo-chip.offer')).toBeVisible();
+    await laneOf(page, KEYS).locator('.lane-rail').hover();
+    await expect(laneOf(page, KEYS).locator('.tempo-chip.offer')).toBeVisible();
+
+    // One undo step: Q, the designation and the trim view go together.
+    await call(page, 'undo');
+    await expect.poll(async () => (await root(page)).quantum).toBe(Q0);
+    expect((await root(page)).definerId).toBe('');
+    await expect(drums.locator('.win-chip.q-definer')).toHaveCount(0);
 });
 
 test('trimming the handed-Q drums re-grids freely; the keys drift (↯)', async ({ page }) => {
-    await loadKeysThenDrums(page);
-    const Q0 = (await state(page)).quantum;
-    await handQTo(page, 'Drums');
-    await expect.poll(async () => (await state(page)).definerId).toBe('drums');
-    const drums = laneOf(page, 'Drums');
+    const Q0 = (await root(page)).quantum;
+    await handQToDrums(page);
+    const drums = laneOf(page, DRUMS);
     const body = drums.locator('.lane-body');
-    // Grab the brackets only once the lane has repainted as the trim
-    // view (the poll above reads the engine, not the screen).
+    const start = drums.locator('.win-bracket.start');
+    // The lane has repainted as the trim view before a bracket is taken.
     await expect(drums.locator('.win-chip.q-definer')).toContainText('sets tempo');
     // The trim view frames the whole 5-keys-loop take: 0.14 of it is
     // 0.7 keys loops — a start no whole-Q snap could land.
-    await dragToFrac(page, drums.locator('.win-bracket.start'), body, 0.14);
-    await expect.poll(async () => (await nodeOf(page, 'drums')).loopStart)
+    await dragToFrac(page, start, body, 0.14);
+    await expect.poll(async () => (await node(page, DRUMS)).loopStart)
         .toBeGreaterThan(0.6 * Q0);
     // …and the brackets are rebuilt from that settled state before the
     // next grab: the start bracket sits at 14% again.
     await expect.poll(async () => {
-        const b = await drums.locator('.win-bracket.start').boundingBox();
+        const b = await start.boundingBox();
         const lb = await body.boundingBox();
         return b && lb ? Math.round(100 * (b.x - lb.x) / lb.width) : -1;
     }).toBeGreaterThanOrEqual(12);
-    let d = await nodeOf(page, 'drums');
+    let d = await node(page, DRUMS);
     expect(d.loopStart).toBeLessThan(0.8 * Q0);
     expect(d.origin).toBe(2 * Q0);  // the drums keep their timing
-    expect((await state(page)).quantum).toBe(d.loopEnd - d.loopStart);
-    // End bracket to 0.62 → a 2.4-keys-loop drum loop: the keys (1 of
-    // the old Qs) no longer fit — they drift.
+    expect((await root(page)).quantum).toBe(d.loopEnd - d.loopStart);
+    // End bracket to 0.62 → a 2.4-keys-loop drum loop: the keys (one of
+    // the Qs they set) no longer fit — they drift.
     await dragToFrac(page, drums.locator('.win-bracket.end'), body, 0.62);
-    await expect.poll(async () => (await nodeOf(page, 'drums')).loopEnd)
+    await expect.poll(async () => (await node(page, DRUMS)).loopEnd)
         .toBeLessThan(3.3 * Q0);
-    d = await nodeOf(page, 'drums');
-    const q = (await state(page)).quantum;
+    d = await node(page, DRUMS);
+    const q = (await root(page)).quantum;
     expect(q).toBe(d.loopEnd - d.loopStart);
     expect(q % Q0 !== 0 && Q0 % q !== 0).toBe(true);
-    const keysSub = laneOf(page, 'Keys').locator('.rail-sub');
+    const keysSub = laneOf(page, KEYS).locator('.rail-sub');
     await expect(keysSub).toContainText('↯');
     await expect(keysSub).toHaveClass(/drift/);
     // The trim view dims the keys outside the drums' selection.
-    await expect(laneOf(page, 'Keys').locator('.trim-dims .trim-dim')).toHaveCount(2);
-});
-
-test('undo walks the hand-off back in one step', async ({ page }) => {
-    await loadKeysThenDrums(page);
-    const Q0 = (await state(page)).quantum;
-    await handQTo(page, 'Drums');
-    await expect.poll(async () => (await state(page)).definerId).toBe('drums');
-    await page.evaluate(() => window.celestrian.callNative('undo'));
-    await expect.poll(async () => (await state(page)).quantum).toBe(Q0);
-    expect((await state(page)).definerId).toBe('');
-    await expect(laneOf(page, 'Drums').locator('.win-chip.q-definer')).toHaveCount(0);
+    await expect(laneOf(page, KEYS).locator('.trim-dims .trim-dim')).toHaveCount(2);
 });

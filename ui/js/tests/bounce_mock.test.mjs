@@ -13,7 +13,7 @@ import {
     getLastBounce, resetLastBounce, DIALOG_PATH, kMaxTakeSamples, bounceSpanOf,
 } from '../mock/bounce.js';
 import { findNode } from '../mock/state.js';
-import { nodeById } from './helpers.mjs';
+import { underLiveTake } from './mock_scene.mjs';
 
 test('a span past the take ceiling refuses (engine parity: bounce.cc cap)', async () => {
     loadScenario('single-clip');
@@ -29,7 +29,7 @@ test('a span past the take ceiling refuses (engine parity: bounce.cc cap)', asyn
                  'back under the cap: accepted');
 });
 
-test('bounce records {uuid, path} and answers true', async () => {
+test('bounce records {uuid, path, start} and answers true; the dialog verb records the placeholder path', async () => {
     loadScenario('single-clip');
     resetLastBounce();
     assert.equal(getLastBounce(), null);
@@ -39,11 +39,6 @@ test('bounce records {uuid, path} and answers true', async () => {
     // docs/frame.md); the mock records it.
     assert.equal(await callNative('bounce', 'clip-1', '/tmp/song.wav', 12345), true);
     assert.deepEqual(getLastBounce(), { uuid: 'clip-1', path: '/tmp/song.wav', start: 12345 });
-});
-
-test('bounceWithDialog records the dialog placeholder path', async () => {
-    loadScenario('single-clip');
-    resetLastBounce();
     assert.equal(await callNative('bounceWithDialog', 'clip-1'), true);
     assert.deepEqual(getLastBounce(), { uuid: 'clip-1', path: DIALOG_PATH, start: null });
 });
@@ -51,14 +46,9 @@ test('bounceWithDialog records the dialog placeholder path', async () => {
 test('a live take refuses both verbs and records nothing', async () => {
     loadScenario('single-clip');
     resetLastBounce();
-    await callNative('createNode', 'clip', '');
-    const state = await callNative('getGraphState');
-    const armed = state.nodes[state.nodes.length - 1];
-    await callNative('startRecordingInNode', armed.id);
-    assert.ok(nodeById(armed.id, (await callNative('getGraphState')).nodes)
-        .isRecording, 'the take is live');
-    assert.equal(await callNative('bounce', 'clip-1', '/tmp/song.wav'), false);
-    assert.equal(await callNative('bounceWithDialog', 'clip-1'), false);
-    assert.equal(getLastBounce(), null);
-    await callNative('stopRecordingInNode', armed.id);
+    await underLiveTake(async () => {
+        assert.equal(await callNative('bounce', 'clip-1', '/tmp/song.wav'), false);
+        assert.equal(await callNative('bounceWithDialog', 'clip-1'), false);
+        assert.equal(getLastBounce(), null);
+    });
 });

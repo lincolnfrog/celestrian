@@ -1,60 +1,45 @@
 /**
- * CUT BANDS (time_maps.md §4, owner-chosen design A) + THE SAME-SCALE
- * REVEAL (owner-ruled 2026-09-11 — supersedes the expanded map drag and
- * its pointer warp), which since loop-region phase 2 (2026-09-24)
- * serves ⇧ on a lane splice — the LENGTH there (splice_handles.js) —
- * and a one-shot lane's edge grips and seam handles. Every other heard
- * lane's loop chrome is the splice layer's: the paired `] [` grips, the
- * "↺ loop top" chip and the plain-drag trims are retired (time_maps.md
- * §8).
+ * CUT BANDS (time_maps.md §4) and THE SAME-SCALE REVEAL.
  *
  * A cut is a first-class object in the bracket vocabulary: a dim band
  * with two bracket-style handles and a length chip. Double-click the
  * take → a 1Q cut on that Q cell; double-click a cut → it heals; drag
- * the chip → the cut SLIDES freely in position, length held (the
- * "exclude 1Q off the boundary" move); drag a handle → resize, length
- * ALWAYS snapping to whole Qs (the seam theorem is categorical). ⌥ is a
- * MODE key only — ⌥-drag a seam handle resizes instead of sliding, and
- * ⌥ on a trim grip / window bracket free-slides the whole region;
- * neither escapes the whole-Q snap. One gesture = one undo step.
- * Leading/trailing exclusions stay the WINDOW brackets' domain — bands
- * are only the INNER gaps, so the two gestures never overlap.
+ * the chip → the cut SLIDES freely, length held; drag a handle → resize,
+ * the length ALWAYS snapping to whole Qs (the seam theorem is
+ * categorical). Bands are only the INNER gaps — leading/trailing
+ * exclusions are the window brackets'. One gesture = one undo step.
  *
- * THE REVEAL: cut/trim geometry is RAW-frame data and the heard view
- * is the wrong editing surface (seams have no width, grips wrap) — but
- * squeezing the whole raw take into the lane at grab time (the 2026-07
- * expanded drag) rescaled a 52Q take 13× under the pointer, teleported
- * the cursor, and lost the selection in a field of dims. Now the lane
- * keeps its px-per-Q: on a real drag the lane UNROLLS the raw take at
- * the same scale, positioned so the grabbed thing stays exactly under
- * the pointer — excluded material appears as dims beside the kept
- * region, a cut becomes a real band, nothing rescales, nothing warps.
- * Dragging toward a lane edge PANS the raw take under the hand; the
- * whole-take picture is the region panel below the lane
- * (region_panel.js). Live commits stream (audible); release commits,
- * and the lane relaxes to the heard view in ONE frame once that commit
- * has settled and the heard tiles re-tiled from it (runRawDrag's held
- * picture).
+ * THE REVEAL: cut/trim geometry is RAW-frame data and a heard lane is
+ * the wrong surface to edit it on (a seam has no width, a grip wraps).
+ * On a real drag the lane UNROLLS the raw take at its own px-per-Q,
+ * placed so the grabbed thing stays exactly under the pointer: excluded
+ * material appears as dims beside the kept region, a cut becomes a real
+ * band, nothing rescales. Dragging toward a lane edge PANS the raw take
+ * under the hand (edge_pan.js). It serves ⇧ on a lane splice (the LENGTH
+ * there, splice_handles.js) and a ONE-SHOT lane's edge grips and seam
+ * handles — a one-shot's offset IS its placement (Q5), so it has no
+ * splice to swap and no ↺ to shift. Live commits stream; after release
+ * the lane relaxes to the heard view in ONE frame, once the commit has
+ * settled (map_core runMapDrag, the held picture).
  */
 
 import { ctx } from './context.js';
-import { el, pct, setStyle, snapThenAnimate } from './sv_util.js';
-import { beginGesture, isDragging } from './gesture.js';
+import { el, pct } from './sv_util.js';
 import { selectOnly } from './selection.js';
 import { drawEnvelope, mappedColumns, peaksBoost } from '../canvas_renderer.js';
-import { innerCuts, applyCut, healCut, cellCutAt, resizeCutTarget,
-         slideCutTarget, cutBounds } from '../map_edit.js';
+import { innerCuts, applyCut, healCut, cellCutAt, cutBounds } from '../map_edit.js';
 import { mapOffset } from '../time_map.js';
 import { posMod } from '../math_utils.js';
-import { bandState, coveredSegs, commitBandSegs, cancelBandGesture, newGesture,
-         holdUntilSettled, cutChipLabel, makeHealMenu, runRawDrag,
-         trimMoveFn, seamMoveFn, viewPct, rawCursorQ,
-         LIVE_COMMIT_THROTTLE_MS, CUT_HANDLE_W_PX, LOCKED_TITLE } from './map_core.js';
+import { bandState, coveredSegs, commitBandSegs, makeHealMenu, runRawDrag,
+         viewPct, rawCursorQ, placeCursor, CUT_HANDLE_W_PX, LOCKED_TITLE }
+    from './map_core.js';
+import { trimMoveFn, seamMoveFn, bandMoveFn, cutChipLabel } from './map_moves.js';
+import { spliceSpots } from './splice_spots.js';
 import { maskPlayheadOverInspectors } from './playhead_mask.js';
-import { makeEdgePanner, canPanView, panViewQ0 } from './edge_pan.js';
+import { makeViewPanner, panViewQ0 } from './edge_pan.js';
 
-/* Seam-heal hit reach: a dblclick within this many px of a seam means
- * HEAL (matching the handle's reach). */
+/* A dblclick within this many px of a heard seam means HEAL (the
+ * handle's reach — the seam itself has no width to hit). */
 const SEAM_HIT_PX = 12;
 /* Seam handle glyph half-width (px offset baked into calc()). */
 const SEAM_HANDLE_HALF_PX = 7;
@@ -64,25 +49,33 @@ const GRIP_PAIR_NUDGE_PX = 8;
 /* Seam chip edge threshold (Q): keep the chip readable at the frame
  * edges. */
 const CHIP_EDGE_Q = 0.4;
-/* (Reveal autoscroll: edge_pan.js owns the zone + speed constants.) */
-/* Waveform vertical inset inside the lane body (lane_body twin). */
-const BODY_V_INSET_PX = 6;
+
+/** How often a heard lane's content sounds: a one-shot's firing cadence,
+ * else its own period. Seams and hit tests repeat at this spacing. */
+const cadenceQ = st => st.everyQ || st.periodQ;
+
+/** Pointer x → heard offset from the content's top, folded on the cadence.
+ * At or past `st.periodQ` the pointer is in a one-shot's rest. */
+function heardOffsetAt(st, body, clientX) {
+    const r = body.getBoundingClientRect();
+    const laneQ = ((clientX - r.left) / r.width) * st.cycleQ;
+    return posMod(laneQ - st.anchorQ, cadenceQ(st));
+}
 
 /** Pointer x → CONTENT Q (raw-take coordinates). On a heard lane the
- * pointer lives in heard time — hop through the map to the RAW
- * position it selects; on a raw-framed lane it's a plain wrap into
- * the take's period. */
+ * pointer lives in heard time — hop through the map to the RAW position
+ * it selects; on a raw-framed lane it is a plain wrap into the take. */
 function bandContentQ(st, body, clientX) {
     const r = body.getBoundingClientRect();
     const laneQ = ((clientX - r.left) / r.width) * st.cycleQ;
     if (st.heard && st.periodQ > 0) {
-        const h = posMod(laneQ - st.anchorQ, st.periodQ);
+        // In a one-shot's rest the nearest content is the shot's end.
+        const h = Math.min(heardOffsetAt(st, body, clientX), st.periodQ - 1e-6);
         return mapOffset({ segs: coveredSegs(st) }, h);
     }
-    // RIGHT-EDGE CLAMP: a dblclick ON the take's last pixel gives
-    // rel === totalQ, which posMod would wrap to 0 (the FIRST cell).
-    // In-range positions clamp; wrapping remains for content resting
-    // mid-phase (rel outside [0, totalQ]).
+    // A press ON the take's last pixel gives rel === totalQ, which the
+    // wrap would turn into 0 (the FIRST cell): in-range positions clamp;
+    // only content resting mid-phase wraps.
     const rel = laneQ - st.anchorQ;
     if (rel >= 0 && rel <= st.totalQ) return Math.min(rel, st.totalQ - 1e-6);
     return posMod(rel, st.totalQ);
@@ -91,10 +84,10 @@ function bandContentQ(st, body, clientX) {
 /* ---------- THE SAME-SCALE REVEAL ---------- */
 
 /** Draw the reveal layer for `view`: raw-Q gridlines and the visible
- * slice of the raw take's waveform, at the lane's own px-per-Q. */
+ * slice of the raw take's waveform, at the lane's own px-per-Q and
+ * waveform height (body._waveH). */
 function drawReveal(layer, body, st, view) {
     const bodyW = body.clientWidth;
-    const bodyH = (body.clientHeight - BODY_V_INSET_PX) || 58;
     const a = Math.max(0, view.q0);
     const b = Math.min(st.totalQ, view.q0 + view.spanQ);
     let grid = layer.querySelector('.reveal-grid');
@@ -128,7 +121,7 @@ function drawReveal(layer, body, st, view) {
     tile._peaksRef = peaks;
     canvas.style.width = w + 'px';
     const { cols, boost } = revealColumns(peaks, st.totalQ, a, b, w);
-    drawEnvelope(canvas, cols, { cssWidth: w, cssHeight: bodyH,
+    drawEnvelope(canvas, cols, { cssWidth: w, cssHeight: body._waveH,
                                  isComposite: body._isGroup, fixedBoost: boost });
 }
 
@@ -148,19 +141,16 @@ export function revealColumns(peaks, totalQ, a, b, cssW) {
 /** The reveal drag: a heard-lane handle grabbed at `anchorQ` (its raw
  * position) drags in raw coordinates at the lane's own scale. The view
  * is placed so the grab pixel IS anchorQ — the handle never leaves the
- * pointer — and pans when the hand reaches a visible edge. (⇧ on a
- * splice — splice_handles.js — and a one-shot's grips and seams.) */
-export function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
+ * pointer — and pans when the hand reaches a visible edge. */
+export function runRevealDrag(ev, o, st, body, anchorQ, onMove) {
     const r0 = body.getBoundingClientRect();
     const pxPerQ = r0.width / st.cycleQ;
     const view = { q0: anchorQ - (ev.clientX - r0.left) / pxPerQ, spanQ: st.cycleQ };
     let layer = null;
     let pending = null;
-    // AUTOSCROLL (edge_pan.js — the one direction-aware rule the region
-    // panel's drags share): the hand at a visible edge pans the raw
-    // take under it. The zone is measured against the VISIBLE lane
-    // (the body clipped by the viewport).
-    const pan = makeEdgePanner({
+    const pan = makeViewPanner({
+        // The zone is measured against the VISIBLE lane (the body
+        // clipped by the session's viewport).
         rect: () => {
             const br = body.getBoundingClientRect();
             const sr = ctx.els.session.getBoundingClientRect();
@@ -168,19 +158,16 @@ export function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
                      right: Math.min(br.right, sr.right) };
         },
         grabX: ev.clientX,
-        canPan: dir => canPanView(dir, view.q0, view.spanQ, st.totalQ),
+        view: () => view,
+        totalQ: st.totalQ,
         pxPerQ: () => pxPerQ,
         onPan: dq => {
-            // Directional clamp: the anchored view may start out of
-            // range and must glide, never snap (panViewQ0).
             view.q0 = panViewQ0(view.q0, dq, view.spanQ, st.totalQ);
             if (layer) drawReveal(layer, body, st, view);
             run.reapply();
         },
     });
-    const stopPan = pan.stop;
     const run = runRawDrag(ev, o, st, {
-        claim: lane.id,  // a handle's gesture claims the track, at its end
         rawQAt: clientX => {
             const r = body.getBoundingClientRect();
             return view.q0 + (clientX - r.left) / pxPerQ;
@@ -192,9 +179,7 @@ export function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
             return res;
         },
         freeze: [body],
-        engage: true,
         onEngage: () => {
-            clearTimeout(body._flashT);
             body.classList.add('revealing');
             layer = el('div', 'body-layer reveal-layer');
             body.insertBefore(layer, o);   // under the overlay's chrome
@@ -206,13 +191,10 @@ export function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
             maskPlayheadOverInspectors();
         },
         onPointer: mv => pan.update(mv.clientX),
-        onRelease: () => {
-            stopPan();
-        },
-        // THE REVEAL OUTLIVES THE POINTER (runRawDrag's held picture):
-        // the raw view stays up, the preview at the committed landing
-        // over it, until the patch that re-tiles the heard lane from
-        // the committed state — then both go in that same frame.
+        onRelease: () => pan.stop(),
+        // THE REVEAL OUTLIVES THE POINTER (the held picture): the raw
+        // view stays up until the patch that re-tiles the heard lane
+        // from the committed state — then both go in that same frame.
         onTeardown: () => {
             body._reveal = null;
             body.classList.remove('revealing');
@@ -222,33 +204,25 @@ export function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
     });
 }
 
-/** Per poll (lane_body, before the frozen gate): the amber cursor of
- * a revealing lane — where the sound is in RAW coordinates, mapped
- * through the map as committed so far, positioned in the reveal view. */
+/** Per poll (lane_body, before the frozen gate): the amber cursor of a
+ * revealing lane — where the sound is in RAW coordinates, mapped through
+ * the map as committed so far, placed in the reveal view. */
 export function patchRevealCursor(body, lane, vm, node) {
     const rv = body._reveal;
     if (!rv) return;
     const cur = body.querySelector('.reveal-layer > .reveal-cursor');
     if (!cur) return;
-    const show = vm.isPlaying;
-    setStyle(cur, 'display', show ? '' : 'none');
-    if (!show) return;
-    const rawQ = rawCursorQ(lane, vm, node);
-    if (rawQ === null) return;
-    const frac = (rawQ - rv.view.q0) / rv.view.spanQ;
-    if (cur._frac !== undefined && frac < cur._frac - 0.02) snapThenAnimate(cur);
-    cur._frac = frac;
-    setStyle(cur, 'left', (frac * 100) + '%');
+    const rawQ = vm.isPlaying ? rawCursorQ(lane, vm, node) : null;
+    placeCursor(cur, rawQ === null ? null : (rawQ - rv.view.q0) / rv.view.spanQ);
 }
 
 /* ---------- creation + the bands ---------- */
 
-/** The once-per-body dblclick wiring: create a cell-snapped 1Q cut on
- * the take; heal the cut under the pointer. Wired ONCE per body
- * element (guarded by `body._bandsWired`); every patch refreshes
- * `body._bandState` so the handler always reads current-frame state —
- * a lane changing views must never leave a stale (wrong-frame) editor
- * behind. Shared by lane bodies and the region panel's strip. */
+/** The once-per-host dblclick wiring: a cell-snapped 1Q cut on the take,
+ * or the heal of the cut under (on a heard lane: beside) the pointer.
+ * Wired ONCE per element (`_bandsWired`); every patch refreshes
+ * `_bandState`, so the handler always reads current-frame state. Shared
+ * by lane bodies and the region panel's strip. */
 export function wireBandCreate(body, lane, vm, cycleQ) {
     body._bandState = bandState(lane, vm, cycleQ);
     if (body._bandsWired) return;
@@ -256,30 +230,23 @@ export function wireBandCreate(body, lane, vm, cycleQ) {
     body.addEventListener('dblclick', ev => {
         const st = body._bandState;
         if (!st || !st.editable || st.totalQ < 2) return;
-        // A double-click has no hand left on the lane: claim at once.
-        selectOnly(st.laneId); // editing a track claims it ([ ] target)
-        // HEARD lanes: a cut has ZERO width (it IS the splice), so the
-        // pointer can never be "inside" it — a dblclick meant to heal
-        // would land on adjacent content and cut ANOTHER Q, merging
-        // into a doubled cut. Near a seam (±SEAM_HIT_PX, matching the
-        // handle's reach) the dblclick means HEAL.
+        selectOnly(st.laneId);
+        // On a HEARD lane a cut has ZERO width (it IS the splice): a
+        // dblclick meant to heal lands on adjacent content — and would
+        // cut ANOTHER Q beside it. Near a seam it means HEAL.
         if (st.heard && st.segs && st.segs.length > 1) {
             const br = body.getBoundingClientRect();
-            const periodQ = st.periodQ;
-            let acc = 0;
-            for (let i = 0; i < st.segs.length - 1; i++) {
-                acc += st.segs[i][1] - st.segs[i][0];
-                const first = posMod(st.anchorQ + acc, st.cycleQ) % periodQ;
-                for (let q = first; q < st.cycleQ; q += periodQ) {
-                    const px = br.left + (q / st.cycleQ) * br.width;
-                    if (Math.abs(ev.clientX - px) < SEAM_HIT_PX) {
-                        commitBandSegs(st, healCut(st.segs,
-                            st.segs[i][1], st.segs[i + 1][0], st.totalQ));
-                        return;
-                    }
-                }
+            const seam = spliceSpots(coveredSegs(st), st.anchorQ, cadenceQ(st), st.cycleQ)
+                .find(sp => sp.cut && !sp.end && Math.abs(ev.clientX -
+                    (br.left + (sp.x / st.cycleQ) * br.width)) < SEAM_HIT_PX);
+            if (seam) {
+                commitBandSegs(st, healCut(st.segs, seam.cut[0], seam.cut[1], st.totalQ));
+                return;
             }
         }
+        // A one-shot's rest holds no content to cut.
+        if (st.heard && st.everyQ &&
+            heardOffsetAt(st, body, ev.clientX) >= st.periodQ) return;
         const q = bandContentQ(st, body, ev.clientX);
         const cut = innerCuts(st.segs, st.totalQ)
             .find(([a, b]) => q >= a && q < b);
@@ -289,146 +256,76 @@ export function wireBandCreate(body, lane, vm, cycleQ) {
             const [a, b] = cellCutAt(q, st.totalQ);
             commitBandSegs(st, applyCut(st.segs, a, b, st.totalQ));
         }
-        // (The cut lands in raw context on the region panel below the
-        // selected lane — the old flash-expand is gone with the
-        // expanded drag.)
     });
 }
 
-/** The bands themselves, rebuilt per overlay reconcile. On a ONE-SHOT's
- * heard lane a cut has ZERO width (it IS the splice), so it renders as a
- * SEAM HANDLE: passive ticks on every rep, one grabbable handle + chip
- * per cut on the take rep — drag slides the cut freely (length held),
- * ⌥-drag resizes (whole-Q snap), double-click heals. (Every other heard
- * lane's cuts are splice handles — splice_handles.js; lane_body never
- * calls this for them.) Raw-framed hosts (windowless lanes, inspectors,
- * the region panel's strip) get BANDS. */
+/** The cuts themselves, rebuilt per overlay reconcile. A raw-framed host
+ * (a windowless lane, a bypassed map, the comp editor, the region
+ * panel's strip) gets BANDS. A heard host — a ONE-SHOT's lane; every
+ * other heard lane's cuts are splice handles — gets SEAM HANDLES, drawn
+ * INERT under the recording gate. */
 export function appendCutBands(o, lane, vm, body, cycleQ) {
     const st = bandState(lane, vm, cycleQ);
     if (st.totalQ < 2) return;
     if (st.heard) {
-        // Under the recording gate the seams draw INERT: where the cuts
-        // are stays visible mid-take; nothing grabs.
-        if (st.editable || st.locked) appendSeamHandles(o, lane, st, body, cycleQ);
+        if (st.editable || st.locked) appendSeamHandles(o, st, body, cycleQ);
         return;
     }
     if (!st.editable) return;
+    // The host frames raw Q `q` at anchorQ + q of its cycleQ.
+    const view = { q0: -st.anchorQ, spanQ: cycleQ };
     const cuts = innerCuts(st.segs, st.totalQ);
     cuts.forEach(cut => {
+        const [a, b] = cut;
         const band = el('div', 'cut-band');
-        const chip = el('div', 'cut-chip mono', {
+        band.style.left = viewPct(a, view);
+        band.style.width = pct(b - a, cycleQ);
+        const label = cutChipLabel(b - a);
+        const chip = el('div', 'cut-chip mono' +
+            (label.incoherent ? ' incoherent' : ''), {
+            textContent: label.text,
             title: 'Drag to slide the cut (length held) — ' +
                 'right-click or double-click heals' });
+        chip.style.left = viewPct((a + b) / 2, view);
         const handles = {};
         for (const edge of ['start', 'end']) {
             handles[edge] = el('div', 'cut-handle ' + edge,
                 { title: 'Drag to resize — length snaps to whole Qs' });
         }
-        const ghost = el('div', 'cut-ghost');
-        ghost.style.display = 'none';
+        handles.start.style.left = viewPct(a, view);
+        handles.end.style.left =
+            'calc(' + viewPct(b, view) + ' - ' + CUT_HANDLE_W_PX + 'px)';
 
-        const layout = (a, b, raw) => {
-            band.style.left = pct(st.anchorQ + a, cycleQ);
-            band.style.width = pct(b - a, cycleQ);
-            handles.start.style.left =
-                'calc(' + pct(st.anchorQ + (raw && raw.edge === 'start'
-                    ? raw.q : a), cycleQ) + ')';
-            handles.end.style.left =
-                'calc(' + pct(st.anchorQ + (raw && raw.edge === 'end'
-                    ? raw.q : b), cycleQ) +
-                ' - ' + CUT_HANDLE_W_PX + 'px)';
-            chip.style.left = pct(st.anchorQ + (a + b) / 2, cycleQ);
-            const label = cutChipLabel(b - a);
-            chip.textContent = label.text;
-            chip.classList.toggle('incoherent', label.incoherent);
-        };
-        layout(cut[0], cut[1]);
-
-        // Drag machinery — the bracket pattern: pointer capture, the
-        // handle/chip follows the pointer, the ghost previews the snap,
-        // release commits ONE setSegments.
-        const startDrag = (kind, edge) => ev => {
-            let target = null;
-            newGesture();  // its first commit is a new undo step
-            const g = beginGesture(ev, {
-                stop: true,
-                claim: lane.id, // a handle's gesture claims the track, at its end
-                onMove: mv => move(mv),
-                onEnd: committed => {
-                    // HONOR THE END KIND: live splices streamed while
-                    // dragging — a cancel must restore the pre-drag
-                    // map, not keep the preview. RETURN the commit:
-                    // the gesture runner then holds the frame pin until
-                    // it settles (a poll carrying the last LIVE geometry
-                    // must not re-seat the frame first — review
-                    // 2026-09-23, the 7Q → 6Q → 5Q double settle).
-                    let p;
-                    if (committed && target) {
-                        let next = healCut(st.segs, cut[0], cut[1], st.totalQ);
-                        next = applyCut(next, target.inQ, target.outQ, st.totalQ);
-                        p = commitBandSegs(st, next, true);
-                    } else if (!committed && band._lastLive) {
-                        // …by cancelling the gesture: its undo step is
-                        // dropped, the redo branch returns (map_core).
-                        p = cancelBandGesture(st);
-                    }
-                    if (p) holdUntilSettled(body, p);
-                    return p;
-                },
-            });
-            if (!g.live()) return;  // gesture singleton
-            g.freeze(body);
-            g.pin();  // freeze the shared frame (see drag_pin.js)
-            const q0 = bandContentQ(st, body, ev.clientX);
-            // Kept-neighbourhood clamp (cutBounds): the gesture may
-            // meet a neighbouring gap only at exact adjacency.
+        // `edge` null = the chip's slide; else that handle's resize.
+        const startDrag = edge => ev => {
+            // The gesture may meet a neighbouring gap only at exact
+            // adjacency (cutBounds).
             const [loQ, hiQ] = cutBounds(st.segs, cut, st.totalQ);
-            const move = mv => {
-                const q = bandContentQ(st, body, mv.clientX);
-                if (kind === 'slide') {
-                    target = slideCutTarget({
-                        cut, rawStartQ: cut[0] + (q - q0),
-                        maxQ: st.totalQ, loQ, hiQ });
-                    layout(target.inQ, target.outQ);
-                    ghost.style.display = 'none';
-                } else {
-                    target = resizeCutTarget({
-                        cut, edge, rawQ: q, maxQ: st.totalQ, loQ, hiQ });
-                    layout(target.inQ, target.outQ, { edge, q });
-                    ghost.style.display = '';
-                    ghost.style.left = pct(st.anchorQ +
-                        (edge === 'start' ? target.inQ : target.outQ),
-                        cycleQ);
-                }
-                // LIVE SPLICE (see the seam handles): audible preview
-                // while dragging, coalesced undo.
-                const now = performance.now();
-                if (target && now - (band._lastLive ?? -Infinity) >
-                        LIVE_COMMIT_THROTTLE_MS) {
-                    band._lastLive = now;
-                    let liveNext = healCut(st.segs, cut[0], cut[1], st.totalQ);
-                    liveNext = applyCut(liveNext, target.inQ, target.outQ,
-                                        st.totalQ);
-                    commitBandSegs(st, liveNext, true);
-                }
-            };
+            runRawDrag(ev, o, st, {
+                rawQAt: x => bandContentQ(st, body, x),
+                view: () => view,
+                onMove: bandMoveFn(st, cut, edge,
+                    bandContentQ(st, body, ev.clientX), loQ, hiQ),
+                freeze: [body],
+            });
         };
-        chip.addEventListener('pointerdown', startDrag('slide'));
-        handles.start.addEventListener('pointerdown', startDrag('resize', 'start'));
-        handles.end.addEventListener('pointerdown', startDrag('resize', 'end'));
-        // Right-click = heal (see the seam handles): the explicit,
-        // timing-proof path.
+        chip.addEventListener('pointerdown', startDrag(null));
+        handles.start.addEventListener('pointerdown', startDrag('start'));
+        handles.end.addEventListener('pointerdown', startDrag('end'));
         const healMenu = makeHealMenu(st, cut);
-        [band, chip, handles.start, handles.end].forEach(node =>
+        [chip, handles.start, handles.end].forEach(node =>
             node.addEventListener('contextmenu', healMenu));
 
-        o.append(band, handles.start, handles.end, chip, ghost);
+        o.append(band, handles.start, handles.end, chip);
     });
 }
 
-/** Seam handles for heard-view lanes (see appendCutBands) — INERT (no
+/** A heard lane's SEAM HANDLES (see appendCutBands): passive ticks at
+ * every audible splice, and per cut one grabbable handle + length chip
+ * on the take rep — drag slides the cut freely (length held), ⌥-drag
+ * resizes (whole-Q snap), double-click or right-click heals. INERT (no
  * gesture, no heal, `.inert`) while the recording gate locks them. */
-function appendSeamHandles(o, lane, st, body, cycleQ) {
+function appendSeamHandles(o, st, body, cycleQ) {
     const segs = coveredSegs(st);
     if (segs.length < 2) return;  // no inner cuts, no seams
     const inert = !st.editable;
@@ -440,99 +337,73 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
         seams.push({ heardQ: acc, cut: [segs[i][1], segs[i + 1][0]] });
     }
     const baseQ = st.anchorQ;
-    const periodQ = st.periodQ;
     // A lane position for a heard offset, WRAPPED into the frame (the
     // content may rest mid-phase; an unwrapped seam would land on the
     // frame edge, half-clipped and out of reach).
     const wrapQ = heardQ => posMod(baseQ + heardQ, cycleQ);
-    // Passive ticks at every audible splice across the frame.
-    for (const s of seams) {
-        const first = wrapQ(s.heardQ) % periodQ;
-        for (let q = first; q < cycleQ; q += periodQ) {
-            if (q < 1e-9 || q > cycleQ - 1e-9) continue;
-            const t = el('div', 'map-seam-tick');
-            t.style.left = pct(q, cycleQ);
-            o.appendChild(t);
-        }
+    // Passive ticks at every heard seam across the frame (not on its
+    // edges).
+    for (const sp of spliceSpots(segs, baseQ, cadenceQ(st), cycleQ)) {
+        if (!sp.cut || sp.end || sp.x < 1e-9) continue;
+        const t = el('div', 'map-seam-tick');
+        t.style.left = pct(sp.x, cycleQ);
+        o.appendChild(t);
     }
-    // Grabbable handle + chip, wrapped with the content.
     seams.forEach(seam => {
         const handle = el('div', 'seam-handle' + (inert ? ' inert' : ''), {
             title: inert ? LOCKED_TITLE
                 : 'The cut lives here — drag to slide it, ' +
                   '⌥-drag to resize, right-click (or double-click) to heal' });
         const chip = el('div', 'cut-chip mono' + (inert ? ' inert' : ''));
-        const layout = (heardQ, cut) => {
-            const q = wrapQ(heardQ);
-            handle.style.left = 'calc(' + pct(q, cycleQ) +
-                ' - ' + SEAM_HANDLE_HALF_PX + 'px)';
-            chip.style.left = pct(q, cycleQ);
-            // Keep the chip readable at the frame edges.
-            chip.style.transform = q < CHIP_EDGE_Q ? 'translate(0, -50%)'
-                : q > cycleQ - CHIP_EDGE_Q ? 'translate(-100%, -50%)'
-                : 'translate(-50%, -50%)';
-            const label = cutChipLabel(cut[1] - cut[0]);
-            chip.textContent = '‖ ' + label.text;
-            chip.classList.toggle('incoherent', label.incoherent);
-        };
-        layout(seam.heardQ, seam.cut);
-        if (inert) {
-            o.append(handle, chip);
-            return;
-        }
+        const q = wrapQ(seam.heardQ);
+        handle.style.left = 'calc(' + pct(q, cycleQ) +
+            ' - ' + SEAM_HANDLE_HALF_PX + 'px)';
+        chip.style.left = pct(q, cycleQ);
+        chip.style.transform = q < CHIP_EDGE_Q ? 'translate(0, -50%)'
+            : q > cycleQ - CHIP_EDGE_Q ? 'translate(-100%, -50%)'
+            : 'translate(-50%, -50%)';
+        const label = cutChipLabel(seam.cut[1] - seam.cut[0]);
+        chip.textContent = '‖ ' + label.text;
+        chip.classList.toggle('incoherent', label.incoherent);
+        o.append(handle, chip);
+        if (inert) return;
 
         handle.addEventListener('dblclick', ev => {
             ev.stopPropagation();
             commitBandSegs(st,
                 healCut(st.segs, seam.cut[0], seam.cut[1], st.totalQ));
         });
-        // Right-click = heal, explicitly (dblclick near a seam is a
-        // fiddly target) — this path has no timing to break.
         const healMenu = makeHealMenu(st, seam.cut);
         handle.addEventListener('contextmenu', healMenu);
         chip.addEventListener('contextmenu', healMenu);
         const startDrag = ev => {
-            if (isDragging(body)) return;
-            // (The reveal drag claims the track, at its end.)
-            // THE REVEAL: the lane unrolls at its own scale around the
-            // seam; the cut is a real band over visible content. Drag
-            // slides it (length held), ⌥-drag resizes (whole-Q snap).
-            // Anchor by the mode chosen at the grab: a slide carries
-            // the cut's start, ⌥-resize carries its end edge.
+            // The reveal unrolls around the seam, the cut a real band
+            // over visible content. Anchored by the mode chosen at the
+            // grab: a slide carries the cut's start, ⌥-resize its end.
             const anchor0 = ev.altKey ? seam.cut[1] : seam.cut[0];
-            // Kept-neighbourhood clamp (cutBounds): exact adjacency
-            // only — a slide/resize can never fractionally overlap a
-            // neighbouring gap.
             const [loQ, hiQ] = cutBounds(st.segs, seam.cut, st.totalQ);
-            runRevealDrag(ev, o, lane, st, body, anchor0,
+            runRevealDrag(ev, o, st, body, anchor0,
                 seamMoveFn(st, seam.cut, loQ, hiQ));
         };
         handle.addEventListener('pointerdown', startDrag);
         chip.addEventListener('pointerdown', startDrag);
-        o.append(handle, chip);
     });
 }
 
-/** A ONE-SHOT heard lane's live TRIM handles on its outer edges (a
- * one-shot's offset IS its placement, Q5: it has no splice to swap and
- * no ↺ to shift — splice_handles.js serves every other heard lane).
- * Dragging inward consumes kept time (whole-Q snap); outward reveals
- * more of the take — at the lane's own scale, the grip glued to the
- * pointer. One setSegments per release — the single-window case
- * delegates to setLoopPoints inside the engine, preserving the existing
- * semantics. While the recording gate locks the lane (bandGate) the
- * grips still draw — INERT: no gesture, `.inert` (no hover reveal, no
- * grab cursor). (Retired 2026-09-24 with the other lanes' grips: the
- * mid-lane "] [" pair's "↺ loop top" chip — time_maps.md §8.) */
+/** A ONE-SHOT heard lane's TRIM handles on its outer edges. Dragging
+ * inward consumes kept time (whole-Q snap); outward reveals more of the
+ * take — at the lane's own scale, the grip glued to the pointer (the
+ * reveal); ⌥ slides the loop, length held. Live commits stream under
+ * one undo step. Under the recording gate the grips still draw — INERT:
+ * no gesture, `.inert`. */
 export function appendTrimGrips(o, lane, vm, body, cycleQ) {
     const st = bandState(lane, vm, cycleQ);
     if (!(st.editable || st.locked) || st.totalQ < 2) return;
     const inert = !st.editable;
     const segs = coveredSegs(st);
     const periodQ = st.periodQ;
-    // The grips hug the CONTENT's heard bounds (the loop may rest
-    // mid-phase — its top is the bright tile's start, not the frame
-    // edge).
+    // The grips hug the CONTENT's heard bounds (the shot may rest
+    // mid-phase: its top is the bright tile's start, not the frame edge).
     const startPos = st.anchorQ % cycleQ;
     const endRaw = startPos + Math.min(periodQ, cycleQ);
     const endPos = endRaw <= cycleQ + 1e-9 ? Math.min(endRaw, cycleQ)
@@ -560,15 +431,11 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
         o.appendChild(grip);
         if (inert) return;
         grip.addEventListener('pointerdown', ev => {
-            if (isDragging(body)) return;
-            // (The reveal drag claims the track, at its end.)
-            // THE REVEAL: the take unrolls around the grip at the
-            // lane's scale; the bracket rides an ABSOLUTE raw bound
-            // over visible content — dragging back over dimmed content
-            // restores it.
+            // The bracket rides an ABSOLUTE raw bound over visible
+            // content: dragging back over dimmed content restores it.
             const bound0 = edge === 'start'
                 ? segs[0][0] : segs[segs.length - 1][1];
-            runRevealDrag(ev, o, lane, st, body, bound0,
+            runRevealDrag(ev, o, st, body, bound0,
                 trimMoveFn(st, segs, edge, bound0));
         });
     });

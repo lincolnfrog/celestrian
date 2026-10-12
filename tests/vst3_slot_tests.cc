@@ -11,10 +11,10 @@
 namespace celestrian {
 
 /**
- * Vst3Slot + the chain's Q-V1 stereo promotion (docs/vst3.md §3,
- * phase 3), exercised entirely through the in-tree stub instance
- * (Q-V5: no real plugin binaries in unit tests; the real-binary twin
- * lives in plugin_host_integration_tests.cc).
+ * Vst3Slot + the chain's Q-V1 stereo promotion (docs/vst3.md §3),
+ * exercised entirely through the in-tree stub instance (Q-V5: no real
+ * plugin binaries in unit tests; the real-binary twin lives in
+ * plugin_host_integration_tests.cc).
  */
 class Vst3SlotTests : public juce::UnitTest {
  public:
@@ -26,9 +26,7 @@ class Vst3SlotTests : public juce::UnitTest {
       dsp::Vst3Slot** out_slot, float gain = 0.5f) {
     auto chain = dsp::FxChain::makeDefault();
     auto slots = chain->slots();
-    auto slot = std::make_shared<dsp::Vst3Slot>(
-        std::make_unique<test_utils::StubPluginInstance>(gain), "Stub-uid",
-        "Stub Gain", "/stub/StubGain.vst3");
+    auto slot = test_utils::makeStubGainSlot(gain);
     if (out_slot != nullptr) *out_slot = slot.get();
     slots.push_back(std::move(slot));
     return dsp::FxChain::makeFromSlots(std::move(slots));
@@ -64,6 +62,56 @@ class Vst3SlotTests : public juce::UnitTest {
       slot->enabled.store(false);
       expectEquals(chain->totalLatencySamples(), 0,
                    juce::String("disabled slots report no latency"));
+    }
+
+    beginTest("prepare is the first prepare only; followRate moves a "
+              "prepared slot, released first");
+    {
+      // The host protocol pairs prepareToPlay with releaseResources: a
+      // hosted plugin still active from its first prepare takes a
+      // repeat prepare as nothing to do.
+      struct PairingStub : test_utils::StubPluginInstance {
+        int releases = 0;
+        int releases_at_last_prepare = -1;
+        void prepareToPlay(double rate, int block) override {
+          releases_at_last_prepare = releases;
+          StubPluginInstance::prepareToPlay(rate, block);
+        }
+        void releaseResources() override { ++releases; }
+      };
+      const auto makeSlot = [] {
+        return std::make_shared<dsp::Vst3Slot>(std::make_unique<PairingStub>(),
+                                               "Pair-uid", "Pairing",
+                                               "/stub/Pairing.vst3");
+      };
+      auto slot = makeSlot();
+      auto* stub = static_cast<PairingStub*>(slot->instance());
+
+      slot->prepare(44100.0);
+      expectEquals(stub->prepare_count, 1, juce::String("prepared once"));
+      expectEquals(stub->releases, 0,
+                   juce::String("a first prepare releases nothing"));
+
+      slot->prepare(48000.0);
+      expectEquals(stub->prepare_count, 1,
+                   juce::String("prepare leaves a prepared slot alone"));
+      expectEquals(stub->prepared_rate, 44100.0);
+
+      slot->followRate(48000.0);
+      expectEquals(stub->prepare_count, 2,
+                   juce::String("followRate prepares it again"));
+      expectEquals(stub->prepared_rate, 48000.0);
+      expectEquals(stub->releases_at_last_prepare, 1,
+                   juce::String("released before it was prepared again"));
+
+      slot->followRate(48000.0);
+      expectEquals(stub->prepare_count, 2,
+                   juce::String("already at the rate: nothing to do"));
+
+      auto fresh = makeSlot();
+      fresh->followRate(48000.0);
+      expectEquals(static_cast<PairingStub*>(fresh->instance())->prepare_count,
+                   0, juce::String("a slot never prepared stays so"));
     }
 
     beginTest("promotion: mono pass goes stereo at the first vst3 slot");
@@ -128,6 +176,97 @@ class Vst3SlotTests : public juce::UnitTest {
       expect(!out_stereo, "mono caller stays mono");
       // 0.8 duplicated, both * 0.5, folded 0.5(L+R) = 0.4
       expectWithinAbsoluteError(l[0], 0.4f, 1e-6f, "processed and folded");
+    }
+
+    beginTest("mono caller: a chain built around a prepared slot promotes "
+              "as built");
+    {
+      // The add path prepares the ARRIVING slot and publishes the
+      // successor chain as built — nothing prepares the chain itself.
+      auto slot = test_utils::makeStubGainSlot();
+      slot->prepare(sr);
+      slot->enabled.store(true);
+      auto slots = dsp::FxChain::makeDefault()->slots();
+      slots.push_back(slot);
+      auto chain = dsp::FxChain::makeFromSlots(std::move(slots));
+
+      std::vector<float> l(256, 0.8f);
+      expect(!chain->run(l.data(), nullptr, 256, false),
+             "mono caller stays mono");
+      expectWithinAbsoluteError(l[0], 0.4f, 1e-6f,
+                                "the slot ran: processed and folded");
+    }
+
+    beginTest("a plugin that will not run stereo is bypassed and says so");
+    {
+      // Mono out only: the stereo layout every slot runs at is refused.
+      struct MonoOutStub : test_utils::StubPluginInstance {
+        bool isBusesLayoutSupported(const BusesLayout& layouts) const override {
+          return layouts.getMainOutputChannels() <= 1;
+        }
+      };
+      auto slots = dsp::FxChain::makeDefault()->slots();
+      auto slot = std::make_shared<dsp::Vst3Slot>(
+          std::make_unique<MonoOutStub>(), "Mono-uid", "Mono Out",
+          "/stub/MonoOut.vst3");
+      slot->enabled.store(true);
+      slots.push_back(slot);
+      auto chain = dsp::FxChain::makeFromSlots(std::move(slots));
+      chain->prepare(sr);
+
+      std::vector<float> l(128, 0.8f), r(128, 0.8f);
+      chain->run(l.data(), r.data(), 128, true);
+      expectWithinAbsoluteError(l[0], 0.8f, 1e-9f,
+                                "the plugin never sees a two-channel block");
+      expectWithinAbsoluteError(r[0], 0.8f, 1e-9f, "right untouched too");
+      expect((bool)chain->getMetadata()[4].getProperty("unsupported", false),
+             "the slot publishes that its layout is unsupported");
+
+      // A plugin that takes the layout publishes the flag as false.
+      dsp::Vst3Slot* fine = nullptr;
+      auto good = chainWithStub(&fine);
+      good->prepare(sr);
+      const juce::var entry = good->getMetadata()[4];
+      expect(entry.hasProperty("unsupported") &&
+                 !(bool)entry.getProperty("unsupported", true),
+             "a stereo plugin is supported");
+    }
+
+    beginTest("a share of a slot keeps its plugin instance alive after "
+              "every chain has let the slot go");
+    {
+      // What an open editor window holds: the instance its editor shows
+      // must outlive the chains and undo entries that drop the slot.
+      struct TrackedStub : test_utils::StubPluginInstance {
+        explicit TrackedStub(bool& gone) : destroyed(gone) {}
+        ~TrackedStub() override { destroyed = true; }
+        bool& destroyed;
+      };
+      bool destroyed = false;
+      dsp::Vst3Slot* raw = nullptr;
+      std::unique_ptr<dsp::FxChain> chain;
+      {
+        auto slots = dsp::FxChain::makeDefault()->slots();
+        auto slot = std::make_shared<dsp::Vst3Slot>(
+            std::make_unique<TrackedStub>(destroyed), "Tracked-uid", "Tracked",
+            "/stub/Tracked.vst3");
+        raw = slot.get();
+        slots.push_back(std::move(slot));
+        chain = dsp::FxChain::makeFromSlots(std::move(slots));
+      }
+      // The engine hands out the slot by raw pointer; the share is taken
+      // from the slot itself.
+      std::shared_ptr<dsp::Vst3Slot> share = raw->owner();
+      expect(share != nullptr && share.get() == raw, "a share of the slot");
+      chain.reset();
+      expect(!destroyed, "the last chain is gone; the instance is not");
+      share.reset();
+      expect(destroyed, "the last share releases the instance");
+
+      // A slot nothing shares has no share to give.
+      dsp::Vst3Slot lone("Lone-uid", "Lone", "/stub/Lone.vst3",
+                         juce::MemoryBlock());
+      expect(lone.owner() == nullptr, "an unshared slot answers null");
     }
 
     beginTest("placeholder: hard bypass, identity kept, state verbatim");

@@ -2,12 +2,15 @@
 
 #include <juce_core/juce_core.h>
 
+namespace juce {
+class AudioPluginFormatManager;
+}
+
 namespace celestrian {
 
 /**
- * OUT-OF-PROCESS PLUGIN SCANNING (docs/vst3.md §4): the
- * worker half, and the ONLY place a scan loads plugin code (VST3
- * everywhere, AudioUnit on macOS — §11). PluginHostService (the
+ * OUT-OF-PROCESS PLUGIN SCANNING (docs/vst3.md §4): the worker half,
+ * and the ONLY place a scan loads plugin code. PluginHostService (the
  * coordinator) enumerates candidate files itself, then re-launches its
  * own executable as
  *
@@ -29,10 +32,16 @@ namespace celestrian {
  * a pipe so the coordinator can poll with a timeout instead of sitting
  * in a blocking read.
  *
- * Both the app (main.cc) and CelestrianTests (test_runner.cc) carry the
- * flag, so tests exercise the real machinery on their own binary.
+ * Every executable that owns a PluginHostService answers the flag at
+ * start-up, before it builds anything else (the app, the headless
+ * server, CelestrianTests), so each scans through its own binary.
  */
 namespace scan_worker {
+
+/** THE HOSTED FORMATS, the one list: VST3 everywhere, AudioUnit on
+ * macOS (docs/vst3.md §4). The coordinator's registry and the worker's
+ * probe must name the same formats, so both fill their manager here. */
+void addHostedFormats(juce::AudioPluginFormatManager& manager);
 
 inline constexpr const char* kFlag = "--scan-worker";
 

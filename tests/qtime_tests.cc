@@ -20,7 +20,19 @@ using celestrian::test_utils::findSharedFile;
 
 class QTimeTests : public juce::UnitTest {
  public:
-  QTimeTests() : juce::UnitTest("QTime (rational musical time)") {}
+  QTimeTests() : juce::UnitTest("QTime (rational musical time)", "Golden") {}
+
+  /** Runs `body(case)` over the golden array `key`. A missing or empty
+   * array FAILS: a renamed fixture key must not turn its test into one
+   * that checks nothing. */
+  template <typename Body>
+  void forEachCase(const juce::var& root, const char* key, Body&& body) {
+    auto* cases = root.getProperty(key, {}).getArray();
+    expect(cases != nullptr && !cases->isEmpty(),
+           juce::String(key) + ": golden vectors missing or empty");
+    if (cases == nullptr) return;
+    for (auto& c : *cases) body(c);
+  }
 
   void runTest() override {
     using celestrian::timing::fromSamples;
@@ -47,7 +59,8 @@ class QTimeTests : public juce::UnitTest {
       expectEquals((juce::int64)posMod(-9, -3), (juce::int64)-9,
                    "m < 0: identity (no modulus)");
       // The saturated cycle IS a modulus on the audio thread (one-shot
-      // folds, inRest, masterPos, seek): the fold must not overflow.
+      // folds, the stack's seam runs, masterPos, seek): the fold must
+      // not overflow.
       expectEquals((juce::int64)posMod(5, kMax), (juce::int64)5,
                    "posMod(5, INT64_MAX) == 5");
       expectEquals((juce::int64)posMod(-5, kMax), (juce::int64)(kMax - 5),
@@ -61,6 +74,11 @@ class QTimeTests : public juce::UnitTest {
       const int64_t big = (int64_t)1 << 62;
       expectEquals((juce::int64)lcm(big, big - 1), (juce::int64)kMax,
                    "lcm saturates at INT64_MAX");
+      expectEquals((juce::int64)lcm(big + 12345, 3), (juce::int64)kMax,
+                   "and against a small coprime: never 0, never negative");
+      expectEquals((juce::int64)lcm(6, 4), (juce::int64)12, "lcm(6, 4)");
+      expectEquals((juce::int64)lcm(0, 7), (juce::int64)7,
+                   "0 is the empty fold: the other side");
       expectEquals((juce::int64)posMod(-1, lcm(big, big - 1)),
                    (juce::int64)(kMax - 1),
                    "a negative residue folded by the saturated lcm");
@@ -81,54 +99,44 @@ class QTimeTests : public juce::UnitTest {
     if (!file.existsAsFile()) return;
     auto root = juce::JSON::parse(file.loadFileAsString());
 
-    if (auto* cases =
-            root.getProperty("qtime_to_samples_cases", {}).getArray()) {
-      for (auto& c : *cases) {
-        const QTime t = qtime(asInt64(c, "num"), asInt64(c, "den"));
-        expectEquals((juce::int64)toSamples(t, asInt64(c, "qSamples")),
-                     (juce::int64)asInt64(c, "expected"),
-                     "toSamples: " + c.getProperty("name", "?").toString());
-      }
-    }
+    forEachCase(root, "qtime_to_samples_cases", [&](const juce::var& c) {
+      const QTime t = qtime(asInt64(c, "num"), asInt64(c, "den"));
+      expectEquals((juce::int64)toSamples(t, asInt64(c, "qSamples")),
+                   (juce::int64)asInt64(c, "expected"),
+                   "toSamples: " + c.getProperty("name", "?").toString());
+    });
 
-    if (auto* cases =
-            root.getProperty("qtime_from_samples_cases", {}).getArray()) {
-      for (auto& c : *cases) {
-        const QTime t =
-            fromSamples(asInt64(c, "samples"), asInt64(c, "qSamples"));
-        const auto name = c.getProperty("name", "?").toString();
-        expectEquals((juce::int64)t.num, (juce::int64)asInt64(c, "expectedNum"),
-                     "fromSamples num: " + name);
-        expectEquals((juce::int64)t.den, (juce::int64)asInt64(c, "expectedDen"),
-                     "fromSamples den: " + name);
-      }
-    }
+    forEachCase(root, "qtime_from_samples_cases", [&](const juce::var& c) {
+      const QTime t =
+          fromSamples(asInt64(c, "samples"), asInt64(c, "qSamples"));
+      const auto name = c.getProperty("name", "?").toString();
+      expectEquals((juce::int64)t.num, (juce::int64)asInt64(c, "expectedNum"),
+                   "fromSamples num: " + name);
+      expectEquals((juce::int64)t.den, (juce::int64)asInt64(c, "expectedDen"),
+                   "fromSamples den: " + name);
+    });
 
-    if (auto* cases = root.getProperty("qtime_lcm_cases", {}).getArray()) {
-      for (auto& c : *cases) {
-        const QTime r = qlcm(qtime(asInt64(c, "aNum"), asInt64(c, "aDen")),
-                             qtime(asInt64(c, "bNum"), asInt64(c, "bDen")));
-        const auto name = c.getProperty("name", "?").toString();
-        expectEquals((juce::int64)r.num, (juce::int64)asInt64(c, "expectedNum"),
-                     "qlcm num: " + name);
-        expectEquals((juce::int64)r.den, (juce::int64)asInt64(c, "expectedDen"),
-                     "qlcm den: " + name);
-      }
-    }
+    forEachCase(root, "qtime_lcm_cases", [&](const juce::var& c) {
+      const QTime r = qlcm(qtime(asInt64(c, "aNum"), asInt64(c, "aDen")),
+                           qtime(asInt64(c, "bNum"), asInt64(c, "bDen")));
+      const auto name = c.getProperty("name", "?").toString();
+      expectEquals((juce::int64)r.num, (juce::int64)asInt64(c, "expectedNum"),
+                   "qlcm num: " + name);
+      expectEquals((juce::int64)r.den, (juce::int64)asInt64(c, "expectedDen"),
+                   "qlcm den: " + name);
+    });
 
-    if (auto* cases = root.getProperty("qtime_arith_cases", {}).getArray()) {
-      for (auto& c : *cases) {
-        const QTime a = qtime(asInt64(c, "aNum"), asInt64(c, "aDen"));
-        const QTime b = qtime(asInt64(c, "bNum"), asInt64(c, "bDen"));
-        const bool isAdd = c.getProperty("op", "").toString() == "add";
-        const QTime r = isAdd ? qadd(a, b) : qsub(a, b);
-        const auto name = c.getProperty("name", "?").toString();
-        expectEquals((juce::int64)r.num, (juce::int64)asInt64(c, "expectedNum"),
-                     "arith num: " + name);
-        expectEquals((juce::int64)r.den, (juce::int64)asInt64(c, "expectedDen"),
-                     "arith den: " + name);
-      }
-    }
+    forEachCase(root, "qtime_arith_cases", [&](const juce::var& c) {
+      const QTime a = qtime(asInt64(c, "aNum"), asInt64(c, "aDen"));
+      const QTime b = qtime(asInt64(c, "bNum"), asInt64(c, "bDen"));
+      const bool isAdd = c.getProperty("op", "").toString() == "add";
+      const QTime r = isAdd ? qadd(a, b) : qsub(a, b);
+      const auto name = c.getProperty("name", "?").toString();
+      expectEquals((juce::int64)r.num, (juce::int64)asInt64(c, "expectedNum"),
+                   "arith num: " + name);
+      expectEquals((juce::int64)r.den, (juce::int64)asInt64(c, "expectedDen"),
+                   "arith den: " + name);
+    });
 
     beginTest("round-trip: toSamples(fromSamples(s)) == s exactly");
     {

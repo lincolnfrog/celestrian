@@ -18,9 +18,9 @@
 </head>
 
 <body>
-    <!-- LOADING OVERLAY — styled by css/session.css §21 (the stylesheet
-         is a render-blocking link, so the splash paints exactly as the
-         old inline styles did). app.js hides it once modules land. -->
+    <!-- LOADING OVERLAY — styled by css/session.css §22 (the stylesheet
+         is a render-blocking link, so the splash paints with the first
+         frame). app.js hides it once modules land. -->
     <div id="loading-overlay">
         <div class="loading-inner">
             <img src="assets/celestrian-mark.svg" alt="" width="64" height="64">
@@ -46,8 +46,7 @@
                  gain·pan and rack), each with a peak-hold tick and a
                  clip lamp that latches until the face is clicked; the
                  fader is the root's gain (setNodeGain on rootId); fx
-                 opens the root's rack as the first row.
-                 Keep in lockstep with index_test.html. -->
+                 opens the root's rack as the first row. -->
             <div id="master-monitor" title="Master output — what the speakers hear">
                 <div class="vu-pair">
                     <div class="vu" id="vu-l">
@@ -86,8 +85,7 @@
                  device (audio_settings.js renders into the host),
                  latency calibration (app.js wires the button), the
                  projects root (chooseProjectsRoot). Static markup so
-                 app.js binds the calibration ids at init.
-                 Keep in lockstep with index_test.html. -->
+                 app.js binds the calibration ids at init. -->
             <button id="prefs-btn" class="bar-btn"
                     title="Preferences — audio device, latency, projects folder">⚙</button>
             <div id="prefs-panel" class="audio-panel">
@@ -100,8 +98,7 @@
                     <div class="ap-label">Latency</div>
                     <div class="ap-row">
                         <button id="calibrate-btn"
-                            title="Measure real round-trip latency: plays a click and listens for it on the input. See docs/performance.md">🎯
-                            Calibrate</button>
+                            title="Measure real round-trip latency: plays a click and listens for it on the input. See docs/performance.md">🎯 Calibrate</button>
                         <span id="calibration-status"></span>
                     </div>
                 </div>
@@ -134,16 +131,11 @@
                 <div id="lanes"></div>
                 <div id="playhead"></div>
             </div>
-            <!-- The BOOT state since Q17 (boot empty — the launch
-                 ritual is retired): no message needed, the ＋ Track
-                 row below is the whole story (owner call 2026-08-13:
-                 "just having a + button is pretty clear"). The element
-                 survives as the zero-lanes marker the shell toggles
+            <!-- The empty session is wordless (the app boots empty,
+                 Q17): the ＋ Track row below is the whole invitation.
+                 The element is the zero-lanes marker the shell toggles
                  and the e2e specs assert on. -->
             <div id="empty-state"></div>
-            <!-- Keep in lockstep with index_test.html — the harness binds
-                 the same IDs (initSessionView); see that file for the
-                 2026-07-21 crash story when create-row landed only here. -->
             <div id="selection-bar" class="mono">
                 <span class="sel-count"></span>
                 <button class="sel-group">Group</button>
@@ -158,13 +150,11 @@
         <!-- THE EDIT BAR (loop_selection.md §15): the selected track's
              region panel, docked at the foot of the session view so
              selecting a track never re-flows the lanes. region_panel.js
-             mounts every lane's panel here; one shows at a time. Keep
-             in lockstep with index_test.html. -->
+             mounts every lane's panel here; one shows at a time. -->
         <div id="region-dock"><div class="region-dock-hint mono"></div></div>
 
         <!-- STATUS STRIP -->
         <div id="status-strip">
-            <span id="ready-lamp" title="Engine ready"></span>
             <span id="log-line">ready</span>
             <button id="plugins-btn" class="bar-btn"
                 title="VST3 plugins — the known-plugin registry and scan. See docs/vst3.md">🔌

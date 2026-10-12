@@ -3,8 +3,10 @@
  * owner's story: an arhythmic keyboard loop set Q; a long drum take was
  * recorded over it; Q is handed to the drums, their loop is trimmed to
  * the drummer's bars, and the keyboard keeps playing exactly as
- * recorded — drifting (↯) against the new grid. The engine twin is
- * tests/definer_handoff_tests.cc.
+ * recorded — drifting (↯) against the new grid. The hand-off itself, its
+ * trim and its refusals are held to the engine by the differential
+ * suite (ui/differential/ definer/*); here, what the view shows and the
+ * hand-offs across a lock that no journey drives.
  *
  * Scenario 'keys-then-drums' (Q = MOCK_Q): keys [origin 0, 1Q], drums
  * [origin 2Q, 5Q].
@@ -13,17 +15,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { callNative, getState, loadScenario, setIsPlaying, setMasterPos }
-    from '../mock_backend.js';
+import { callNative, getState, loadScenario, setMasterPos } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
 import {
     periodDrifts, publishedNodeDrifts, driftsByRoundingOnly, subdivisionSamples,
 } from '../timeline_model.js';
 import { findNode } from '../mock/state.js';
-import { MOCK_Q as Q, PERF as perf, nodeById, recordTake } from './helpers.mjs';
+import { posMod } from '../math_utils.js';
+import { MOCK_Q as Q, PERF as perf, recordTake } from './helpers.mjs';
+import { published as node, recordGroupTake } from './mock_scene.mjs';
 
 const at = x => Math.round(x * Q);
-const node = id => nodeById(id, getState().nodes);
+
+/** 'keys-then-drums' with Q handed to the drums; `trimmed`, their loop
+ * is then cut to [0.7Q, 3.1Q) (a free 2.4Q); `locked`, a new take then
+ * locks the hand-off (the lanes rest in the heard view). */
+async function handToDrums({ trimmed = false, locked = false } = {}) {
+    loadScenario('keys-then-drums');
+    await callNative('setDefiner', 'drums');
+    if (trimmed || locked) await callNative('setLoopPoints', 'drums', at(0.7), at(3.1));
+    if (locked) await recordTake('', at(2.4), { stopEarly: 100, settle: at(2.4) });
+}
 
 test('periodDrifts: whole multiples and exact divisors cohere; the rest drift', () => {
     assert.equal(periodDrifts(2000, 1000), false, 'a multiple');
@@ -54,24 +66,8 @@ test('a short take at a subdivision that Q does not divide drifts by rounding on
     assert.equal(lane('k').driftShown, true);
 });
 
-test('setDefiner: Q becomes the drums loop, the zero its top — nothing moves', async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
-    const s = getState();
-    assert.equal(s.quantum, at(5), 'Q := the drums loop (the whole 5Q take)');
-    assert.equal(s.islandZero, at(2), 'zero := the drums loop top');
-    assert.equal(s.definerId, 'drums', 'the drums define Q (published)');
-    assert.equal(node('drums').origin, at(2), 'no origin moved');
-    assert.equal(node('keys').origin, 0);
-    assert.equal(node('keys').duration, at(1), 'no content moved');
-    // The keys still fit (Q/5): nothing drifts yet.
-    const vm = deriveViewModel(getState());
-    assert.equal(vm.lanes.find(l => l.id === 'keys').drifting, false);
-});
-
 test('setDefiner is ONE undo step; an identity records nothing', async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
+    await handToDrums();
     await callNative('setDefiner', 'drums');  // identity: refused silently
     await callNative('undo');
     const s = getState();
@@ -80,41 +76,8 @@ test('setDefiner is ONE undo step; an identity records nothing', async () => {
     assert.equal(s.definerId, '', 'two takes, no designation: Q is locked');
 });
 
-test('refusals record nothing', async () => {
-    loadScenario('empty');
-    const id = await callNative('createNode', 'clip', '');
-    await callNative('setDefiner', id);
-    assert.equal(getState().quantum, 0, 'no Q yet: nothing to hand over');
-
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'nope');
-    await callNative('setPeriodSource', 'keys', 'context');
-    await callNative('setDefiner', 'keys');
-    assert.equal(getState().definerId, '', 'a one-shot never takes Q');
-    assert.equal(getState().quantum, at(1));
-});
-
-test("the handed-Q definer trims like a first take, keeping its timing beside the keys", async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
-    // Playing, mid-loop: a sole definer would re-anchor its origin; beside
-    // other tracks the drums keep theirs (nothing re-times, P1).
-    setIsPlaying(true);
-    setMasterPos(at(4.25));
-    await callNative('setLoopPoints', 'drums', at(0.7), at(3.1));
-    const s = getState();
-    assert.equal(s.quantum, at(2.4), 'Q := the trimmed loop — free, sub-Q');
-    assert.equal(s.islandZero, at(2) + at(0.7), 'zero := origin + region start');
-    assert.equal(node('drums').origin, at(2), 'the drums keep their origin');
-    assert.equal(node('drums').loopStart, at(0.7), 'not refused by coherence');
-});
-
 test('keys that no longer fit DRIFT: out of the frame and the seat, drawn per pass', async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
-    await callNative('setLoopPoints', 'drums', at(0.7), at(3.1));
-    // Lock the hand-off with a new take so the lanes rest in the heard view.
-    await recordTake('', at(2.4), { stopEarly: 100, settle: at(2.4) });
+    await handToDrums({ locked: true });
     const s = getState();
     assert.equal(s.definerId, '', 'the next take locked the hand-off');
     const vm = deriveViewModel(s);
@@ -139,9 +102,7 @@ test('keys that no longer fit DRIFT: out of the frame and the seat, drawn per pa
 });
 
 test('the lock at the next take clears the designation; undo brings it back', async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
-    await callNative('setLoopPoints', 'drums', at(0.7), at(3.1));
+    await handToDrums({ trimmed: true });
     const bass = await callNative('createNode', 'clip', '');
     await callNative('startRecordingInNode', bass);
     // The drums lock-collapsed to their loop (the take IS the window).
@@ -156,10 +117,7 @@ test('the lock at the next take clears the designation; undo brings it back', as
 });
 
 test('handing Q BACK to a lock-collapsed track uncollapses it', async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
-    await callNative('setLoopPoints', 'drums', at(0.7), at(3.1));
-    await recordTake('', at(2.4), { stopEarly: 100, settle: at(2.4) });
+    await handToDrums({ locked: true });
     assert.equal(node('drums').duration, at(2.4), 'collapsed at the lock');
     await callNative('setDefiner', 'drums');
     const d = node('drums');
@@ -170,11 +128,48 @@ test('handing Q BACK to a lock-collapsed track uncollapses it', async () => {
     assert.equal(getState().islandZero, at(2.7));
 });
 
-test('a region drawn since the lock survives a hand-off: no re-open over it', async () => {
+test('Q handed to ONE mic of a group: its lock moves the mic, never the group off the mics it still holds', async () => {
+    loadScenario('empty');
+    const { stackId: kit, ids: mics } = await recordGroupTake(3, 5);
+    const O = node(kit).origin;
+    assert.equal(getState().definerId, kit, 'one take, the only content');
+    assert.equal(await callNative('setDefiner', mics[0]), true);
+    assert.equal(await callNative('setLoopPoints', mics[0], 497, 1460), true);
+    const other = await callNative('createNode', 'clip', '');
+    await callNative('startRecordingInNode', other);    // the lock
+    await callNative('stopRecordingInNode', other);     // cancelled: the lock stands
+    assert.deepEqual([node(mics[0]).duration, node(mics[0]).origin], [963, O + 497],
+        'the mic collapsed to its window, at its top');
+    assert.deepEqual([node(kit).origin, node(mics[1]).origin, node(mics[2]).origin], [O, O, O],
+        'the kit stays on the mics it still holds');
+
+    await callNative('deleteNode', mics[0]);
+    assert.equal(getState().definerId, kit, 'the kit is the one take again');
+    assert.equal(node(kit).origin, node(mics[1]).origin, 'on its mics');
+    await callNative('undo');                           // the delete
+    await callNative('undo');                           // the designation's clear
+    await callNative('undo');                           // the collapse
+    assert.deepEqual([node(mics[0]).duration, node(mics[0]).origin, node(kit).origin],
+        [5 * Q, O, O], 'undo: the mic whole, the kit where it always was');
+});
+
+test('a group that holds nothing but the handed track follows its lock and its re-open', async () => {
     loadScenario('keys-then-drums');
+    const wrap = await callNative('createNode', 'stack', '');
+    await callNative('reorderNode', 'drums', wrap, 0);
+    assert.equal(node(wrap).origin, at(2), 'the group anchored on the drums');
     await callNative('setDefiner', 'drums');
     await callNative('setLoopPoints', 'drums', at(0.7), at(3.1));
-    await recordTake('', at(2.4), { stopEarly: 100, settle: at(2.4) });
+    await recordTake('', at(2.4), { stopEarly: 100, settle: at(2.4) });   // the lock
+    assert.deepEqual([node('drums').origin, node(wrap).origin], [at(2.7), at(2.7)],
+        'the group follows the drums to their loop top');
+    await callNative('setDefiner', 'drums');            // handed back: re-opens
+    assert.deepEqual([node('drums').origin, node(wrap).origin], [at(2), at(2)],
+        'and back with the re-open');
+});
+
+test('a region drawn since the lock survives a hand-off: no re-open over it', async () => {
+    await handToDrums({ locked: true });
     const q = getState().quantum;               // the drums loop, locked
     await callNative('setLoopPoints', 'drums', 0, q / 2);  // a coherent half
     await callNative('setDefiner', 'drums');
@@ -185,8 +180,7 @@ test('a region drawn since the lock survives a hand-off: no re-open over it', as
 });
 
 test('a designation naming a deleted track is inert at the next arm', async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
+    await handToDrums();
     await callNative('deleteNode', 'drums');
     const bass = await callNative('createNode', 'clip', '');
     await callNative('startRecordingInNode', bass);
@@ -226,9 +220,7 @@ test('view model: the Q lamp offers the hand-off on eligible lanes only', () => 
 });
 
 test('trim view WITH COMPANY: the cursor sweeps one drum loop; the others show this pass', async () => {
-    loadScenario('keys-then-drums');
-    await callNative('setDefiner', 'drums');
-    await callNative('setLoopPoints', 'drums', at(0.7), at(3.1));
+    await handToDrums({ trimmed: true });
     setMasterPos(at(2.7) + at(2.4) + at(0.5));  // half a Q into the 2nd drum pass
     const vm = deriveViewModel(getState());
     assert.equal(vm.provisionalDefiner, true, 'the drums trim like a first take');
@@ -245,6 +237,6 @@ test('trim view WITH COMPANY: the cursor sweeps one drum loop; the others show t
     const tileEdge = keys.reps.map(r => r.startQ).find(x => x > 0);
     const passZero = vm.passZero;
     const edgeTime = passZero + tileEdge * vm.quantum;
-    assert.equal(((Math.round(edgeTime) % Q) + Q) % Q, 0,
+    assert.equal(posMod(Math.round(edgeTime), Q), 0,
         'a keys tile edge sits where a keys loop begins in island time');
 });

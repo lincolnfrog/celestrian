@@ -1,45 +1,33 @@
 /**
- * mock/bounce.js — the bounce verbs (design_language.md Q19,
- * docs/bounce.md) mirrored observably: the mock renders nothing, it
- * records what was asked and answers the way the engine does. A live
- * or armed take refuses (AudioEngine::bounce parity); otherwise the
- * request lands in state.lastBounce for the UI tests to read.
+ * mock/bounce.js — the bounce verbs (docs/bounce.md; engine
+ * AudioEngine::bounce). The mock renders nothing: it answers as the
+ * engine would and records an accepted request (getLastBounce).
  */
 
-import { state, someNode, findNode } from './state.js';
-import { effectiveCycle, ownPeriodOfNode } from './cycles.js';
+import { state, nodeOrRoot, takeLive } from './state.js';
+import { audibleCycle, ownPeriodOfNode } from './cycles.js';
+import { DIALOG_PATH } from './import.js';
 
-/** The path the dialog verb records in place of a chosen file. */
-export const DIALOG_PATH = '<dialog>';
+export { DIALOG_PATH };
 
-/** The engine's take ceiling (ClipNode::kMaxTakeSamples): a bounce
- * whose span passes it is refused (the render buffer is sized from
- * the span; a saturated lcm would be an overflow). */
+/** Engine ClipNode::kMaxTakeSamples: a longer span is refused. */
 export const kMaxTakeSamples = 2 ** 30;
 
-/** A take armed or rolling anywhere (the engine's isArmedOrRecording). */
-const takeIsLive = () => someNode(n => n.isRecording || n.isPendingStart);
-
-/** The span the engine would render (docs/bounce.md): the root's
- * effective island cycle, any other node's OWN period — what it plays
- * (engine parity bounce.cc period_law::ownPeriodOf: a drifting loop,
- * Q22, still bounces its own length). */
+/** The span a bounce renders: the root's audible cycle, any other
+ * node's own period; 0 for an unknown node or one with nothing to play. */
 export function bounceSpanOf(uuid) {
-    if (uuid === state.root.id) return effectiveCycle(state.islandQ);
-    const node = findNode(uuid);
-    return node ? ownPeriodOfNode(node) : 0;
+    const node = nodeOrRoot(uuid);
+    if (!node) return 0;
+    return node === state.root ? audibleCycle() : ownPeriodOfNode(node);
 }
 
-/** `start` (optional, absolute samples) is the render's start the app
- * names — the frame zero the view seated, for the root (docs/frame.md);
- * a lane's ↺ as shown, for "Bounce selected…" (docs/bounce.md,
- * view_model bounceStartOf); absent, the node's own top. Recorded, not
- * rendered. */
+/** `start` (absolute samples, optional) is where the app asks the render
+ * to begin; recorded, not rendered. Refused under a live take, for
+ * nothing to render, and past the take ceiling. */
 export function bounce(uuid, path, start) {
-    if (takeIsLive()) return false;
-    if (bounceSpanOf(uuid) > kMaxTakeSamples) return false;
-    state.lastBounce = { uuid, path,
-                         start: Number.isFinite(start) ? Math.round(start) : null };
+    const span = bounceSpanOf(uuid);
+    if (takeLive() || !(span > 0) || span > kMaxTakeSamples) return false;
+    state.lastBounce = { uuid, path, start: Number.isFinite(start) ? Math.round(start) : null };
     return true;
 }
 
@@ -47,7 +35,7 @@ export function bounceWithDialog(uuid, start) {
     return bounce(uuid, DIALOG_PATH, start);
 }
 
-/** The last accepted bounce request ({uuid, path}), or null. */
+/** The last accepted bounce ({ uuid, path, start }), or null. */
 export function getLastBounce() {
     return state.lastBounce || null;
 }

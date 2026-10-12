@@ -14,340 +14,249 @@
 namespace celestrian {
 
 /**
- * An Edit is one reversible mutation of the graph (unification_audit.md
- * §2.2). Edits are applied on the MESSAGE thread through
- * AudioEngine::applyEdit, which performs the mutation and returns the
- * INVERSE Edit; the undo stack is a list of inverses, the redo stack a
- * list of forwards.
+ * An Edit is one reversible mutation of the graph. AudioEngine::applyEdit
+ * performs it on the MESSAGE thread and answers the INVERSE edit: the
+ * undo stack is a list of inverses, the redo stack a list of forwards
+ * (engine/edit_log.cc). The appliers are engine/edit_*.cc.
  *
- * Why an owned-subtree inverse is SAFE: there is no overdub, so a
- * committed clip buffer is written once and never mutated again. A
- * removed subtree is therefore inert — the undo stack HOLDS it (same
- * uuid, buffer, origin, params) and re-inserts the exact node on undo.
- * Detachment goes through the non-retiring removeChild(index); the audio
- * thread may read the just-detached node for ≤2 more callbacks, but the
- * undo entry only stores it, never frees or mutates it, so nothing races.
- * When an undo entry that owns a subtree is finally dropped (redo cleared
- * / depth cap), the node is handed to the reclaimer, never freed inline.
+ * AN INVERSE MAY OWN what its forward displaced — a detached subtree, a
+ * take's content, a chain slot. That is safe because nothing overdubs: a
+ * committed buffer is written once, so what the log holds is inert, and
+ * the same object comes back on undo with its uuid and state. Whatever
+ * an entry owns is retired through the reclaimer when the entry is
+ * dropped, never freed inline (AudioEngine::retireEdit).
  *
- * In-flight (armed/capturing) takes are NEVER undoable — cancel is the
- * verb (guarded in applyEdit).
+ * Not edits: a take that is armed or capturing (cancel is its verb), and
+ * effect enable / params (knobs; a slider drag would flood the log).
  *
- * Move-only: a structural inverse owns a std::unique_ptr<AudioNode>.
+ * Move-only.
  */
 struct Edit {
+  // Each kind names the fields it reads. An inverse is the kind named, or
+  // the same kind holding the old values.
   enum class Kind {
-    Nop,         // could not apply (node gone / armed / root) — not recorded
-    Insert,      // add `node` under parentUuid at index
-    Remove,      // detach `uuid`; inverse Insert owns the subtree
-    Move,        // reparent/reorder `uuid` to (parentUuid, index)
-    Combine,     // build a stack from (uuid = dragged, uuid2 = target)
-    Explode,     // undo of Combine: dissolve stack `uuid`, restore kids
-    Rename,      // s1 = name
+    Nop,     // nothing applied; never logged
+    Insert,  // `node` under parentUuid at index. Undoing a Remove it may
+             // carry setsIsland (the grid the delete reverted), seq_riders
+             // (the songs that went with it), uuid2 (a definer to collapse
+             // again). Inverse: Remove.
+    Remove,  // detach uuid. Inverse: the Insert owning the subtree.
+    Move,    // uuid to (parentUuid, index)
+    Combine,  // a new stack from uuid (dragged) and uuid2 (target) at the
+              // target's slot; `node` = the emptied stack a redo reuses.
+              // Inverse: Explode.
+    Explode,  // dissolve stack uuid: its first child back to (parentUuid,
+              // index), its second to (parentUuid2, index2). Inverse: the
+              // Combine owning the stack.
+    Rename,      // s1 = the name
     Mute,        // b1 = muted
-    LoopPoints,  // d1 = start, d2 = end (samples): the single-window
-                 // form of the node's ONE map. The inverse carries the
-                 // raw old map (setsMap/tmap), whatever its shape.
+    LoopPoints,  // the map as ONE window: i1 = start, i2 = end, in samples
+                 // (end <= start = none), with the map riders below.
+                 // Inverse: setsMap/tmap = the raw old map, any shape.
     LoopBypass,  // b1 = bypassed
-    Segments,    // tmap = the full map (any n); the node's storage is
-                 // replaced whole. The inverse carries the raw old map.
-    PeriodSource,  // b1 = period from context (Q5 one-shot knob)
-    Input,         // d1 = channel index (left / mono)
-    InputR,        // d1 = right channel index of a stereo pair (−1 = mono)
-    Collapse,      // Q13 lock-collapse (composition.md §5, ONE row for
-                   // clip and stack): the definer node's window BECOMES
-                   // the take — the leaves under it keep the window's
-                   // material (base += shift, D := len), the node and
-                   // its subtree move by shift (window top → origin),
-                   // its ancestors follow, the window is consumed.
-                   // Forward: uuid = the node, no payload (derived from
-                   // its window). Inverse: b1 with the raw facts
-                   // `shift`, `old_duration`, `win_start`/`win_end`. A
-                   // clip with a multi-segment map SPLICES instead
-                   // (inverse: b1 + setsMap/tmap, iorg under setsOrigin,
-                   // old_duration, d1/d2 = base/recorded, collapsed_from,
-                   // buffer/midi/other_takes).
-    MoveSlot,      // fx chain reorder (docs/vst3.md §6): s1 = slot
-                   // uuid, index = destination. Applied by building a
-                   // successor chain sharing the slot objects and
-                   // retiring the predecessor; the inverse is a
-                   // MoveSlot back to the old index. Chain STRUCTURE
-                   // is undoable; enable/params stay non-undoable.
-    AddSlot,       // insert `slot` (a VST3 slot, phase 3) into the
-                   // node's chain at `index` (clamped; <0 = append).
-                   // Inverse: RemoveSlot. The shared_ptr payload keeps
-                   // the plugin INSTANCE alive across undo/redo — the
-                   // owned-subtree argument applies (write-once by our
-                   // hands; the plugin's own state just persists).
-    RemoveSlot,    // detach chain slot s1 (VST3 only for now — the UI
-                   // offers removal on plugin chips alone). Inverse:
-                   // AddSlot owning the slot at its old index.
-    Sequence,      // install/replace/clear a stack's sequence
-                   // (docs/sequencer.md): `seq` is the full new value
-                   // (null = clear). Applied by copy-swap-retire (the
-                   // Segments discipline); the inverse owns a copy of
-                   // the RAW old sequence (bypassed geometry survives
-                   // undo, like Segments).
-    SequenceBypass,  // b1 = bypassed (the jam toggle — LoopBypass twin)
-    Take,            // TAKES ARE UNDOABLE (docs/sequencer.md §11.5):
-                     // forward = reinstall the committed take(s) in
-                     // `takes` (redo); inverse Untake
-    Untake,          // strip the take(s) named in `takes` back to empty
-                     // clips (undo), the inverse OWNING their content.
-                     // A group take (Q7) is ONE entry. Island (Q, zero)
-                     // ride along via setsIsland: the first take's
-                     // establishment and any growth re-base undo with it.
-                     // A payload with take_index >= 0 is a NEW TAKE of a
-                     // committed slot (docs/takes.md): Untake removes
-                     // that (last) take and restores prev_active; Take
-                     // re-appends it as the active one. Never an empty
-                     // clip. The slot's re-time rides it
-                     // (TakePayload::setsRetime).
-    SelectTake,      // index = the take to make active; inverse = the
-                     // old index. An atomic content-pointer swap.
-    DeleteTake,      // forward: index = the take to remove (never the
-                     // last one; an active one hands activity to its
-                     // neighbour); the inverse carries the removed
-                     // record in `takes[0]` (take_index = its slot,
-                     // prev_active = the activity to restore) and the
-                     // old comp (setsComp) — applying it reinserts.
-    Comp,            // cells + cell_len = the new comp (empty = none);
-                     // inverse = the old one. Audio clips only.
-    Timing,          // THE RE-TIME (loop_selection.md §9, setTiming):
-                     // a clip's origin (setsOrigin/iorg), its re-time
-                     // (setsRetime/iretime) and optionally its top
-                     // (setsTop/itop), all ABSOLUTE values — the verb
-                     // folds the shift in when it builds the edit, so
-                     // the inverse is the same shape and a live drag's
-                     // commits coalesce by dropping later inverses.
-                     // Clips only.
-    Definer,         // THE Q HAND-OFF (Q22, setDefiner): `s1` = the
-                     // island's definer designation to store (empty =
-                     // none); (Q, zero) ride setsIsland. With `uuid`
-                     // (the handed-to node) the forward (b1 false)
-                     // RE-OPENS its lock-collapsed leaves exactly as the
-                     // Remove re-open does (derived from the collapse
-                     // markers — full buffer, old trim as the window;
-                     // the inverse gets b1) and then stores a clip's
-                     // top from setsTop/itop; the inverse (b1 true) puts
-                     // the top back FIRST, then RE-COLLAPSES the node
-                     // (collapseNode, derived from that window — the
-                     // Insert/uuid2 precedent). No `uuid`: the
-                     // designation alone (the lock at the next arm).
+    Segments,    // tmap = the whole map (any n), with the map riders below
+    PeriodSource,  // b1 = period from context (a one-shot, Q5)
+    Input,         // i1 = the input channel (left / mono)
+    InputR,        // i1 = the right input channel (−1 = mono)
+    Collapse,  // the lock-collapse of definer uuid (AudioEngine::
+               // collapseNode). The forward carries nothing: it derives
+               // from the node's map. Inverse (b1): shift, old_duration,
+               // win_start, win_end — or, for a clip's cell-map SPLICE,
+               // setsMap/tmap, iorg, old_duration, i1/i2 = content base /
+               // recorded length, collapsed_from, itop, cells, buffer,
+               // midi, other_takes.
+    MoveSlot,    // s1 = the slot's uuid, index = its destination
+    AddSlot,     // `slot` into the chain at index (< 0 appends)
+    RemoveSlot,  // s1 = the slot's uuid. Inverse: the AddSlot owning the
+                 // slot, and its plugin instance, at its old index.
+    Sequence,  // seq = the stack's whole sequence (null = none); anchors =
+               // the root's anchor riding its song (docs/frame.md §4)
+    SequenceBypass,  // b1 = bypassed
+    Take,    // reinstall the content `takes` holds, one payload per clip
+             // of the performance. Inverse: Untake.
+    Untake,  // strip the clips `takes` names. Inverse: the Take owning
+             // their content. Both carry what rides a performance:
+             // setsIsland (a first take's establishment), windows,
+             // anchors, and the step-record auto-gate — uuid + seq under
+             // b1 (the stack whose sequence swaps with it). No song
+             // rides one: a take's undo keeps every song it meets.
+    SelectTake,  // index = the take to make active
+    DeleteTake,  // index = the take to remove. Inverse: takes[0] = its
+                 // record, to reinsert.
+    Comp,        // cells, cell_len, cell_off = the comp (no cells = none)
+    Timing,   // the re-time (AudioEngine::setTiming), clip or group:
+              // setsOrigin/iorg, setsRetime/iretime and optionally
+              // setsTop/itop — all absolute values
+    Definer,  // the Q hand-off (AudioEngine::setDefiner): s1 = the
+              // designation to store (empty = none), setsIsland = the
+              // grid. With uuid: the node to re-open (b1: to collapse
+              // again), setsTop/itop = a clip's top.
   };
-  // Effect enable/param edits are NOT undoable (non-destructive knobs;
-  // slider drags would flood the log without coalescing). Delete + all
-  // structural edits are covered.
 
   Kind kind = Kind::Nop;
-  juce::String uuid;         // primary target (or dragged / created stack)
-  juce::String uuid2;        // second structural target (combine target)
-  juce::String parentUuid;   // structural: destination/source parent
-  juce::String parentUuid2;  // Explode: second child's source parent
-  int index = -1;            // structural: destination/source index
-  int index2 = -1;           // Explode: second child's source index
+  juce::String uuid;         // the node edited
+  juce::String uuid2;        // a second node (Combine, Insert)
+  juce::String parentUuid;   // structural: the parent
+  juce::String parentUuid2;  // Explode: the second child's parent
+  int index = -1;            // a child slot, a chain slot or a take
+  int index2 = -1;           // Explode: the second child's slot
 
-  juce::String s1;  // name (Rename) / fx slot id (chain edits) /
-                    // designation (Definer)
-  double d1 = 0.0, d2 = 0.0;
+  juce::String s1;
+  int64_t i1 = 0, i2 = 0;
   bool b1 = false;
 
-  // Island (Q, zero) payload (Q13 / provisional Q mutability). While the
-  // island's only committed clip is the Q-definer, a LoopPoints re-trim
-  // re-establishes (Q, zero) and a Remove that empties the island reverts
-  // it — both must ride the same edit so undo restores the GRID, not just
-  // the clip/window. applyEdit is a pure applier: it sets `iq/izero` when
-  // `setsIsland` is true and captures the old values into the inverse. The
-  // *decision* to touch Q is made where the forward edit is built.
-  // A LIVE mid-gesture update (owner ruling 2026-09-10): a drag streams
-  // map commits so the splice is audible while dragging; every commit
-  // after a gesture's first carries `live` and COALESCES into that
-  // gesture's undo entry (logged by the first live commit to apply when
-  // the first commit recorded nothing — AudioEngine::record). Separate
-  // gestures — however close in time — are separate undo steps.
+  // A mid-gesture commit: it joins its gesture's undo entry
+  // (AudioEngine::record).
   bool live = false;
-  // LoopPoints rider: clearing a node's geometry (whole) also drops a
-  // stale BYPASS (nothing is left to bypass, and a later window would
-  // otherwise be silently inert — found by scenario S34, 2026-09-10);
-  // the inverse restores the flag with the geometry.
+  // THE BYPASS RIDES THE MAP (LoopPoints, Segments): `restoresBypass`
+  // sets the node's bypass to `bypassed` with the map — every inverse
+  // does. A forward leaves it false, and a map it clears drops a stale
+  // bypass with it.
   bool restoresBypass = false;
+  bool bypassed = false;
+  // THE ISLAND'S FACTS: set (Q, zero) to (iq, izero). They ride whatever
+  // moves the grid — the definer's map edit (its window re-establishes
+  // Q), a Remove's inverse, a first take, a hand-off — so undo restores
+  // the grid with it. The verb that builds the forward decides; only a
+  // Remove derives its own (a delete that empties the island reverts Q).
   bool setsIsland = false;
-  int64_t iq = 0;      // island quantum to set
-  int64_t izero = 0;  // island zero to set
-  // Phase-preserving trim (rides LoopPoints with setsIsland): the
-  // provisional re-trim RE-ANCHORS the clip's origin so the currently
-  // sounding buffer position does not move — the grid re-derives, the
-  // audio flows. The inverse captures the old origin the same way.
+  int64_t iq = 0;
+  int64_t izero = 0;
+  // THE ORIGIN: set the node's origin to iorg, its subtree moving with
+  // it. Rides a map edit (a re-anchor keeps the sounding sample
+  // sounding), a Timing, and a splice's inverse.
   bool setsOrigin = false;
-  int64_t iorg = 0;  // the node's origin to set (a stack's shifts its subtree)
-  // DEFINER RE-ANCHOR LIFTS ANCESTORS (Q18): a definer's ancestors were
-  // anchored BECAUSE of it (the island's only content), so its origin
-  // shift carries them too — the root's origin stays congruent with the
-  // zero (root maps/sequences measure from it). Never set by the
-  // locked-island riders (other content owns those ancestors).
+  int64_t iorg = 0;
+  // The node's anchored ancestors move by the same amount: a sole
+  // definer's, which were anchored on it (Q18). Never under other
+  // content, which owns those ancestors.
   bool liftsAncestors = false;
-  // THE TOP RIDES THE MAP (loop_selection.md §9, owner 2026-09-24): a
-  // clip's stored top (ClipNode::storedTop; timing::kNoTop = a take
-  // never edited) is part of every map edit's undo state. `setsTop` sets
-  // it to `itop` EXACTLY after the edit's map change — an inverse
-  // restores the old top that way, and a Timing edit stores a new one.
-  // A forward map edit built by a verb leaves it false and the applier
-  // RECONCILES instead, storing the answer (timing::reconcileTop: the
-  // EFFECTIVE top before the edit while the new map plays it, else the
-  // new region start — never unset) — from `topBase` when `hasTopBase`:
-  // a live drag's commit reconciles from the effective top its gesture
-  // STARTED with (AudioEngine::record), so a drag that sweeps past the ↺
-  // and comes back keeps it. The inverse captures the old stored top in
-  // `itop`, and the base its forward reconciled from in `topBase` — the
-  // gesture's start, which the gesture's later live commits read off its
-  // undo entry. Raw content samples: a seek never touches them.
+  // THE TOP RIDES THE MAP (loop_selection.md §9): `setsTop` stores itop
+  // exactly — an inverse, a Timing, a Definer. A forward map edit leaves
+  // it false and the applier RECONCILES the top instead, from topBase
+  // under `hasTopBase`: the top its gesture started with. A raw content
+  // position (AudioNode::storedTop; timing::kNoTop = never set), which a
+  // seek never touches.
   bool setsTop = false;
   int64_t itop = 0;
   bool hasTopBase = false;
   int64_t topBase = 0;
-  // THE RE-TIME (Timing): the clip's cumulative user shift to set,
-  // samples (relative to the performance — seek-invariant).
+  // Timing: the node's re-time to set — its cumulative user shift, in
+  // samples.
   bool setsRetime = false;
   int64_t iretime = 0;
-  // WINDOW RIDERS: further nodes whose single-window loop points this
-  // edit sets alongside its main mutation (applied after it; the
-  // inverse captures each node's old points the same way). Two
-  // builders use them (Q13 for groups): the GROUP-WINDOW LIFT at a
-  // group take's commit (reconcileTakes — the members'
-  // commit-time loop region moves onto the definer stack, the members
-  // go whole) and the definer stack's re-trim (windowed members from a
-  // pre-lift state go whole). Riders on Take/Untake and LoopPoints.
+  // WINDOW RIDERS: further nodes whose map this edit replaces after its
+  // own mutation — a definer stack's members going whole with its
+  // re-trim, a group take's common region lifting onto its stack, the
+  // geometry an establishment of Q scrubs. The inverse rider holds the
+  // raw map and the top it displaced.
   struct WindowRider {
     juce::String uuid;
-    int64_t start = 0, end = 0;
-    // A member carrying a MULTI-SEGMENT override goes whole too: the
-    // rider clears the override (the inverse rider carries it back).
-    bool setsMap = false;
+    int64_t start = 0, end = 0;  // the window (end <= start = none)
+    bool setsMap = false;        // tmap is the map to set, when n >= 2
     timing::TimeMap tmap{};
-    // The member's top rides its map like the edit's own (setsTop
-    // above): a forward rider reconciles it, the inverse rider carries
-    // the old top back exactly.
-    bool setsTop = false;
+    bool setsTop = false;  // store `top` exactly; else reconcile it
     int64_t top = 0;
   };
   std::vector<WindowRider> windows;
-  // ANCHOR RIDERS (Q18, composition.md §5): stacks whose anchoring
-  // this edit changed — content entering an unanchored stack anchors
-  // it at the earliest descendant's origin; the last content leaving
-  // un-anchors it. Captured by AudioEngine::settleAnchors into the
-  // inverse so undo restores the exact stored origin, never a
-  // re-derivation.
+  // ANCHOR RIDERS (Q18, composition.md §5): stacks whose anchoring the
+  // edit changed, captured by AudioEngine::settleAnchors so undo restores
+  // the exact stored origin, never a derivation.
   struct AnchorRider {
     juce::String uuid;
     bool anchored = false;
     int64_t origin = 0;
-    // Anchoring re-expresses (or clears) geometry authored while the
-    // stack was unanchored; the rider carries the map it replaced so
-    // the inverse puts it back (the WindowRider shape).
+    // Anchoring re-expresses, or clears, geometry authored while the
+    // stack was unanchored: the map it replaced.
     bool setsMap = false;
     timing::TimeMap tmap{};
   };
   std::vector<AnchorRider> anchors;
-  // S16 window domain (docs/sequencer.md §11.8), LoopPoints/Segments on
-  // a STACK: −1 = derive from whether the sequence is active (forward
-  // edits), 0/1 = set explicitly (inverses restore the old stamp).
+  // S16 (sequencer.md §11.8), a map edit on a STACK: −1 = derive the
+  // window's domain from whether a sequence is active (a forward), 0 / 1
+  // = set it (an inverse restores the old stamp).
   int window_domain = -1;
 
-  // Multi-segment map payload (phase 3): the map value for Segments
-  // edits, and the override a LoopPoints undo reinstalls (setsMap).
-  // POD by design — edits stay move-only without custom machinery.
+  // The map: a Segments edit's value, and under `setsMap` the map an
+  // inverse puts back.
   bool setsMap = false;
   timing::TimeMap tmap{};
 
-  // AddSlot (and RemoveSlot's inverse) own the chain slot to insert.
-  // shared_ptr because chains share slot objects by design.
+  // AddSlot: the slot to insert. Chains share slot objects, and so does
+  // the log.
   std::shared_ptr<dsp::FxSlot> slot;
 
-  // Sequence edits (docs/sequencer.md): the full new value (forward)
-  // or the captured old one (inverse). Null = no sequence.
+  // Sequence: the whole value (null = none).
   std::unique_ptr<celestrian::Sequence> seq;
-  // SEQUENCES TRACK Q: step lengths are musical facts. A Q
-  // re-establishment RESCALES every sequence's
-  // steps in place (reversible by the inverse's own re-establishment);
-  // a revert to an EMPTY island CLEARS them — the cleared sequences
-  // ride the inverse (Insert) here and are reinstalled on undo.
+  // SEQUENCE RIDERS: songs to reinstall with the edit. Sequences track Q
+  // (AudioEngine::setIslandQuantum): a re-establishment rescales them
+  // with rounding and a revert to an empty island clears them, so the
+  // inverse holds each song as it was.
   struct SeqRider {
     juce::String uuid;  // the owning stack
     std::unique_ptr<celestrian::Sequence> seq;
-    // THE ROOT'S ANCHOR RIDES ITS SONG (docs/frame.md §4): the root is
-    // anchored only while it carries a song, at the zero the song was
-    // authored on; an island revert that clears the song un-anchors
-    // it, and the reinstall re-anchors at the same stored origin.
+    // The root's anchor rides its song (docs/frame.md §4): cleared with
+    // it, and back at the same stored origin.
     bool anchored = false;
     int64_t origin = 0;
   };
   std::vector<SeqRider> seq_riders;
 
-  // TAKE payloads (Kind::Take / Kind::Untake): one per clip of the
-  // performance. Take owns the content to reinstall; Untake names the
-  // clips to strip (its inverse then owns what was stripped). Content
-  // is owned by the log and retired (never freed inline) when
-  // displaced, like CollapseTake's buffer.
+  // TAKE PAYLOADS (Take, Untake, DeleteTake): one per clip.
   struct TakePayload {
     juce::String uuid;
-    ClipNode::TakeState state;  // the take exactly as stripTake returned it
-    // A take of a multi-take slot (docs/takes.md): its list index, and
-    // the index that was active before it (−1 = a whole-clip strip).
+    ClipNode::TakeState state;  // the take exactly as it was detached
+    // A take of a multi-take slot (docs/takes.md): its list index and the
+    // index active before it. −1 = the clip's whole content.
     int take_index = -1;
     int prev_active = -1;
-    // The clip's comp as it was before a list change, restored with
-    // the take (per clip: a group performance carries one each).
+    // The clip's comp before the list changed, restored with the take.
     bool setsComp = false;
     std::vector<int> cells;
     int64_t cell_len = 0;
-    // THE RE-TIME rides a new take (loop_selection.md §9): a new take
-    // plays as performed (owner 2026-09-24), so its settle zeroes the
-    // slot's re-time — the older takes keep their shift, baked into the
-    // origin they share. A take-index payload with `setsRetime` sets it
-    // to `retime` after the list change: the Untake restores the re-time
-    // from before the take, the Take its applier builds the one after
-    // (0). A whole-clip strip carries it in `state` instead.
+    int64_t cell_off = 0;
+    // The slot's re-time to set after the list change: a new take plays
+    // as performed, so its settle zeroes the re-time and its Untake
+    // restores the one before it. A whole-clip strip carries it in
+    // `state`.
     bool setsRetime = false;
     int64_t retime = 0;
-    // A MIDI take's INSTRUMENT (docs/vst3.md §11): the instrument
-    // slot's uuid and its state blob as the take sounded. Applying the
-    // payload restores that state; the inverse captures the state
-    // current at apply time (copy-swap, like every rider). Empty for an
-    // audio take or a clip without an instrument slot.
+    // A MIDI take's instrument (docs/vst3.md §8.4): the slot and its state
+    // as the take sounded. Empty for an audio take.
     juce::String instrument_slot;
     juce::MemoryBlock instrument_state;
   };
   std::vector<TakePayload> takes;
-  // THE COMP (Kind::Comp): one take index per Q cell, −1 = the active
-  // take; cell_len = the cell length in samples (0 with no cells).
+  // THE COMP: one take index per cell (−1 = the active take), the cell
+  // length in samples and where cell 0 starts in the content
+  // (ClipNode::compCells). Also the comp a splice consumed.
   std::vector<int> cells;
   int64_t cell_len = 0;
-  // A multi-take slot's lock-collapse SPLICE (CollapseTake, n >= 2)
-  // replaces every inactive take too; the inverse owns their pre-splice
-  // records by list index. Retired with the entry, never freed inline.
+  int64_t cell_off = 0;
+  // A splice's inverse: the pre-splice records of the slot's other
+  // takes, by list index, and the collapse marker the splice cleared
+  // (ClipNode::collapsedFrom).
   std::vector<std::pair<int, ClipNode::TakeState>> other_takes;
-  // The splice inverse's pre-splice collapse marker (ClipNode::
-  // collapsedFrom): a splice clears it, the un-splice restores it.
   int64_t collapsed_from = 0;
-  // Collapse (single-window) inverse: what the collapse shifted the
-  // content view and the origins by, the leaves' pre-collapse
-  // duration, and the node's consumed window. All RELATIVE facts — a
-  // seek never touches them.
+  // A collapse's inverse: what it shifted the content and the origins
+  // by, the leaves' duration before it, and the window it consumed. All
+  // relative: a seek never touches them.
   int64_t shift = 0;
   int64_t old_duration = 0;
   int64_t win_start = 0;
   int64_t win_end = 0;
 
-  // Insert (and Combine/Explode restore) own the subtree(s) to add.
+  // Insert: the subtree to add. Combine: the emptied stack to reuse.
   std::unique_ptr<AudioNode> node;
-  std::unique_ptr<AudioNode> node2;
-  // A multi-segment lock-collapse SPLICES the kept material into a new
-  // buffer; its inverse OWNS the pre-splice buffer (same write-once
-  // safety argument as owned subtrees). Retired, never freed inline.
+  // A splice's inverse: the pre-splice buffer, and a MIDI take's notes.
   std::unique_ptr<juce::AudioBuffer<float>> buffer;
-  // The MIDI twin (phase 5): a note-clip splice displaces its sequence;
-  // the inverse owns the pre-splice one. Retired, never freed inline.
   std::unique_ptr<MidiSequence> midi;
+
+  // A COMPOSED step: `then` is applied right after this edit, the two
+  // being ONE log entry. The inverse comes back composed the other way
+  // round, so an import onto a stack (an Insert, then the take) undoes as
+  // the Untake, then the Remove.
+  std::unique_ptr<Edit> then;
 
   Edit() = default;
   Edit(Kind k) : kind(k) {}

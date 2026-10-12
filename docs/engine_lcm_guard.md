@@ -23,7 +23,10 @@ but over a fractional seam a whole-Q bound is not a whole-Q **period**:
 a 0.6546…Q period committed, `lcm(quantum, period)` exploded the
 effective cycle to **66187Q**, and the timeline blanked. The same class
 previously hit the display path ("142336Q", field 2026-07-19b) and was
-guarded only there (`commensuratePeriod`, timeline_model.js).
+guarded only there, by a display-side clamp. That clamp is gone: the
+view's frame is the period law's island cycle (`ui/js/period_law.js`,
+read over the published tree), the same law the engine wraps on, so the
+two cannot disagree about a cycle.
 
 ## What enforces it now
 
@@ -45,12 +48,16 @@ Editor (the UI snaps — every gesture lands on a whole-Q period):
 
 Engine (refusal, mirrored in the mock for parity):
 
-- `AudioEngine::setSegments` refuses a map whose period is neither a
-  whole multiple nor an exact divisor of Q. (Divisors are first-class:
-  short takes commit at Q/2 · Q/4 · Q/8 via SUBDIVISIONS, and
-  lcm(Q, Q/k) = Q, so they can never explode the cycle.)
-- `AudioEngine::setLoopPoints` refuses a window (post-clamp) whose
-  length is neither a whole multiple nor an exact divisor of Q.
+- Both map verbs commit through ONE function (`AudioEngine::commitMap`,
+  `src/engine/map_edits.cc`), which refuses a map whose period is
+  neither a whole multiple nor an exact divisor of Q
+  (`isPeriodCoherentWithQuantum`, the period law's own drift test).
+  (Divisors are first-class: short takes commit at Q/2 · Q/4 · Q/8 via
+  SUBDIVISIONS, and lcm(Q, Q/k) = Q, so they can never explode the
+  cycle.)
+- A window is judged as it would be STORED: `setLoopPoints` clamps it
+  to the material first (a clip's take, the definer stack's inner
+  cycle), then judges identity and coherence on the clamped window.
 - Sole exception, per the ruling's own carve-out: the Q13
   sole-definer re-trim — the definer CLIP (one committed clip on the
   island, no take in flight) or, since Q13-for-groups (design_language
@@ -61,8 +68,10 @@ Engine (refusal, mirrored in the mock for parity):
   other tracks: it is "the Q-defining clip" of the ruling's own words.
   One-shots (`periodSource: context`) never contribute a
   period to the LCM in the first place (Q5) and need no exception.
-- Mock parity: `mock_backend.js setSegments` / `setLoopPoints` refuse
-  identically, so the harness cannot drift from the engine on this.
+- Mock parity: `ui/js/mock/maps.js` `setSegments` / `setLoopPoints`
+  (one `commitMap` there too) refuse identically, and the differential
+  compares the refusals against the engine's (`window/coherence`,
+  `cuts/refusals`; test_harness.md).
 
 ## When Q moves under a recorded loop: drift (Q22, owner 2026-09-24)
 
@@ -73,7 +82,7 @@ whole, never edited — is neither a multiple nor a divisor of the new Q.
 The owner's ruling: **it keeps playing exactly as recorded and DRIFTS**
 against the grid, each pass lining up differently (the rolling the
 drums were played against). Nothing refuses and nothing explodes, by
-one clause in the period law (`period_law.h`, `timeline_model.js`
+one clause in the period law (`period_law.h`, `ui/js/period_law.js`
 `periodDrifts`): a node whose own period is incoherent with Q
 contributes NOTHING to any fold, exactly like a one-shot — so the island
 cycle, the transport wrap, the heard cycle at arm and the display frame
@@ -93,6 +102,8 @@ a drift that is only this rounding (`driftsByRoundingOnly`).
 
 The refusal rule (period % Q ≠ 0 ⇒ refuse, except Q13 re-trim) is
 behavioral, not numeric, so it isn't pinned in
-`shared/timing_golden.json` yet. If either side grows a new map-edit
-entry point, consider adding refusal cases to the shared vectors so
-the two implementations cannot diverge silently.
+`shared/timing_golden.json`. What keeps the two implementations from
+diverging is the differential harness: its journeys send the same
+refused and accepted maps to the engine and to the mock and compare
+the answer and the graph after each (test_harness.md). A new map-edit
+entry point needs a journey there.

@@ -2,7 +2,6 @@
 
 #include <cstdint>
 
-#include "clip_node.h"
 #include "period_law.h"
 #include "stack_node.h"
 #include "time_map.h"
@@ -43,14 +42,21 @@ struct Received {
   Scope scope;
 };
 
-/** A node's effective map: its active map, else its whole inner span
- * (a clip's take; a stack's inner cycle). */
-inline timing::TimeMap effectiveMap(const AudioNode& node) {
+/** A node's effective map in `scope`: its active map; else, for a
+ * ONE-SHOT, its shot — [0, its own period) by the period law, judged
+ * against the scope's Q exactly as the audio thread judges it
+ * (timing::stackFold; a clip's own period is its take); else its whole
+ * inner span (a clip's take; a looping stack's inner cycle). */
+inline timing::TimeMap effectiveMap(const AudioNode& node, const Scope& scope) {
   const timing::TimeMap m = node.activeTimeMap();
-  return m.active() ? m : timing::TimeMap::single(0, node.getIntrinsicDuration());
+  if (m.active()) return m;
+  return timing::TimeMap::single(
+      0, node.periodFromContext()
+             ? period_law::ownPeriodOf(node, nullptr, scope.quantum)
+             : node.getIntrinsicDuration());
 }
 
-/** The origin a node measures from (StackNode::frameOrigin's twin): its
+/** The origin a node measures from (AudioNode::frameOrigin's twin): its
  * own origin once anchored — a clip always is — else the received
  * cycle top (an empty stack). */
 inline int64_t frameOriginOf(const AudioNode& node, const Scope& scope) {
@@ -74,55 +80,39 @@ inline int64_t ownFold(const AudioNode& node, const timing::TimeMap& m,
 inline timing::InnerAt ownInnerAt(const AudioNode& node,
                                   int64_t received_clock,
                                   const Scope& scope) {
-  const timing::TimeMap m = effectiveMap(node);
+  const timing::TimeMap m = effectiveMap(node, scope);
   if (m.period() <= 0) return {};
   return timing::innerAt(received_clock, frameOriginOf(node, scope), m,
                          ownFold(node, m, scope));
 }
 
 /** The scope a stack hands its children — StackNode::childContext's
- * context-cycle law: an active map's period ▸ the song ▸ lcm(Q, the
- * LOOPING children's effective periods) ▸ the received cycle. */
+ * twin: the frame top an active map re-bases, and the scope cycle by
+ * the one law (period_law::scopeCycle), judged against the scope's Q
+ * as the audio thread judges it. */
 inline Scope childScopeOf(const StackNode& stack, const Scope& scope,
                           int64_t O, const timing::TimeMap& map) {
   Scope child = scope;
-  if (map.active()) {
-    child.frame_top = O + map.mapOffset(0);
-    child.context_cycle = map.period();
-    return child;
-  }
-  if (const Sequence* seq = stack.activeSequence()) {
-    child.context_cycle = seq->total;
-    return child;
-  }
-  // The stack's own period by THE PERIOD LAW (no map, no song: the LCM
-  // of its looping children's contributions, drifting ones excluded —
-  // judged against the scope's Q, as childContext judges it).
-  if (const int64_t own = period_law::ownPeriodOf(stack, nullptr, scope.quantum);
-      own > 0) {
-    child.context_cycle =
-        scope.quantum > 0 ? timing::lcm(scope.quantum, own) : own;
-  }
+  if (map.active()) child.frame_top = O + map.mapOffset(0);
+  child.context_cycle = period_law::scopeCycle(
+      period_law::TreeProvider{scope.quantum}, &stack, scope.context_cycle);
   return child;
 }
 
 /** A stack's clock after its OWN fold (StackNode::childContext's first
- * step): the received clock itself for a plain looping stack, else
- * O + inner(t) under its active map or its one-shot's context-cycle
- * fold. This is the clock its song is read at and its children hear
- * before any cue re-base. */
+ * step): the received clock itself for a transparent stack, else
+ * O + inner(t) under the fold both threads read from timing::stackFold
+ * — its active map on the map period, or a one-shot's shot (its own
+ * period by the period law) on the context cycle. This is the clock
+ * its song is read at and its children hear before any cue re-base. */
 inline int64_t foldedClockAt(const StackNode& stack, const Received& r,
                              int64_t O, const timing::TimeMap& map) {
-  const int64_t shot =
-      map.active() ? map.period() : stack.getIntrinsicDuration();
-  const bool one_shot = stack.periodFromContext() && shot > 0 &&
-                        r.scope.context_cycle > shot;
-  if (!map.active() && !one_shot) return r.clock;
-  const timing::TimeMap eff =
-      map.active() ? map : timing::TimeMap::single(0, shot);
-  return O + timing::innerAt(r.clock, O, eff,
-                             one_shot ? r.scope.context_cycle : eff.period())
-                 .inner;
+  const timing::StackFold fold = timing::stackFold(
+      map, stack.periodFromContext(),
+      period_law::ownPeriodOf(stack, nullptr, r.scope.quantum),
+      r.scope.context_cycle);
+  if (!fold.folds()) return r.clock;
+  return O + timing::innerAt(r.clock, O, fold.eff, fold.fold).inner;
 }
 
 /** THE SONG POSITION a sequenced stack reads at its received clock —
@@ -226,8 +216,8 @@ inline int64_t originForHeard(const timing::TimeMap& m, int64_t t0, int64_t p,
  * answers the MOST RECENT pass (t0 − heard phase), i.e. the old origin
  * plus however many whole passes have played; every origin congruent
  * to it modulo the node's fold sounds the same sample, and this picks
- * the one that moves the least (seam-model SM-4, 2026-09-23). Identity
- * when m <= 0. JS twin: ui/js/mock/maps.js nearestRepresentative. */
+ * the one that moves the least. Identity when m <= 0. JS twin:
+ * ui/js/mock/heard.js nearestRepresentative. */
 inline int64_t nearestRepresentative(int64_t x, int64_t ref, int64_t m) {
   if (m <= 0) return x;
   int64_t r = posMod(x - ref, m);  // [0, m)
@@ -244,7 +234,7 @@ inline int64_t nearestRepresentative(int64_t x, int64_t ref, int64_t m) {
  * hearing), when a one-shot rests (nothing to keep), or when either map
  * is empty. `t0` is the node's RECEIVED clock. Engine caller:
  * continuityOrigin (engine/island_geometry.cc); JS twin: ui/js/mock/
- * maps.js continuityOriginFor; golden: `continuity_origin_cases`. */
+ * heard.js continuityOriginFor; golden: `continuity_origin_cases`. */
 inline int64_t continuityOriginFor(const timing::TimeMap& oldm,
                                    const timing::TimeMap& newm, int64_t origin,
                                    int64_t t0, int64_t old_fold,

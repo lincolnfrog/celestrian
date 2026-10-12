@@ -1,30 +1,20 @@
 /**
- * Q13 provisional-Q mutability — UI-side parity (mock + view model).
- * The engine is pinned in tests/qtime_lock_tests.cc; this checks the
- * mock re-derives Q from the sole clip's window and the view model
- * surfaces the sole Q-definer.
+ * Q13 provisional-Q mutability: what the view model shows of the sole
+ * Q-definer — the trim view, its one cursor, the lock — for a clip and
+ * for a group. The mock's re-trim, lock-collapse and re-open are held
+ * to the engine by the differential suite (ui/differential/ window/*);
+ * the mock tests here are the sequences no journey drives.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { advanceBy, callNative, getState, loadScenario, setMasterPos }
-    from '../mock_backend.js';
+import { advanceBy, callNative, getState, loadScenario } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
-import { commensuratePeriod } from '../timeline_model.js';
-import { PERF as perf } from './helpers.mjs';
-
-test('mock: sole committed clip window re-establishes Q', async () => {
-    loadScenario('single-clip');            // one committed clip (clip-1)
-    const before = getState().nodes[0].effectiveQuantum;
-    assert.ok(before > 0, 'Q established by the sole clip');
-
-    // Trim to half its length → the STORED island Q := window length
-    // (published top-level as `quantum`, mirroring the root stack).
-    await callNative('setLoopPoints', 'clip-1', 0, before / 2);
-    assert.equal(getState().quantum, before / 2,
-        'Q re-established to the window length');
-});
+import { periodContribution } from '../period_law.js';
+import { publishedLaw } from '../vm/published.js';
+import { MOCK_Q, PERF as perf, near } from './helpers.mjs';
+import { published as find, recordGroupTake } from './mock_scene.mjs';
 
 test('view model: exposes the sole Q-definer while provisional', () => {
     loadScenario('single-clip');
@@ -67,8 +57,7 @@ test('provisional trim view: the ONE playhead maps into the selection', () => {
     // The transport publishes ISLAND time wrapped on the trimmed loop
     // ([0, Q)); the trim view frames BUFFER time. The one playhead (I8)
     // maps island phase into the selection: selStart + islandPos —
-    // it sweeps the selected loop region and never the dead air (the
-    // "two cursors" field bug, 2026-07-19).
+    // it sweeps the selected loop region and never the dead air.
     const vm = deriveViewModel({ nodes: [definerClip()], islandZero: 20,
                                  masterPos: 30, perf });
     // Q = 100 (loop [20, 120)); island pos = 30 → 0.3Q; the selection
@@ -80,6 +69,47 @@ test('provisional trim view: the ONE playhead maps into the selection', () => {
     assert.equal(lane.windowPhase, 0, 'no second (amber) cursor on the definer');
 });
 
+test('a definer carrying a multi-segment map: the selection and the cursor come from the map', () => {
+    // Kept [2000, 4000) + [5000, 6000) of an 8000 take: the loop is
+    // 3000 long, and that is Q. A multi-segment map publishes
+    // loopStart = loopEnd = 0 beside `segments`.
+    const definer = { id: 'd', type: 'clip', name: 'D', duration: 8000, origin: 0,
+                      loopStart: 0, loopEnd: 0, segments: [2000, 4000, 5000, 6000],
+                      windowActive: true, loopBypassed: false, loopTop: 2000,
+                      isRecording: false };
+    const at = phase => deriveViewModel({
+        id: 'root', quantum: 3000, islandZero: 2000, islandPos: phase,
+        masterPos: phase, definerId: 'd', nodes: [definer], perf });
+
+    const vm = at(500);
+    assert.equal(vm.provisionalDefiner, true, 'the trim view');
+    const lane = vm.lanes.find(l => l.id === 'd');
+    near(lane.window.startQ, 2000 / 3000, 'the selection starts at the first run');
+    near(lane.window.endQ, 6000 / 3000, 'and ends at the last');
+    near(vm.loopStartQ, 2000 / 3000, 'the loop region\'s origin');
+    assert.deepEqual(vm.loopRunsQ, [[2000 / 3000, 4000 / 3000], [5000 / 3000, 2]],
+        'the loop\'s runs, for whoever sweeps a cursor through it');
+    near(vm.playheadQ, 2500 / 3000, 'half a run in: buffer sample 2500');
+    near(vm.armAtQ, 6000 / 3000, 'the next Q boundary is the loop\'s end');
+
+    // Past the first run the cursor is in the second — never in the cut.
+    near(at(2500).playheadQ, 5500 / 3000, '500 into the second run');
+    near(at(2000).playheadQ, 5000 / 3000, 'on the seam: the second run\'s start');
+    near(at(2500).armAtQ, 6000 / 3000, 'the boundary stays the loop\'s end');
+
+    // The same loop as ONE window: the selection start + the phase.
+    const one = { ...definer, segments: undefined, loopStart: 2000, loopEnd: 5000 };
+    const vm1 = deriveViewModel({
+        id: 'root', quantum: 3000, islandZero: 2000, islandPos: 500,
+        masterPos: 500, definerId: 'd', nodes: [one], perf });
+    const lane1 = vm1.lanes.find(l => l.id === 'd');
+    assert.equal(lane1.window.startQ, 2000 / 3000);
+    assert.equal(lane1.window.endQ, 5000 / 3000);
+    assert.equal(vm1.loopRunsQ, null, 'one span: loopStartQ + loopCycleQ say it all');
+    near(vm1.playheadQ, 2500 / 3000, 'one window: selection start + phase');
+    near(vm1.armAtQ, 5000 / 3000, 'one window: its end');
+});
+
 test('a 2nd committed clip LOCKS: definer collapses to normal rendering', () => {
     const c2 = { id: 'c2', type: 'clip', name: 'B', duration: 100,
                  effectiveQuantum: 100, loopStart: 0, loopEnd: 0, isRecording: false };
@@ -89,9 +119,9 @@ test('a 2nd committed clip LOCKS: definer collapses to normal rendering', () => 
 });
 
 test('mock: arming take 2 LOCK-COLLAPSES the trimmed definer', async () => {
-    // Owner ruling 2026-07-19: the trim is a pre-lock affordance — once
-    // you build on it, the trimmed region BECOMES the take (as if
-    // performed exactly) and the looper is normal again. Undo restores.
+    // The trim is a pre-lock affordance — once you build on it, the
+    // trimmed region BECOMES the take (as if performed exactly) and the
+    // looper is normal again. Undo restores.
     loadScenario('single-clip');
     const dur0 = getState().nodes[0].duration;
     const ls = dur0 / 4, q = dur0 / 2;
@@ -103,14 +133,17 @@ test('mock: arming take 2 LOCK-COLLAPSES the trimmed definer', async () => {
     const c1 = getState().nodes.find(n => n.id === 'clip-1');
     assert.equal(c1.duration, q, 'the window IS the take now');
     assert.equal(c1.loopStart, 0, 'window consumed');
-    assert.equal(c1.loopEnd, 0, '...no window: the take IS the window (D4-7)');
+    assert.equal(c1.loopEnd, 0, '...no window: the take IS the window');
     assert.equal(getState().quantum, q, 'Q unchanged by the collapse');
 
+    // The trim kept the sounding position, so the grid's lines lie off
+    // the clock: the arm waits for the next one, then the take runs.
+    advanceBy(q);
     await callNative('stopRecordingInNode', id2);
     // The stop pads take 2 forward to its boundary; while it finishes
-    // the island is LIVE and undo is refused (the live-take gate, owner
-    // ruling 2026-09-09). Let it commit, then undo the take and the
-    // collapse: the pre-collapse state returns.
+    // the island is LIVE and undo is refused (the live-take gate). Let
+    // it commit, then undo the take and the collapse: the pre-collapse
+    // state returns.
     assert.equal(await callNative('undo'), false, 'undo refused while the take finishes');
     advanceBy(q + 1024);  // past the stop boundary: take 2 commits
     assert.ok(!getState().nodes.find(n => n.id === id2).isRecording, 'take 2 committed');
@@ -119,57 +152,6 @@ test('mock: arming take 2 LOCK-COLLAPSES the trimmed definer', async () => {
     const c1b = getState().nodes.find(n => n.id === 'clip-1');
     assert.equal(c1b.duration, dur0, 'undo restores the full buffer');
     assert.equal(c1b.loopStart, ls, '…and the trim');
-});
-
-test('mock: deleting take 2 re-opens AND uncollapses the definer', async () => {
-    // Re-open restores the trimmed-away material (audio-neutral): the
-    // old trim survives as the window, so it can be trimmed LONGER.
-    loadScenario('single-clip');
-    const dur0 = getState().nodes[0].duration;
-    const ls = dur0 / 4, q = dur0 / 2;
-    await callNative('setLoopPoints', 'clip-1', ls, ls + q);
-    await callNative('createNode', 'clip', '');
-    const id2 = getState().nodes.find(n => n.id !== 'clip-1').id;
-    await callNative('startRecordingInNode', id2);   // lock-collapse
-    assert.equal(getState().nodes.find(n => n.id === 'clip-1').duration, q);
-    advanceBy(q);                                    // let the take run 1Q
-    await callNative('stopRecordingInNode', id2);
-    advanceBy(q);                                    // …and reach its commit
-    await callNative('deleteNode', id2);             // re-open ⟹ uncollapse
-    const c1 = getState().nodes.find(n => n.id === 'clip-1');
-    assert.equal(c1.duration, dur0, 'full material restored');
-    assert.equal(c1.loopStart, ls, 'the trim survives as the window');
-    assert.equal(c1.loopEnd, ls + q, '…');
-    assert.equal(getState().quantum, q, 'Q untouched by the re-open');
-});
-
-test('mock: trim is phase-preserving (sounding buffer position unchanged)', async () => {
-    // Engine parity (AudioEngine::setLoopPoints re-anchor): nudging the
-    // loop region must not move the position sounding right now — the
-    // published masterPos maps back via loopStart + view.
-    loadScenario('single-clip');
-    const dur0 = getState().nodes[0].duration;
-    // Real commits always leave a full-span window; the fixture doesn't —
-    // establish it at t = 0 so the pre-trim state matches production.
-    await callNative('setLoopPoints', 'clip-1', 0, dur0);
-    setMasterPos(dur0 * 0.65);
-    const mod = (a, m) => ((a % m) + m) % m;
-    const s0 = getState();
-    const p0 = (s0.nodes[0].loopStart || 0) + s0.masterPos;
-
-    const ls = dur0 / 4, q = dur0 / 2;              // window [0.25d, 0.75d)
-    await callNative('setLoopPoints', 'clip-1', ls, ls + q);
-    const s1 = getState();
-    const p1 = s1.nodes[0].loopStart + s1.masterPos;
-    assert.ok(Math.abs(p1 - (ls + mod(p0 - ls, q))) < 1e-9,
-        'position continuous (folded into the new window)');
-
-    // A nudge that keeps the position inside the window: no move at all.
-    // (p1 = 0.65·dur0; the shifted window [0.3125, 0.8125)·dur0 holds it.)
-    await callNative('setLoopPoints', 'clip-1', ls + dur0 / 16, ls + dur0 / 16 + q);
-    const s2 = getState();
-    const p2 = s2.nodes[0].loopStart + s2.masterPos;
-    assert.ok(Math.abs(p2 - p1) < 1e-9, 'nudge: the sounding position holds');
 });
 
 test('an ARMED 2nd take suspends the provisional trim view', () => {
@@ -185,9 +167,9 @@ test('an ARMED 2nd take suspends the provisional trim view', () => {
 test('locked trimmed definer: the frame stays whole-Q (no LCM explosion)', () => {
     // After a sub-Q trim the definer's BUFFER length is a multiple of
     // the OLD Q — incommensurate with the new grid. LCM-ing the raw
-    // duration exploded the frame (~142336Q) the moment take 2 armed,
-    // and every waveform vanished behind the maxTiles guards (field
-    // 2026-07-19b). The clip's whole-Q contribution is its WINDOW.
+    // duration would explode the frame the moment take 2 armed and
+    // trip the maxTiles guards. The clip's whole-Q contribution is its
+    // WINDOW.
     const definer = { id: 'c1', type: 'clip', name: 'A', duration: 190,
                       loopStart: 20, loopEnd: 60, windowActive: true,
                       isRecording: false };
@@ -201,11 +183,23 @@ test('locked trimmed definer: the frame stays whole-Q (no LCM explosion)', () =>
     assert.ok(vm.lanes.find(l => l.id === 'c2').reps.length > 0,
         'take-2 lane still tiles');
 
-    // The contribution rule itself.
-    assert.equal(commensuratePeriod(definer, 40), 40, 'incommensurate → window');
-    assert.equal(commensuratePeriod(take2, 40), 160, 'whole-Q duration unchanged');
-    assert.equal(commensuratePeriod({ duration: 190, loopBypassed: true,
-        loopStart: 20, loopEnd: 60 }, 40), 200, 'bypassed fallback: ceil to Q');
+    // The contribution rule itself: the period law over the published
+    // shape, judged against Q.
+    const law = publishedLaw(40);
+    assert.equal(periodContribution(definer, law), 40,
+        'an incommensurate take hands over its window');
+    assert.equal(periodContribution(take2, law), 160, 'whole-Q duration unchanged');
+    // Bypassed, the 190 take fits no whole number of Qs: it drifts and
+    // folds into nothing, so the frame stays finite — take 2's 4Q.
+    const bypassed = { ...definer, loopBypassed: true, windowActive: false };
+    assert.equal(periodContribution(bypassed, law), 0,
+        'a bypassed incommensurate take drifts');
+    const vmB = deriveViewModel({ nodes: [bypassed, take2], quantum: 40,
+                                  islandZero: 20, masterPos: 0, perf });
+    assert.equal(vmB.cycleQ, 4, 'the frame is still take 2\'s 4Q');
+    assert.equal(vmB.lanes.find(l => l.id === 'c1').drifting, true);
+    assert.ok(vmB.lanes.find(l => l.id === 'c2').reps.length > 0,
+        'take-2 lane still tiles');
 });
 
 test('a clip RECORDING (armed 2nd take) suspends the provisional view', () => {
@@ -218,29 +212,17 @@ test('a clip RECORDING (armed 2nd take) suspends the provisional view', () => {
     assert.equal(vm.provisionalDefiner, false, 'suspended while recording');
 });
 
-/* ---------- Q13 FOR GROUPS (owner ruling 2026-08-21) ----------
+/* ---------- Q13 FOR GROUPS ----------
  * The fractal twin of the sole-clip definer: a stack whose direct clip
  * children are the island's only committed content and were recorded as
  * ONE take (N mics) is the DEFINER STACK. Its window re-establishes (Q,
  * zero) like a sole clip's; the window stays on the stack (it IS the
  * part under the window law), the children stay whole, and the view
- * model renders the same trim view. Field origin: "started with drums"
- * — a first take recorded as a group could not be trimmed at all. */
+ * model renders the same trim view. The mock's side of the trim and of
+ * the lock-collapse (origins, zero, phase, the multi-segment map) is
+ * pinned in stack_origin.test.mjs; here, what the view model shows. */
 
-import { MOCK_Q, nodeById } from './helpers.mjs';
-
-async function recordGroupTake(n, lenQ) {
-    const stackId = await callNative('createNode', 'stack', '');
-    const ids = [];
-    for (let i = 0; i < n; ++i) ids.push(await callNative('createNode', 'clip', stackId));
-    await callNative('startRecordingInNode', stackId);
-    advanceBy(lenQ * MOCK_Q);
-    await callNative('stopRecordingInNode', stackId);
-    return { stackId, ids };
-}
-const find = id => nodeById(id, getState().nodes);
-
-test('GROUPS: a first group take is the Q-definer — its window re-defines Q', async () => {
+test('GROUPS: a first group take is the Q-definer — the trim view frames it; a second take locks it', async () => {
     loadScenario('empty');
     const { stackId, ids } = await recordGroupTake(2, 4);
     const D = find(ids[0]).duration;
@@ -262,60 +244,34 @@ test('GROUPS: a first group take is the Q-definer — its window re-defines Q', 
         assert.equal(c.reps.length, 1);
     }
 
-    // Trim the GROUP to the middle half: a fractional-Q window would be
-    // refused anywhere else — here it re-establishes Q := len.
+    // Trim the GROUP to the middle half (a fractional-Q window: here it
+    // re-establishes Q := D/2). The whole take is now 2Q; the selection
+    // is the 1Q part [0.5Q, 1.5Q).
     await callNative('setLoopPoints', stackId, D / 4, (3 * D) / 4);
-    const st = getState();
-    assert.equal(st.quantum, D / 2, 'Q := window length');
-    const s = find(stackId);
-    assert.deepEqual([s.loopStart, s.loopEnd], [D / 4, (3 * D) / 4], 'window on the stack');
-    for (const id of ids) {
-        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D],
-            'children untouched (whole takes)');
-        // Q18 (composition.md §5, G-1): the trim re-anchors the STACK
-        // and its subtree by one delta — the members' origins equal the
-        // stack's — and zero := origin' + start. (Pre-Q18 the members
-        // rode with the zero, zero == member origin: the
-        // zero-anchored stack map, retired.)
-        assert.equal(find(id).origin, s.origin,
-            'members ride with their stack (no per-member riders)');
-    }
-    assert.equal(s.anchored, true, 'the definer stack is anchored');
-    assert.equal(getState().islandZero, s.origin + D / 4,
-        'zero = stack origin + window start (composition.md §5)');
-    // The frame: the whole take is now 2Q; the selection is the 1Q
-    // part [0.5Q, 1.5Q).
     vm = deriveViewModel(getState());
     assert.equal(vm.cycleQ, 2, 'trim view frames the whole take (2 new-Q)');
     const g2 = vm.lanes.find(l => l.id === stackId);
     assert.deepEqual([g2.window.startQ, g2.window.endQ], [0.5, 1.5]);
     assert.equal(g2.isQDefiner, true);
-});
 
-test('GROUPS: the definer trim is phase-preserving (sounding inner position holds)', async () => {
-    loadScenario('empty');
-    const { stackId } = await recordGroupTake(2, 4);
-    const D = getState().quantum;
-    setMasterPos(D * 0.65);
-    const mod = (a, m) => ((a % m) + m) % m;
-    // Heard inner position before: (t0 − zero) mod D.
-    const s0 = getState();
-    const p0 = mod(s0.masterPos - (s0.islandZero || 0), D);
-    const ls = D / 4, len = D / 2;
-    await callNative('setLoopPoints', stackId, ls, ls + len);
-    const s1 = getState();
-    // After: start + ((t0 − zero') mod len) — the VM's definer mapping.
-    const p1 = ls + mod(s1.masterPos, len);
-    assert.ok(Math.abs(p1 - (ls + mod(p0 - ls, len))) < 1e-9,
-        'position continuous (folded into the new window)');
+    // Take 2 on a new top-level track arms against Q = D/2: it locks Q
+    // and collapses the group to its window.
+    const t2 = await callNative('createNode', 'clip', '');
+    await callNative('startRecordingInNode', t2);
+    advanceBy(D / 2);
+    await callNative('stopRecordingInNode', t2);
+    advanceBy(D / 2);
+    assert.equal(find(t2).isRecording, false, 'take 2 committed');
+    vm = deriveViewModel(getState());
+    assert.equal(vm.soleQDefinerId, null, 'no definer once Q is locked');
+    assert.equal(vm.cycleQ, 1, 'the group is a plain 1Q part');
 });
 
 test('GROUPS: members carrying their own windows — the trim view selects their common window; a re-trim makes them whole', async () => {
     // A group take committed against a LOCKED Q (a clip elsewhere held
     // Q) gets the commit-time loop region on each member; deleting that
     // clip then leaves a definer stack whose window lives on its
-    // members (the state the 2026-08-29 field dump showed, there via a
-    // stale nested Q). The trim view must select what the ear hears —
+    // members. The trim view must select what the ear hears —
     // the members' common window — and a re-trim moves the window onto
     // the stack with the members whole (engine parity: the window
     // riders on the stack-definer LoopPoints edit).
@@ -341,8 +297,8 @@ test('GROUPS: members carrying their own windows — the trim view selects their
     assert.deepEqual([find(stackId).loopStart, find(stackId).loopEnd], [D / 4, (3 * D) / 4],
         'window on the stack');
     for (const id of ids) {
-        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D],
-            'members made whole by the re-trim');
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, 0],
+            'members made whole by the re-trim: whole is no window');
     }
     vm = deriveViewModel(getState());
     const g2 = vm.lanes.find(l => l.id === stackId);
@@ -354,64 +310,6 @@ test('GROUPS: members carrying their own windows — the trim view selects their
             'undo restores the members\' windows');
     }
     assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'and clears the stack window');
-});
-
-test('GROUPS: a second take LOCKS Q and COLLAPSES the group to its window (fractal twin)', async () => {
-    loadScenario('empty');
-    const { stackId, ids } = await recordGroupTake(2, 4);
-    const D = getState().quantum;
-    await callNative('setLoopPoints', stackId, D / 4, (3 * D) / 4);
-    assert.equal(getState().quantum, D / 2);
-    // Take 2 on a new top-level track: arms against Q = D/2.
-    const t2 = await callNative('createNode', 'clip', '');
-    await callNative('startRecordingInNode', t2);
-    advanceBy(D / 2);
-    await callNative('stopRecordingInNode', t2);
-    advanceBy(D / 2);
-    assert.equal(find(t2).isRecording, false, 'take 2 committed');
-    assert.equal(getState().quantum, D / 2, 'Q locked at the trimmed length');
-    // GROUP LOCK-COLLAPSE (audit 2026-08-30 §3.5; Q18 composition.md
-    // §5): the trimmed region IS the take now — members are 1Q whole
-    // takes, the stack window is consumed, and the SUBTREE's origins
-    // shifted by the window start (the sole-clip law; pinned in
-    // stack_origin.test.mjs).
-    assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'stack window consumed');
-    for (const id of ids) {
-        assert.equal(find(id).duration, D / 2, 'member collapsed to the window');
-        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, 0], 'member whole (no window)');
-    }
-    const vm = deriveViewModel(getState());
-    assert.equal(vm.soleQDefinerId, null, 'no definer once Q is locked');
-    assert.equal(vm.cycleQ, 1, 'the group is a plain 1Q part');
-    // RE-OPEN ⟹ UNCOLLAPSE, group twin: deleting take 2 restores the
-    // full takes with the trim back on the stack.
-    await callNative('deleteNode', t2);
-    for (const id of ids) assert.equal(find(id).duration, D, 're-open: full take back');
-    assert.deepEqual([find(stackId).loopStart, find(stackId).loopEnd], [D / 4, (3 * D) / 4],
-        're-open: the trim is the stack window again');
-});
-
-test('GROUPS: a multi-segment map on the definer stack re-establishes Q (the punch twin)', async () => {
-    loadScenario('empty');
-    const { stackId, ids } = await recordGroupTake(2, 4);
-    const D = getState().quantum;
-    // Two cells kept: [D/8, 3D/8) + [D/2, 3D/4) — period 3D/8.
-    await callNative('setSegments', stackId,
-        [D / 8, 3 * D / 8, D / 2, 3 * D / 4]);
-    const P = (3 * D) / 8 - D / 8 + (3 * D) / 4 - D / 2;
-    assert.equal(getState().quantum, P, 'Q := the map period');
-    // Q18 (composition.md §5): the members ride with their STACK, and
-    // zero := origin' + mapOffset(0) — the first cell's start.
-    // (Pre-Q18: members' origin == zero, the zero-anchored stack map.)
-    for (const id of ids) {
-        assert.equal(find(id).origin, find(stackId).origin,
-            'members ride with their stack (subtree anchoring)');
-        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D], 'members whole');
-    }
-    assert.equal(getState().islandZero, find(stackId).origin + D / 8,
-        'zero = stack origin + mapOffset(0)');
-    const segs = find(stackId).segments;
-    assert.deepEqual(segs, [D / 8, 3 * D / 8, D / 2, 3 * D / 4], 'map on the stack');
 });
 
 test('GROUPS: two takes in one stack are NOT a definer (different origins)', async () => {
@@ -431,11 +329,10 @@ test('GROUPS: two takes in one stack are NOT a definer (different origins)', asy
     assert.notEqual(find(stackId).loopEnd, D * 1.5, 'incoherent window refused');
 });
 
-/* ---------- SEQUENCES TRACK Q (owner ruling 2026-08-21) ---------- */
+/* ---------- SEQUENCES TRACK Q ---------- */
 
 test('SEQUENCES TRACK Q: a definer re-trim rescales steps; an empty island clears them', async () => {
     loadScenario('empty');
-    await callNative('setSequence', 'mock-root', null);
     const c1 = await callNative('createNode', 'clip', '');
     await callNative('startRecordingInNode', c1);
     advanceBy(MOCK_Q);
@@ -463,9 +360,9 @@ test('SEQUENCES TRACK Q: a definer re-trim rescales steps; an empty island clear
 });
 
 test('GROUPS: a sub-Q trim never grows the trim view (one take = raw extent, not commensurate)', async () => {
-    // Field 2026-08-21: dragging the start to 25% re-defined Q = 0.75·D
-    // and the frame became ceil(D/Q)·Q = 1.5·D — "zooms way in… moving
-    // both ends". The definer stack's extent is its one take, exactly.
+    // Dragging the start to 25% re-defines Q = 0.75·D; the frame is NOT
+    // ceil(D/Q)·Q = 1.5·D: the definer stack's extent is its one take,
+    // exactly.
     loadScenario('empty');
     const { stackId } = await recordGroupTake(2, 4);
     const D = getState().quantum;

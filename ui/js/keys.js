@@ -19,6 +19,12 @@
  *     when,        // () => boolean, evaluated per event (an open panel).
  *     whileTyping, // true: fires even when the target is a text-entry
  *                  // surface (Escape). Default: the typing guard applies.
+ *     repeat,      // true: fires again on every keyboard auto-repeat (a
+ *                  // held zoom key). Default: a held key is ONE press —
+ *                  // the handler never runs on a repeat, and the
+ *                  // repeats of a press it consumed are consumed with
+ *                  // it (no browser default), so a held Space neither
+ *                  // flaps the transport nor pages the lanes.
  *     scope,       // SCOPE.APP | SCOPE.VIEW | SCOPE.PANEL (any number):
  *                  // higher scopes are tried first, so a modal's Escape
  *                  // beats the session view's Escape.
@@ -130,6 +136,7 @@ export function registerKey(spec) {
         ignore: asList(spec.ignore),
         when: spec.when || null,
         whileTyping: !!spec.whileTyping,
+        repeat: !!spec.repeat,
         scope: spec.scope == null ? SCOPE.APP : spec.scope,
         handler: spec.handler,
         order: sequence++,
@@ -151,11 +158,32 @@ export function registerKey(spec) {
     };
 }
 
+// The key now held down and the binding that consumed its press (null
+// when none did) — the verdict its auto-repeats inherit.
+const held = { key: null, binding: null };
+const heldKeyOf = e => e.code || e.key;
+
+function notePress(e, binding) {
+    if (e.repeat) return;
+    held.key = heldKeyOf(e);
+    held.binding = binding;
+}
+
 /**
  * The keydown listener. Returns true when a binding consumed the
  * event. Exported so tests dispatch synthetic events without a DOM.
+ *
+ * AUTO-REPEAT: only a `repeat` binding's handler runs on a repeat. A
+ * repeat of a press some other binding consumed is consumed too, and
+ * its browser default prevented; a repeat of a press nothing consumed
+ * is left to the browser.
  */
 export function dispatchKey(e) {
+    if (e.repeat && held.binding && !held.binding.repeat &&
+        held.key === heldKeyOf(e)) {
+        e.preventDefault();
+        return true;
+    }
     let typing = null;
     for (const b of bindings) {
         if (!keyMatches(b, e) || !modifiersMatch(b, e)) continue;
@@ -164,8 +192,13 @@ export function dispatchKey(e) {
             if (typing) continue;
         }
         if (b.when && !b.when(e)) continue;
-        if (b.handler(e) !== false) return true;
+        if (e.repeat && !b.repeat) continue;
+        if (b.handler(e) !== false) {
+            notePress(e, b);
+            return true;
+        }
     }
+    notePress(e, null);
     return false;
 }
 

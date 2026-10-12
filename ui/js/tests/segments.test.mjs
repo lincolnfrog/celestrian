@@ -12,10 +12,10 @@ import assert from 'node:assert/strict';
 import { advanceBy, callNative, getState, loadScenario, setMasterPos }
     from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
-import { nodeById as findNodeById, recordTake, PERF as perf }
-    from './helpers.mjs';
-
-const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
+import { posMod } from '../math_utils.js';
+import { recordTake, PERF as perf } from './helpers.mjs';
+import { published as nodeById } from './mock_scene.mjs';
+import { findNode as rawNode } from '../mock/state.js';
 
 // A committed 4Q group (Q = 1000): take A 1Q, take B 4Q (stop mid-Q,
 // settle pads to the 4000 boundary).
@@ -83,14 +83,14 @@ test('cell map shortens the audible cycle; record-through-cells parity', async (
     // Audible cycle = lcm(Q=1000, period 2000) = 2000: published
     // masterPos wraps on it, from the zero.
     setMasterPos(zero + 4500);
-    assert.equal(getState().masterPos, ((zero + 4500 - getState().islandZero) % 2000 + 2000) % 2000,
+    assert.equal(getState().masterPos, posMod(zero + 4500 - getState().islandZero, 2000),
         'view wraps on the cell period');
 
     // Record C through the cells: heard pend, one-period cap, dense C.
     const cId = await callNative('createNode', 'clip', groupId);
     await callNative('startRecordingInNode', cId);
     assert.equal(nodeById(cId).isPendingStart, true, 'pends in heard time');
-    assert.equal(nodeById(cId).pendingStartAt, zero + 5000,
+    assert.equal(rawNode(cId).pendingStartAt, zero + 5000,
         'heard target on the period grid');
     advanceBy(500);
     advanceBy(2000);  // one full period → cap commits
@@ -108,7 +108,7 @@ test('cell map shortens the audible cycle; record-through-cells parity', async (
     await callNative('stopRecordingInNode', dId);
 });
 
-// === Stage 5: view-model display generalization ===
+// === The view model over multi-segment maps ===
 
 test('view model: multi-segment group lane — dims data, chip, no brackets', () => {
     const state = {
@@ -129,7 +129,7 @@ test('view model: multi-segment group lane — dims data, chip, no brackets', ()
     const vm = deriveViewModel(state);
     const g = vm.lanes.find(l => l.id === 'g');
     // An ACTIVE multi map on a group rests in HEARD time exactly like
-    // a clip's (2026-08-21): srcSegs on every tile, seams for the cuts.
+    // a clip's: srcSegs on every tile, seams for the cuts.
     assert.equal(g.window, null, 'no bracket window for a multi map');
     assert.equal(g.periodQ, 2, 'heard period = the map period');
     assert.equal(g.mapMulti, true, 'multi flag for the chip label');
@@ -169,6 +169,8 @@ test('view model: multi-segment CLIP lane rests in heard time (srcSegs)', () => 
     assert.ok(c.reps.length > 0, 'reps render');
     assert.deepEqual(c.reps[0].srcSegs, [[0, 0.25], [0.5, 0.75]],
         'reps carry the concatenated content slices');
+    assert.equal(vm.cycleQ, 2, 'a 2Q frame');
+    assert.equal(c.takeStartQ, 0, 'the heard anchor at the frame top: the seam sits mid-lane');
     // Recording cue threads the map context from the segments too.
     const state2 = {
         quantum: 1000, islandZero: 0, masterPos: 0, perf,
@@ -193,14 +195,12 @@ test('view model: multi-segment CLIP lane rests in heard time (srcSegs)', () => 
 });
 
 test('view model: periodQ is EXACT for fractional-bound maps (fp)', () => {
-    // Field 2026-07-25: a slid cut with fractional bounds whose sample
-    // lengths sum to exactly 1Q displayed "0.9999…Q" — periodQ must be
-    // ONE division of the sample sum, never a sum of per-segment
-    // divisions. 18480 + (88200 − 62580) = 44100 exactly.
-    // The literals stay literal ON PURPOSE: this is a pinned fp
-    // regression case whose whole point is that these exact sample
-    // lengths sum to exactly 1Q. It carries its own `quantum` and so
-    // is independent of the mock's rate.
+    // A slid cut with fractional bounds whose sample lengths sum to
+    // exactly 1Q must not read "0.9999…Q": periodQ is ONE division of
+    // the sample sum, never a sum of per-segment divisions.
+    // 18480 + (88200 − 62580) = 44100 exactly — the literals stay
+    // literal ON PURPOSE (the case is these exact sample lengths); it
+    // carries its own `quantum` and is independent of the mock's rate.
     const state = {
         quantum: 44100, islandZero: 0, masterPos: 0, perf,
         nodes: [
@@ -208,8 +208,8 @@ test('view model: periodQ is EXACT for fractional-bound maps (fp)', () => {
               windowActive: true, loopBypassed: false,
               loopStart: 0, loopEnd: 0,
               segments: [0, 18480, 62580, 88200], isRecording: false },
-            // A 1Q sibling (the owner's Track 1) — a lone clip would be
-            // the Q-definer and rest in its raw take instead.
+            // A 1Q sibling — a lone clip would be the Q-definer and
+            // rest in its raw take instead.
             { id: 'd', name: 'D', type: 'clip', duration: 44100, origin: 0,
               loopStart: 0, loopEnd: 0, isRecording: false },
         ],
@@ -220,7 +220,7 @@ test('view model: periodQ is EXACT for fractional-bound maps (fp)', () => {
     assert.equal(vm.cycleQ, 1, 'the frame trusts the same exact period');
 });
 
-test('view model: cut-band fields (design A, 2026-07-22)', () => {
+test('view model: cut-band fields', () => {
     // Group with a cell map: bands editable in place over the intrinsic
     // cycle; the covered set rides bandSegs.
     const groupState = (extraKids = []) => ({
@@ -262,9 +262,9 @@ test('view model: cut-band fields (design A, 2026-07-22)', () => {
               loopStart: 0, loopEnd: 0, isRecording: false },
         ],
     };
-    // Heard-view lanes edit IN PLACE too (field 2026-07-23, modeless):
-    // raw geometry rides bandSegs, rendered as SEAM handles (bandHeard)
-    // rather than width-ful bands.
+    // Heard-view lanes edit IN PLACE too (modeless): raw geometry rides
+    // bandSegs, rendered as SEAM handles (bandHeard) rather than
+    // width-ful bands.
     const c = deriveViewModel(state3).lanes.find(l => l.id === 'c');
     assert.deepEqual(c.bandSegs, [[0, 1], [2, 3]], 'heard view: raw segs ride');
     assert.equal(c.bandHeard, true, 'flagged as heard-framed (seams)');
@@ -294,8 +294,8 @@ test('view model: enclosing map projects excluded regions onto children', () => 
         }],
     };
     const vm = deriveViewModel(state);
-    // 2026-08-21: children under an ACTIVE map show the slice the map
-    // selects of them (the child heard unroll) — no dims needed, the
+    // Children under an ACTIVE map show the slice the map selects of
+    // them (the child heard unroll) — no dims needed, the
     // lane IS what sounds. Parent period 3Q; A (4Q) reads [0,1)+[2,4);
     // B (2Q) reads [0,1), then [0,2) (its second pass under [2,4)).
     const a = vm.lanes.find(l => l.id === 'a');
@@ -306,7 +306,7 @@ test('view model: enclosing map projects excluded regions onto children', () => 
     assert.deepEqual(b.reps[0].srcSegs, [[0, 0.5], [0, 1]],
         'every child, through its own period');
     // BYPASSED map: the raw-framed children carry the covered set as
-    // dims data (the phase-3 projection, for the bypassed chip state).
+    // dims data (the projection, for the bypassed chip state).
     state.nodes[0].windowActive = false;
     state.nodes[0].loopBypassed = true;
     const vmB = deriveViewModel(state);
@@ -325,6 +325,17 @@ test('multi-segment definer re-trim: Q := period, zero := origin\' + mapOffset(0
     assert.equal(getState().quantum, 3000, 'Q := the map period');
     assert.equal(getState().islandZero, nodeById(aId).origin,
         'zero = origin\' + mapOffset(0) (first cell at 0)');
+
+    // The trim view over it: the selection spans the cells, and the one
+    // cursor walks them — 1500 into the 3000 loop is 500 into the
+    // second cell, buffer sample 2500, never the punched-out Q2.
+    setMasterPos(getState().islandZero + 1500);
+    const vm = deriveViewModel(getState());
+    assert.equal(vm.provisionalDefiner, true, 'still the definer: the trim view');
+    const lane = vm.lanes.find(l => l.id === aId);
+    assert.deepEqual([lane.window.startQ, lane.window.endQ], [0, 4000 / 3000]);
+    assert.ok(Math.abs(vm.playheadQ - 2500 / 3000) < 1e-9,
+        `the cursor is in the second cell: ${vm.playheadQ}`);
 
     await callNative('undo');
     assert.equal(getState().quantum, 4000, 'undo restores the grid');

@@ -1,6 +1,6 @@
 /**
- * THE TOP AND THE TIMING ON A LANE (view_model topFields / retimeable;
- * loop_selection.md §9, the Phase 2 VM contract).
+ * THE TOP AND THE TIMING ON A LANE (vm/lane_common.js topFields /
+ * retimeable; loop_selection.md §9).
  *
  * Every clip and group lane carries:
  *   topQ       the effective top, raw Q of the take;
@@ -15,33 +15,18 @@
  *   retimeLocked  all of that but for the recording gate: its ↺ draws
  *              inert (a plain 1Q loop's too — the map chrome's bandLocked
  *              needs a ≥ 2Q take).
- * The splice / ↺ handles (workstream C) read nothing else.
+ * The splice / ↺ handles read nothing else.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { deriveViewModel, bounceStartOf } from '../view_model.js';
-import { SCENE_Q as Q, PERF } from './helpers.mjs';
+import { foldShift, posMod } from '../math_utils.js';
+import { SCENE_Q as Q, clipAt as clip, windowed, groupAt, island as scene, laneOf }
+    from './helpers.mjs';
 
-const clip = (id, originQ, durationQ, extra = {}) => ({
-    id, name: id, type: 'clip', origin: Math.round(originQ * Q),
-    duration: Math.round(durationQ * Q), effectiveQuantum: Q,
-    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-    isMuted: false, isRecording: false, isPendingStart: false,
-    periodSource: 'own', ...extra,
-});
-const windowed = (id, originQ, durationQ, [aQ, bQ], extra = {}) =>
-    clip(id, originQ, durationQ, {
-        loopStart: Math.round(aQ * Q), loopEnd: Math.round(bQ * Q),
-        windowActive: true, ...extra,
-    });
-const island = (nodes, extra = {}) => ({
-    id: 'root', type: 'stack', quantum: Q, islandZero: 0, definerId: '',
-    isPlaying: true, masterPos: 0, islandPos: Math.round(4.3 * Q),
-    perf: PERF, nodes, ...extra,
-});
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id && l.kind !== 'fx');
+const island = (nodes, extra = {}) => scene(nodes, { clockQ: 4.3, ...extra });
 
 test('a committed looping clip can be re-timed; its fields read the node', () => {
     const vm = deriveViewModel(island([clip('A', 0, 4),
@@ -51,7 +36,7 @@ test('a committed looping clip can be re-timed; its fields read the node', () =>
     assert.equal(b.retimeQ, 0.5);
     // A — the first loop longer than Q — places the frame at its top
     // (0); B slots in, and its ↺ is where it starts playing: the sample
-    // it sounds at the frame's left edge (owner 2026-09-29).
+    // it sounds at the frame's left edge.
     assert.equal(vm.frameZero, 0);
     assert.equal(b.topQ, 9.5);
     // The engine's own top rides beside the ↺ as shown: what a region
@@ -81,10 +66,9 @@ test('the Q-definer and the definer stack\'s mics are never re-timed', () => {
     assert.equal(laneOf(bypassed, 'D').isQDefiner, undefined);
     assert.equal(laneOf(bypassed, 'D').canRetime, false);
     // A group-recorded kit (one take, two mics) defines Q as a stack.
-    const kit = (extra = {}) => island([{
-        id: 'K', name: 'K', type: 'stack', anchored: true, origin: 0,
-        effectiveQuantum: Q, nodes: [clip('m1', 0, 4), clip('m2', 0, 4)], ...extra,
-    }], { definerId: 'K' });
+    const kit = (extra = {}) => island(
+        [groupAt('K', 0, [clip('m1', 0, 4), clip('m2', 0, 4)], extra)],
+        { definerId: 'K' });
     const trim = deriveViewModel(kit());
     assert.equal(laneOf(trim, 'm1').definerMember, true);
     assert.equal(laneOf(trim, 'm1').canRetime, false);
@@ -94,6 +78,34 @@ test('the Q-definer and the definer stack\'s mics are never re-timed', () => {
     assert.equal(laneOf(kitBypassed, 'm1').definerMember, undefined,
         'drawn as an ordinary member');
     assert.equal(laneOf(kitBypassed, 'm1').canRetime, false, '…still a definer mic');
+});
+
+test('the trim view: a mic of the definer stack carries its takes, its ● ' +
+     'verb and the top fields the definer lane does', () => {
+    const kit = island([groupAt('K', 0, [
+        clip('m1', 0, 4, { takes: 3, activeTake: 1, comp: [0, -1, 2, -1], loopTop: Q }),
+        clip('m2', 0, 4)])], { definerId: 'K' });
+    const vm = deriveViewModel(kit, { compMode: new Set(['m1']) });
+    const m1 = laneOf(vm, 'm1');
+    assert.equal(m1.definerMember, true);
+    assert.equal(m1.takes, 3, 'the take list');
+    assert.equal(m1.activeTake, 1);
+    assert.deepEqual(m1.comp, [0, -1, 2, -1]);
+    assert.equal(m1.compCells, 4);
+    assert.equal(m1.compMode, true);
+    assert.equal(m1.armMode, 'retake', 'a committed mic is no one-shot');
+    assert.equal(m1.armable, false, 'the ● is the group\'s');
+    assert.equal(m1.topQ, 1);
+    assert.equal(m1.storedTopQ, 1, 'the buffer frame shows the stored top');
+    assert.equal(m1.retimePeriodQ, 4);
+    assert.equal(laneOf(vm, 'm2').takes, 1, 'a mic with one take');
+    // The sole-clip definer is built by the same builder.
+    const sole = deriveViewModel(island(
+        [clip('D', 0, 3, { loopTop: Q, takes: 2 })], { definerId: 'D' }));
+    const d = laneOf(sole, 'D');
+    assert.equal(d.takes, 2);
+    assert.equal(d.storedTopQ, 1);
+    assert.equal(d.retimePeriodQ, 3);
 });
 
 test('one-shots, live and armed takes, and the recording gate: no re-time', () => {
@@ -142,19 +154,17 @@ test('before Q exists nothing is re-timed', () => {
 });
 
 test('through an enclosing map and in comp mode: the parent / the comp own the lane', () => {
-    const member = clip('m', 0, 8);
-    const s = island([clip('A', 0, 4), {
-        id: 'G', name: 'G', type: 'stack', anchored: true, origin: 0,
-        effectiveQuantum: Q, nodes: [member, clip('n', 0, 4)],
-        loopStart: 2 * Q, loopEnd: 6 * Q, windowActive: true, loopBypassed: false,
-    }]);
+    const s = island([clip('A', 0, 4),
+        groupAt('G', 0, [clip('m', 0, 8), clip('n', 0, 4)], {
+            loopStart: 2 * Q, loopEnd: 6 * Q, windowActive: true, loopBypassed: false,
+        })]);
     const vm = deriveViewModel(s);
     const m = laneOf(vm, 'm');
     assert.equal(m.underMap, true);
     assert.equal(m.canRetime, false, 'no ↺ on a lane the parent map owns');
     const g = laneOf(vm, 'G');
-    // A group is a loop like any other (fractal, 2026-09-29): the
-    // mapping group itself re-times; only its members defer to it.
+    // A group is a loop like any other (fractal): the mapping group
+    // itself re-times; only its members defer to it.
     assert.equal(g.canRetime, true, 'the mapping group re-times like a clip');
     // Not the placer (A is): its ↺ is the sample it plays at the frame's
     // left edge — raw 2 sounds at 2Q, so raw 4 sounds at 0.
@@ -175,7 +185,7 @@ test('through an enclosing map and in comp mode: the parent / the comp own the l
 });
 
 test('the re-time reads AS HEARD: folded to the loop\'s own period ' +
-     '(a 2Q loop moved 13Q reads 1Q; owner 2026-09-29)', () => {
+     '(a 2Q loop moved 13Q reads 1Q)', () => {
     const vm = deriveViewModel(island([
         clip('A', 0, 1),
         windowed('D', 2, 8, [4, 6], { retime: 13 * Q }),   // 2Q loop, +13Q
@@ -191,8 +201,7 @@ test('the re-time reads AS HEARD: folded to the loop\'s own period ' +
     assert.equal(laneOf(vm, 'G').retimeQ, -1 / 4, 'a fine shift reads as itself');
 });
 
-test('foldShift: into (−P/2, P/2]; a non-positive period leaves the shift', async () => {
-    const { foldShift } = await import('../math_utils.js');
+test('foldShift: into (−P/2, P/2]; a non-positive period leaves the shift', () => {
     assert.equal(foldShift(13, 2), 1);
     assert.equal(foldShift(-13, 2), 1);
     assert.equal(foldShift(3, 4), -1);
@@ -211,9 +220,8 @@ test('foldShift: into (−P/2, P/2]; a non-positive period leaves the shift', as
  * 3Q into a 4Q frame from 5Q). */
 const stems = (bOriginQ = 1, bExtra = {}, more = []) => island([clip('A', 0, 1),
     windowed('B', bOriginQ, 12, [4, 8], bExtra),
-    windowed('C', 14, 16, [6, 10]), ...more],
-    { islandPos: Math.round(30.3 * Q) });
-const modQ = (x, pQ) => ((x / Q) % pQ + pQ) % pQ;
+    windowed('C', 14, 16, [6, 10]), ...more], { clockQ: 30.3 });
+const modQ = (x, pQ) => posMod(x / Q, pQ);
 
 test('a loop bounces from its ↺ AS SHOWN: the placing loop from its own ' +
      'top, every other loop from the frame\'s top', () => {

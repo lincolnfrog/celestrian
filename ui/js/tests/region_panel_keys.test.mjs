@@ -8,17 +8,25 @@
  *       elapses past the LAST press and that press's commit settles
  *       (capped) — so a chain of nudges never re-seats the frame per
  *       press;
- *   (b) [ ] { } never target the region panel's chrome (teleport.js
- *       isTransientHandle; diagnosis N5 — the walk got stuck on the
- *       viewport-pinned panel's cut handles);
- *   (c) the edit bar's hint: why a selected track shows no panel.
+ *   (b) [ ] { } never target a drag preview, a snap ghost or a ghost
+ *       repeat's handle (teleport.js isTransientHandle; the panel's own
+ *       handles are out of the walk's reach — region_panel_view.spec.js);
+ *   (c) the edit bar's hint: why a selected track shows no panel;
+ *   (d) the nudge chain's base: the last target sent, until an undo.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { makeChainPin, noPanelReason } from '../session_view/region_panel.js';
-import { isTransientHandle } from '../session_view/teleport.js';
+// The selection's painters only query the document.
+globalThis.document ??= { querySelectorAll: () => [], getElementById: () => null };
+
+const { makeChainPin, nudgeRegion, noteNudgePublished } =
+    await import('../session_view/region_nudge.js');
+const { noPanelReason } = await import('../session_view/region_dock.js');
+const { isTransientHandle } = await import('../session_view/teleport.js');
+const { selectOnly } = await import('../session_view/selection.js');
+const { ctx } = await import('../session_view/context.js');
 
 /** A manual timer queue (setTimeout twin). */
 function timers() {
@@ -111,6 +119,50 @@ test('a refused commit (no promise) still releases the chain', async () => {
     assert.deepEqual(log, ['pin', 'unpin']);
 });
 
+/* THE NUDGE CHAIN'S BASE (region_panel.js nudgeRegion): presses faster
+ * than the poll slide from the last target sent — until the engine has
+ * published that target; from then on a different published region is
+ * someone else's edit (an undo), and the next press slides from what is
+ * shown. A fake strip stands in for the selected track's panel; a
+ * "poll" replaces its band state, as a patch does. */
+function nudgeHarness() {
+    const Q = 1000;
+    const sent = [];
+    ctx.cb = { onSetSegments: (id, flat) => { sent.push(flat.map(s => s / Q)); } };
+    const strip = {};
+    const publish = segs => {
+        strip._bandState = { laneId: 'n', segs, totalQ: 12, editable: true, quantum: Q };
+        noteNudgePublished(strip);
+    };
+    selectOnly('n');
+    ctx.laneEls.set('n', { _region: { strip, nav: { style: { display: '' } } } });
+    return { sent, publish, done: () => ctx.laneEls.delete('n') };
+}
+
+test('presses faster than the poll chain off the last target sent', () => {
+    const h = nudgeHarness();
+    try {
+        h.publish([[4, 8]]);
+        nudgeRegion(1);
+        nudgeRegion(1);              // no poll in between
+        h.publish([[5, 9]]);         // the poll is one press behind
+        nudgeRegion(1);
+        assert.deepEqual(h.sent, [[5, 9], [6, 10], [7, 11]]);
+    } finally { h.done(); }
+});
+
+test('a press after an undo slides from the region as shown, not the undone target', () => {
+    const h = nudgeHarness();
+    try {
+        h.publish([[4, 8]]);
+        nudgeRegion(1);
+        h.publish([[5, 9]]);         // the engine answered: the region moved
+        h.publish([[4, 8]]);         // ⌘Z: it is back
+        nudgeRegion(1);              // still inside the chain window
+        assert.deepEqual(h.sent, [[5, 9], [5, 9]], 'one Q from where it is shown');
+    } finally { h.done(); }
+});
+
 /** A DOM-less node: its classes and the ancestor classes `closest`
  * can find. */
 const fakeNode = (own, ancestors = []) => ({
@@ -119,15 +171,11 @@ const fakeNode = (own, ancestors = []) => ({
         .some(c => own.includes(c) || ancestors.includes(c)) ? {} : null,
 });
 
-test('teleports skip the region panel, previews and ghosts', () => {
+test('teleports skip previews and ghosts', () => {
     // A lane's own handles are targets.
     assert.equal(isTransientHandle(fakeNode(['win-bracket', 'start'], ['lane-body'])), false);
     assert.equal(isTransientHandle(fakeNode(['cut-handle'], ['overlay-layer'])), false);
-    // The panel's cut handles (the lane's band code, in the panel) and
-    // anything else inside .lane-region are not.
-    assert.equal(isTransientHandle(fakeNode(['cut-handle'],
-        ['region-overlay', 'region-strip', 'lane-region'])), true);
-    // Drag previews and snap ghosts stay excluded.
+    // Drag previews and snap ghosts are not.
     assert.equal(isTransientHandle(fakeNode(['win-bracket'], ['drag-preview-layer'])), true);
     assert.equal(isTransientHandle(fakeNode(['snap-ghost'])), true);
     // A heard lane's splices and ↺ (2026-09-24): the take tile's are
@@ -139,10 +187,10 @@ test('teleports skip the region panel, previews and ghosts', () => {
     assert.equal(isTransientHandle(fakeNode(['lr-top', 'lr-ghost'], ['lr-layer'])), true);
 });
 
-/* (c) THE EDIT BAR'S HINT (region_panel.js noPanelReason, 2026-10-08):
- * the panel lives in a bar at the foot of the session view, so a
- * selected track with no panel says why instead of leaving the bar
- * blank; a track with a take of 2Q or more shows its panel (null). */
+/* (c) THE EDIT BAR'S HINT (region_dock.js noPanelReason): the panel
+ * lives in a bar at the foot of the session view, so a selected track
+ * with no panel says why instead of leaving the bar blank; a track with
+ * a take of 2Q or more shows its panel (null). */
 test('the edit bar says why a selected track has no panel', () => {
     const lane = extra => ({ kind: 'clip', bandTotalQ: 8, ...extra });
     assert.equal(noPanelReason(lane()), null);

@@ -39,8 +39,9 @@ bounced the same way. No N-cycles dialog, no selection-dependent scope.
     with the song. (Its *stored* top is a moment nothing on screen
     marks — until 2026-10-01 a clip-3 bounce opened there.)
 
-  The app names that start (`view_model.js` `bounceStartOf`: the zero
-  drawn plus the ↺'s place on the lane; `bounce(uuid, path, start)`). A
+  The app names that start (`bounceStartOf`, `ui/js/vm/lane_common.js`:
+  the zero drawn plus the ↺'s place on the lane; `bounce(uuid, path,
+  start)`, sent by the project menu, `ui/js/project_menu.js`). A
   lane with no ↺ — a one-shot, the Q-definer, a member shown through
   its parent's map — is left to the engine's default: its frame top
   plus its own top's heard offset, for a clip and for an anchored
@@ -67,12 +68,25 @@ it, which is what makes the bounce the live render, offline.
 ## The tail
 
 Past the span every block carries `ProcessContext::content_silent`:
-leaves render silence into their racks (a closed gate with no ramp;
-MIDI clips release held notes) while gates, chains and output stages
-keep running. Rendering continues until the block peak has stayed
-under −90 dBFS for 0.5 s, capped at 10 s; the file keeps the tail
-through its FIRST block under the floor. A node with nothing ringing
-ends exactly at its span.
+leaves render silence into their racks (a closed gate with no ramp)
+while gates, chains and output stages keep running. Rendering continues
+until the block peak has stayed under −90 dBFS for 0.5 s, capped at
+10 s; the file keeps the tail through its FIRST block under the floor.
+A node with nothing ringing ends exactly at its span.
+
+`content_silent` has a second user: a resting one-shot stack hands it
+to its subtree (composition.md §2). The flag means the same thing in
+both — **content is silent; nothing else is** — and two things follow:
+
+- **A rest silences content, not monitored input.** Live input answers
+  to the gate alone, so a member of a resting group is still monitored.
+  A bounce is unaffected: its context carries no pre-record ring, so no
+  input reaches it either way.
+- **A bounce tail is a STOP; a rest is not.** For a MIDI clip the tail
+  is a closing edge — the held notes' note-offs and the sound-off pair,
+  once (vst3.md §8.3). A group's rest is told apart by
+  `ProcessContext::resting` and releases the recorded notes only. A
+  bounce tail that begins inside a resting group is still a stop.
 
 ## The format
 

@@ -33,29 +33,11 @@ import { setPendingEdit, clearPendingEdit, clearAllPendingEdits,
          hasPendingEdits, pendingEditsFor, pendingEditOf }
     from '../session_view/pending_edits.js';
 import { COMMIT_HOLD_MAX_MS } from '../session_view/gesture.js';
-import { SCENE_Q as Q, PERF } from './helpers.mjs';
+import { SCENE_Q as Q, clipAt as clip, island as scene, nodeById } from './helpers.mjs';
 
-const clip = (id, originQ, durationQ, extra = {}) => ({
-    id, name: id, type: 'clip', origin: Math.round(originQ * Q),
-    duration: Math.round(durationQ * Q), effectiveQuantum: Q,
-    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-    isMuted: false, isRecording: false, isPendingStart: false,
-    periodSource: 'own', ...extra,
-});
-const island = (nodes, clockQ = 12.3) => ({
-    id: 'root', type: 'stack', quantum: Q, islandZero: 0, definerId: '',
-    isPlaying: true, masterPos: 0, islandPos: Math.round(clockQ * Q),
-    perf: PERF, nodes,
-});
+const island = (nodes, clockQ = 12.3) => scene(nodes, { clockQ });
 const S = qs => qs.map(q => Math.round(q * Q));
-const byId = (nodes, id) => {
-    for (const n of nodes) {
-        if (n.id === id) return n;
-        const hit = n.nodes && byId(n.nodes, id);
-        if (hit) return hit;
-    }
-    return null;
-};
+const byId = (nodes, id) => nodeById(id, nodes);
 /* The lane fields a preview must reproduce exactly. */
 const picture = vm => ({
     frameZero: vm.frameZero, seatedZero: vm.seatedZero, cycleQ: vm.cycleQ,

@@ -1,49 +1,25 @@
 /**
  * Selection (view state). Click a rail to select it (⌘/shift-click
- * adds, Escape or a canvas click clears). Selection feeds the two bulk
- * verbs: the floating "Group N tracks" bar, and multi-drag (dragging a
- * selected rail carries the whole selection) — plus the [ / ] handle
- * teleport, which targets the most recently selected lane.
+ * adds, Escape or a canvas click clears); a press on a track's loop
+ * handle selects that track alone. Selection feeds the two bulk verbs —
+ * the floating "Group N tracks" bar, and multi-drag (dragging a selected
+ * rail carries the whole selection) — and the keyboard verbs, the
+ * region panel and the MIDI target, which follow the most recently
+ * selected lane.
  */
 
 import { setText } from './sv_util.js';
 
 export const selection = new Set();
-// Set by an explicit clear gesture (Escape, canvas click, plain click on
-// the sole selection); reset by any select. While it holds, the default
-// selection does not re-assert itself.
+// Set by an explicit clear gesture (Escape, a canvas or top-bar click);
+// reset by any select. While it holds, the default selection does not
+// re-assert itself.
 let userCleared = false;
 // A just-created track waiting for its lane (selectWhenPresent): taken
 // by the first patch that lists it; any explicit select or clear, or
 // PENDING_SELECT_MS without the lane appearing, drops it.
 let pendingSelect = null;   // { id, t }
 const PENDING_SELECT_MS = 3000;
-// A handle press that was only a CLICK claims its track a moment later
-// (claimSoon): the region panel sits under the selected lane, and
-// claiming at once would move the lanes under what may be the first
-// click of a double-click. Any explicit select or clear drops it.
-let pendingClaim = null;    // { id, timer }
-
-/** Drop a claim that is still waiting (claimSoon). */
-export function cancelClaim() {
-    if (!pendingClaim) return;
-    clearTimeout(pendingClaim.timer);
-    pendingClaim = null;
-}
-
-/** Claim track `id` after `ms` — unless it is selected or cleared, or a
- * new press begins, before then. A no-op for the sole selection. */
-export function claimSoon(id, ms) {
-    cancelClaim();
-    if (selection.size === 1 && selection.has(id)) return;
-    pendingClaim = { id, timer: setTimeout(() => {
-        pendingClaim = null;
-        selectOnly(id);
-    }, ms) };
-}
-
-/** The track a waiting claim will select, or null (tests). */
-export const pendingClaimId = () => (pendingClaim ? pendingClaim.id : null);
 
 function updateSelectionBar() {
     const bar = document.getElementById('selection-bar');
@@ -54,11 +30,11 @@ function updateSelectionBar() {
     setText(bar.querySelector('.sel-count'), `${n} tracks selected`);
 }
 
+/** The explicit clear: it sticks (ensureDefaultSelection). */
 export function clearSelection() {
     pendingSelect = null;
-    cancelClaim();
     selection.clear();
-    userCleared = true;  // an explicit clear sticks (see ensureDefaultSelection)
+    userCleared = true;
     document.querySelectorAll('.lane-rail.selected')
         .forEach(el => el.classList.remove('selected'));
     document.querySelectorAll('.lane.sel')
@@ -67,7 +43,7 @@ export function clearSelection() {
 }
 
 /** Sync rail + row selection classes from the selection set (rows
- * carry .sel so the nav dock can reveal for selected lanes). */
+ * carry .sel: only a selected lane's loop handles show and grab). */
 export function paintSelection() {
     document.querySelectorAll('.lane').forEach(r => {
         const rail = r.querySelector('.lane-rail');
@@ -79,13 +55,10 @@ export function paintSelection() {
     });
 }
 
-/** Programmatic single-select: a loop handle's gesture claims its track
- * when it ENDS (gesture.js — never at the press: the region panel would
- * move the lane out from under the hand), which is what arms the [ ]
- * teleport. */
+/** Select `id` alone — what a press on one of the track's loop handles
+ * does, at the press, whatever was selected. */
 export function selectOnly(id) {
     pendingSelect = null;
-    cancelClaim();
     if (selection.size === 1 && selection.has(id)) return;
     selection.clear();
     selection.add(id);
@@ -94,34 +67,33 @@ export function selectOnly(id) {
     updateSelectionBar();
 }
 
-/** Rail-click selection: plain click selects the row (a click on the
- * sole selection keeps it — a track is always selected by default;
- * Escape / a canvas click clear); ⌘/Ctrl/Shift-click
- * toggles the row in and out of the additive set. */
+/** Rail-click selection: plain click selects the row alone;
+ * ⌘/Ctrl/Shift-click toggles the row in and out of the additive set.
+ * Either click on the sole selection keeps it — a track is always
+ * selected by default; only Escape / a canvas click clear. */
 export function toggleSelect(row, additive) {
     pendingSelect = null;
-    cancelClaim();
     const id = row._lane.id;
     if (!additive) {
         selection.clear();
         selection.add(id);
-    } else if (selection.has(id)) {
-        selection.delete(id);
-    } else {
+    } else if (!selection.has(id)) {
         selection.add(id);
+    } else if (selection.size > 1) {
+        selection.delete(id);  // never the last member: it stays selected
     }
-    if (selection.size > 0) userCleared = false;
+    userCleared = false;
     paintSelection();
     updateSelectionBar();
 }
 
 /**
- * A track is selected BY DEFAULT (with the MIDI target and the [ ]
- * teleport following selection, an empty selection is a dead state).
- * Called every patch with the lane ids in view order: prunes
- * ids that vanished (deleted lanes), and when nothing is selected —
- * and the user has not just cleared it on purpose — selects the first
- * lane. A vanished selection re-arms the default (the clear was not the
+ * A track is selected BY DEFAULT (the MIDI target, the keyboard verbs
+ * and the region panel follow the selection: an empty one is a dead
+ * state). Called every patch with the lane ids in view order: prunes
+ * ids that vanished (deleted lanes), and when nothing is selected — and
+ * the user has not just cleared it on purpose — selects the first lane.
+ * A vanished selection re-arms the default (the clear was not the
  * user's). Returns true when it changed the selection.
  */
 export function ensureDefaultSelection(laneIds) {
@@ -161,10 +133,10 @@ export function selectWhenPresent(id) {
     pendingSelect = { id, t: performance.now() };
 }
 
-/** The [ / ] target: the most recently selected lane id (Set keeps
- * insertion order), or null with nothing selected. */
+/** The most recently selected lane id (a Set keeps insertion order), or
+ * null with nothing selected: the keyboard verbs' target. */
 export function activeSelectedId() {
     let last = null;
-    for (const id of selection) last = id; // insertion order → most recent
+    for (const id of selection) last = id;
     return last;
 }

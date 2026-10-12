@@ -1,10 +1,10 @@
 /**
  * Timeline Model Golden Vector Test (JS side)
  *
- * Runs ui/js/timeline_model.js against shared/timing_golden.json — the same
- * vectors tests/timing_golden_tests.cc runs against src/timing.h. If both
- * suites pass, the JS and C++ timing math agree. Ghost tiling is JS-only
- * (the engine does not render ghosts) and is pinned here directly.
+ * Runs ui/js/timeline_model.js, time_map.js and math_utils.js against
+ * shared/timing_golden.json — the same vectors tests/timing_golden_tests.cc
+ * runs against src/timing.h and the headers it gathers (time_map.h,
+ * qtime.h). If both suites pass, the JS and C++ timing math agree.
  */
 
 import test from 'node:test';
@@ -17,9 +17,10 @@ import {
 } from '../timeline_model.js';
 import { toSamples } from '../qtime.js';
 import {
-    mapPeriod, mapOffset, seamDistance, heardOffsetOf, innerAt,
+    mapPeriod, mapOffset, seamDistance, heardOffsetOf, innerAt, stackFold,
 } from '../time_map.js';
-import { loadSharedJson, near } from './helpers.mjs';
+import { posMod } from '../math_utils.js';
+import { loadSharedJson, MOCK_Q as Q } from './helpers.mjs';
 
 const golden = loadSharedJson('timing_golden.json');
 
@@ -33,10 +34,27 @@ function check(actual, expected, name) {
     }
 }
 
+test('golden: posMod (the fold; the identity with no modulus)', () => {
+    assert.ok(golden.pos_mod_cases.length > 0, 'pos_mod_cases present');
+    for (const c of golden.pos_mod_cases) {
+        // Strict: a folded multiple of the modulus is 0, never −0.
+        assert.equal(posMod(c.x, c.m), c.expected, `posMod(${c.x}, ${c.m})`);
+    }
+});
+
 test('golden: timelineLcm', () => {
     for (const c of golden.lcm_cases) {
         check(timelineLcm(c.durations, c.quantum), c.expected, c.name);
     }
+});
+
+test('timelineLcm rounds float jitter before LCM-ing (no cycle explosion)', () => {
+    // A committed duration can arrive with float residue. 1Q + 4Q +
+    // (3Q ± ε): the ε is ignored — 12Q, not astronomical.
+    assert.equal(timelineLcm([Q, 4 * Q, 3 * Q + 0.00001], Q), 12 * Q);
+    assert.equal(timelineLcm([Q, 4 * Q, 3 * Q - 0.00001], Q), 12 * Q);
+    // A jittered QUANTUM is rounded the same way.
+    assert.equal(timelineLcm([Q, 3 * Q], Q + 0.4), 3 * Q);
 });
 
 test('golden: launchPointFor', () => {
@@ -116,6 +134,19 @@ test('golden: innerAt (THE RENDER EQUATION, stated once)', () => {
             check(at.run, p.run, `${c.name} run(t=${p.t})`);
             assert.equal(at.rest, p.rest, `${c.name} rest(t=${p.t})`);
         }
+    }
+});
+
+test('golden: stackFold (the map and fold a stack\'s children hear through)', () => {
+    assert.ok(golden.stack_fold_cases.length > 0, 'stack_fold_cases present');
+    for (const c of golden.stack_fold_cases) {
+        const f = stackFold({ segs: c.map }, c.periodFromContext, c.ownPeriod,
+                            c.contextCycle);
+        const want = c.expected;
+        assert.deepEqual(f.eff.segs, want.eff, `${c.name} (eff)`);
+        assert.equal(f.fold, want.fold, `${c.name} (fold)`);
+        assert.equal(f.oneShot, want.oneShot, `${c.name} (one-shot)`);
+        assert.equal(f.folds, want.eff.length > 0, `${c.name} (folds)`);
     }
 });
 

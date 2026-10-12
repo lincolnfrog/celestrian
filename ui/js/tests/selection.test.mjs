@@ -12,7 +12,45 @@ import assert from 'node:assert/strict';
 globalThis.document ??= { querySelectorAll: () => [], getElementById: () => null };
 
 const { selection, selectOnly, ensureDefaultSelection, selectWhenPresent,
-        activeSelectedId } = await import('../session_view/selection.js');
+        activeSelectedId, toggleSelect, clearSelection } =
+    await import('../session_view/selection.js');
+
+/** A rail's row, as toggleSelect reads it. */
+const rowOf = id => ({ _lane: { id } });
+
+test('an additive click on the sole selected rail keeps it selected', () => {
+    selectOnly('c');
+    toggleSelect(rowOf('c'), true);
+    assert.deepEqual([...selection], ['c']);
+    // The next patch finds its track still selected: no jump to lane 1.
+    assert.equal(ensureDefaultSelection(['a', 'b', 'c']), false);
+    assert.equal(activeSelectedId(), 'c');
+});
+
+test('additive clicks add a rail and take it out again, down to one', () => {
+    selectOnly('a');
+    toggleSelect(rowOf('b'), true);
+    toggleSelect(rowOf('c'), true);
+    assert.deepEqual([...selection], ['a', 'b', 'c']);
+    toggleSelect(rowOf('b'), true);
+    assert.deepEqual([...selection], ['a', 'c']);
+    toggleSelect(rowOf('c'), true);
+    toggleSelect(rowOf('a'), true);   // the last member stays
+    assert.deepEqual([...selection], ['a']);
+});
+
+test('a plain click selects that rail alone; an explicit clear sticks', () => {
+    selectOnly('a');
+    toggleSelect(rowOf('b'), true);
+    toggleSelect(rowOf('c'), false);
+    assert.deepEqual([...selection], ['c']);
+    clearSelection();
+    assert.equal(ensureDefaultSelection(['a', 'b', 'c']), false);
+    assert.equal(activeSelectedId(), null);
+    // An additive click on nothing selected selects.
+    toggleSelect(rowOf('b'), true);
+    assert.deepEqual([...selection], ['b']);
+});
 
 test('a new track is selected once its lane appears — not pruned before', () => {
     selectOnly('a');

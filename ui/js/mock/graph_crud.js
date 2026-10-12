@@ -1,314 +1,164 @@
 /**
- * mock/graph_crud.js — structural graph edits (create/delete/rename/
- * reorder/move/combine), per-node flag toggles, and the per-node knobs
- * (input routing, pan, gain, period source). Everything here mutates the
- * state singleton; undo bookkeeping is the dispatch's job (mock_backend
- * callNative), with popUndoForRefusal on the refusal paths.
+ * mock/graph_crud.js — the structural edits (engine edit_structure.cc:
+ * Insert, Remove, Move, Combine), the per-node switches and the knobs
+ * (engine verbs.cc). A refusal returns with the graph untouched.
  */
 
 import {
-    state, generateId, findNode, findParent, removeNodeFromParent,
-    committedClipCount, findSoleCommittedClip, definerStackNode,
-    settleAnchors,
+    state, generateId, findNode, nodeOrRoot, findParent, removeNodeFromParent,
+    committedClipCount, islandDefiner, settleAnchors,
 } from './state.js';
-import { popUndoForRefusal } from './undo.js';
-import { quantumSamples } from './rate.js';
-import { retimeSequences } from './sequence.js';
-import { uncollapseClip, uncollapseStack } from './definer.js';
+import { setIslandQuantum } from './sequence.js';
+import { reopenCollapsed } from './definer.js';
+import { ensureEffects } from './effects.js';
 
-// createNode(type, parentId)
-export function createNode(type, parentId = null) {
+/** A fresh node as the engine creates one: empty, idle, its rack
+ * installed; a clip records input 1. `facts` override the defaults. */
+export function newNode(type, facts = {}) {
     const node = {
-        id: generateId(),
+        id: facts.id || generateId(),
         name: type === 'clip' ? 'New Clip' : 'New Stack',
-        type: type,
+        type,
         duration: 0,
-        isRecording: false,
-        isPlaying: false,
+        origin: 0,
         isMuted: false,
         isSoloed: false,
-        effectiveQuantum: 0,
-        inputChannel: -1,
-        inputChannelR: -1,
-        channels: 1,
         pan: 0,
         gain: 1,
-        periodSource: 'own'
+        periodSource: 'own',
+        ...(type === 'clip' ? { inputChannel: 0, inputChannelR: -1, channels: 1 }
+                            : { nodes: [], auditionStep: -1, anchored: false }),
+        ...facts,
     };
+    ensureEffects(node);
+    return node;
+}
 
-    if (type === 'stack') node.nodes = [];
+/** The stack a parent id names; `emptyIsRoot` reads no id as the root
+ * (createNode's rule alone). */
+function parentStack(parentId, emptyIsRoot = false) {
+    if (!parentId && emptyIsRoot) return state.root;
+    const parent = nodeOrRoot(parentId);
+    return parent && parent.type === 'stack' ? parent : null;
+}
 
-    // Add to parent or top-level
-    if (parentId) {
-        const parent = findNode(parentId);
-        if (parent && parent.type === 'stack') {
-            parent.nodes = parent.nodes || [];
-            parent.nodes.push(node);
-        }
-    } else {
-        state.nodes.push(node);
-    }
-
-    console.log('[MockBackend] Created node:', node.id, type);
+/** Any type but "clip" makes a stack. Answers the new node's id, '' when
+ * the parent is not a stack. */
+export function createNode(type, parentId = null) {
+    const parent = parentStack(parentId, true);
+    if (!parent) return '';
+    const node = newNode(type === 'clip' ? 'clip' : 'stack');
+    parent.nodes.push(node);
     return node.id;
 }
 
+/** A delete that leaves no committed content reverts (Q, zero); one that
+ * removed content and leaves a lock-collapsed definer re-opens it. */
 export function deleteNode(id) {
     const node = findNode(id);
-    // Unknown node = a refusal: drop the dispatch's snapshot.
-    if (!node) { popUndoForRefusal(); return; }
-    if (node.isRecording) {
-        // cancel is the verb for takes — a refused delete records
-        // nothing (drop the dispatch's pre-pushed undo snapshot).
-        popUndoForRefusal();
-        return;
-    }
+    if (!node) return;
+    const before = committedClipCount();
     removeNodeFromParent(id);
-    // Q13 revert (engine parity, applyEdit Remove): deleting the last
-    // committed content leaves nothing defining Q — (Q, zero) revert to
-    // unestablished. Undo restores them via the snapshot. A 2→1 delete
-    // touches nothing (mutability is derived from the count).
-    if (state.islandQ > 0 && committedClipCount() === 0) {
-        retimeSequences(state.islandQ, 0);  // sequences track Q: cleared
-        state.islandQ = 0;
-        state.islandZero = 0;
-        console.log('[MockBackend] Q13 revert: island (Q, zero) → unestablished');
-    }
-    // RE-OPEN ⟹ UNCOLLAPSE (engine parity): back down to the sole take
-    // with a lock-collapse behind it — restore the full material with
-    // the pre-collapse trim as the window, so it can be trimmed LONGER
-    // again.
-    // Audio-neutral; Q/zero untouched. Undo snapshot covers.
-    if (committedClipCount() === 1) uncollapseClip(findSoleCommittedClip());
-    // The GROUP twin (engine parity uncollapseGroupNow, Q18): back down
-    // to a definer stack whose members were group-collapsed — full
-    // takes back, the trim back on the stack, and the subtree's ORIGINS
-    // unwound by the collapse shift (the group collapse shifted both
-    // the buffer view and the origin, like the sole-clip collapse).
-    uncollapseStack(definerStackNode());
-    // Q18: the last content leaving a stack un-anchors it (engine
-    // parity applyEdit(Remove) → settleAnchors); undo's snapshot
-    // restores the exact stored origin.
+    const after = committedClipCount();
+    if (after === 0 && state.islandQ !== 0) setIslandQuantum(0, 0);
+    const definer = after < before ? islandDefiner() : null;
+    if (definer) reopenCollapsed(definer);
     settleAnchors();
-    console.log('[MockBackend] Deleted node:', id);
 }
 
 export function renameNode(id, newName) {
     const node = findNode(id);
-    if (node) {
-        node.name = newName;
-        console.log('[MockBackend] Renamed node:', id, '→', newName);
-    }
+    if (node) node.name = newName;
 }
 
-/** Whether `node` or any descendant is armed/capturing — engine parity
- * with AudioNode::isArmedOrRecording (a stack is hot iff a member is). */
-function subtreeHot(node) {
-    if (!node) return false;
-    if (node.isRecording || node.isPendingStart) return true;
-    return (node.nodes || []).some(subtreeHot);
-}
+const within = (node, id) => node.id === id || (node.nodes || []).some(n => within(n, id));
 
-/** Whether `id` names `node` itself or a node inside its subtree. */
-function subtreeContains(node, id) {
-    if (!node) return false;
-    if (node.id === id) return true;
-    return (node.nodes || []).some(n => subtreeContains(n, id));
-}
-
+/** A move needs a stack's or the root's id; a node moved into its own
+ * subtree stays. */
 export function reorderNode(nodeId, newParentId, newIndex) {
     const node = findNode(nodeId);
-    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
-    // Engine parity (applyEdit Move): a hot clip is not movable (cancel
-    // is the verb), and the destination must not lie inside the moved
-    // subtree — a stack moved into its own descendant is a cycle.
-    if (subtreeHot(node) || subtreeContains(node, newParentId)) {
-        popUndoForRefusal();
-        return;
-    }
-
-    // Remove from current parent
+    const newParent = parentStack(newParentId);
+    if (!node || !newParent || within(node, newParent.id)) return;
     removeNodeFromParent(nodeId);
-
-    // Add to new parent at specified index. The ROOT is a valid parent
-    // (engine parity: Move to the island root = top level) — and an
-    // unknown parent must never LOSE the node.
-    const newParent = findNode(newParentId);
-    if (newParent && newParent.type === 'stack') {
-        newParent.nodes = newParent.nodes || [];
-        const index = Math.max(0, Math.min(newIndex, newParent.nodes.length));
-        newParent.nodes.splice(index, 0, node);
-        console.log('[MockBackend] Reordered node:', nodeId, 'to', newParentId, 'at index', index);
-    } else {
-        const index = Math.max(0, Math.min(newIndex, state.nodes.length));
-        state.nodes.splice(index, 0, node);
-        console.log('[MockBackend] Reordered node:', nodeId, 'to TOP LEVEL at', index);
-    }
-    // Q18 (engine parity applyEdit(Move) → settleAnchors): committed
-    // content entering an unanchored stack anchors it at the child's
-    // origin; the last content leaving un-anchors the former parent.
+    const list = newParent.nodes;
+    list.splice(Math.max(0, Math.min(newIndex, list.length)), 0, node);
     settleAnchors();
 }
 
-/**
- * Combine two nodes into a new stack.
- * Creates a new stack at the target's index, containing both nodes.
- */
+/** Wrap two nodes in a new stack at the target's place, the target
+ * first, and answer its id. Refused ('') when either holds the other. */
 export function combineNodes(draggedId, targetId) {
-    const draggedNode = findNode(draggedId);
-    const targetNode = findNode(targetId);
-
-    if (!draggedNode || !targetNode) {
-        console.warn('[MockBackend] combineNodes: Node not found');
-        return null;
-    }
-    // Engine parity (applyEdit Combine): hot clips are not combinable.
-    if (subtreeHot(draggedNode) || subtreeHot(targetNode)) {
-        popUndoForRefusal();
-        return null;
-    }
-
-    // Find parent of target to insert new stack there
-    const targetParent = findParent(targetId);
-    const targetList = targetParent ? targetParent.nodes : state.nodes;
-    let targetIndex = targetList.findIndex(n => n.id === targetId);
-    // Account for the dragged node vacating an earlier slot in the same list
-    const draggedIndex = targetList.findIndex(n => n.id === draggedId);
-    if (draggedIndex >= 0 && draggedIndex < targetIndex) targetIndex--;
-
-    // Remove both nodes from their parents
+    const dragged = findNode(draggedId);
+    const target = findNode(targetId);
+    if (!dragged || !target || within(dragged, targetId) ||
+        within(target, draggedId)) return '';
+    const parent = findParent(targetId);
+    let index = parent.nodes.findIndex(n => n.id === targetId);
+    const draggedIndex = parent.nodes.findIndex(n => n.id === draggedId);
+    if (draggedIndex >= 0 && draggedIndex < index) index--;
     removeNodeFromParent(draggedId);
     removeNodeFromParent(targetId);
-
-    // Create new stack
-    const newStack = {
-        id: `stack-${state.nextId++}`,
-        name: 'Combined Stack',
-        type: 'stack',
-        // No fabricated Q: the island quantum is STORED state
-        // (state.islandQ) — combining empty clips must not declare a
-        // bogus Q here.
-        effectiveQuantum: targetNode.effectiveQuantum || 0,
-        nodes: [targetNode, draggedNode]  // Target first, then dragged
-    };
-
-    // Insert at target's original position. Re-resolve the list first:
-    // removeNodeFromParent REPLACES the parent's nodes array, so the
-    // pre-removal targetList reference is orphaned by now.
-    const insertList = targetParent ? targetParent.nodes : state.nodes;
-    if (targetIndex >= 0) {
-        insertList.splice(Math.min(targetIndex, insertList.length), 0, newStack);
-    } else {
-        insertList.push(newStack);
-    }
-
-    // Q18 (composition.md §5, engine parity applyEdit(Combine) →
-    // settleAnchors): a post-hoc group anchors at min(member origins)
-    // — the earliest committed descendant — when any member holds
-    // committed content; empty members leave it unanchored.
+    const stack = newNode('stack', { id: `stack-${state.nextId++}`, name: 'Combined Stack',
+                                     nodes: [target, dragged] });
+    parent.nodes.splice(Math.min(index, parent.nodes.length), 0, stack);
     settleAnchors();
-
-    console.log('[MockBackend] Combined nodes into stack:', newStack.id);
-    return newStack.id;
+    return stack.id;
 }
 
-/**
- * Shared flag flip behind the toggle handlers: flips `node[key]` and
- * logs with the handler's label. (Fold/expand is not among them —
- * UI-local view state, I6b, never a bridge verb.)
- */
-function toggleNodeFlag(id, key, { label }) {
-    const node = findNode(id);
-    if (!node) return;
-    node[key] = !node[key];
-    console.log(`[MockBackend] ${label}:`, id, '→', node[key]);
-}
-
-// (No per-node togglePlay (Q16): mute/solo + the one transport are the
-// per-node play controls. The node's isPlaying is the content-sounds
-// gate the engine also publishes, not a user verb.)
-
-// Solo canon (Q16): per-node flag — island-wide, ADDITIVE (multiple
-// solos sum), fractal (a soloed stack covers its subtree, resolved
-// engine-side at render). Not undoable (engine parity: a monitoring
-// gesture, absent from UNDOABLE like the mixer knobs).
+/** Solo: additive, island-wide; a monitoring gesture, not logged. */
 export function toggleSolo(id) {
-    toggleNodeFlag(id, 'isSoloed', { label: 'Toggle solo' });
+    const node = findNode(id);
+    if (node) node.isSoloed = !node.isSoloed;
 }
 
 export function toggleMute(id) {
-    toggleNodeFlag(id, 'isMuted', { label: 'Toggle mute' });
+    const node = findNode(id);
+    if (node) node.isMuted = !node.isMuted;
 }
 
-export function setNodeInput(id, channelIndex) {
+const clipOf = id => {
     const node = findNode(id);
-    if (node) {
-        node.inputChannel = channelIndex;
-        console.log('[MockBackend] Set input:', id, '→ channel', channelIndex);
-    }
+    return node && node.type === 'clip' ? node : null;
+};
+
+export function setNodeInput(id, channelIndex) {
+    const clip = clipOf(id);
+    if (clip) clip.inputChannel = channelIndex;
 }
 
 export function setNodeInputRight(id, channelIndex) {
-    const node = findNode(id);
-    if (node) {
-        node.inputChannelR = channelIndex;
-        node.channels = channelIndex >= 0 ? 2 : 1;
-        console.log('[MockBackend] Set right input:', id, '→', channelIndex);
-    }
+    const clip = clipOf(id);
+    if (!clip) return;
+    clip.inputChannelR = channelIndex;
+    clip.channels = channelIndex >= 0 ? 2 : 1;
 }
 
-// Software input monitoring (Q20) — clips only; a monitoring gesture
-// like solo, NOT undoable (engine parity: AudioEngine::setMonitor).
+/** Clips only: false for anything else. */
 export function setMonitor(id, on) {
-    const node = findNode(id);
-    if (node && node.type === 'clip') node.monitor = !!on;
+    const clip = clipOf(id);
+    if (!clip) return false;
+    clip.monitor = !!on;
+    return true;
 }
 
-// Mixer knob — like effect params, NOT undoable (engine parity).
 export function setNodePan(id, pan) {
     const node = findNode(id);
     if (node) node.pan = Math.max(-1, Math.min(1, pan));
 }
 
-// Volume fader, clamped [0, 1] — unity ceiling, the no-boost law
-// (engine parity: AudioEngine::setNodeGain).
+/** The fader, [0, 1]; the root's is the master fader. */
 export function setNodeGain(id, gain) {
-    // The island ROOT is not in state.nodes — its gain is the MASTER
-    // fader (engine parity: the root stack's output stage).
-    if (id === 'mock-root') {
-        state.masterGain = Math.max(0, Math.min(1, gain));
-        return;
-    }
-    const node = findNode(id);
+    const node = nodeOrRoot(id);
     if (node) node.gain = Math.max(0, Math.min(1, gain));
 }
 
-// The Q5 period-source knob — UNDOABLE (a musical fact, unlike the
-// mixer knobs). Clips AND stacks (Q18, composition.md §0 — a stack
-// fires from its origin like a clip: the drum group as a one-shot;
-// engine parity AudioEngine::setPeriodSource). An identity set records
-// nothing; refusals pop their pre-pushed undo snapshot.
+/** Loop or one-shot. A node holding all the island's committed content
+ * cannot become a one-shot: nothing would define the cycle it fires in. */
 export function setPeriodSource(id, source) {
     const node = findNode(id);
     const next = source === 'context' ? 'context' : 'own';
-    if (!node || (node.periodSource || 'own') === next) {
-        popUndoForRefusal();
-        return;
-    }
-    // THE ISLAND'S CONTENT CANNOT BE A ONE-SHOT (engine parity, owner
-    // ruling 2026-09-09): a node holding ALL the committed content
-    // would leave nothing to define the cycle a one-shot fires in.
-    if (next === 'context') {
-        const under = n => (n.type === 'clip')
-            ? ((n.duration || 0) > 0 && !n.isRecording ? 1 : 0)
-            : (n.nodes || []).reduce((acc, c) => acc + under(c), 0);
-        const inside = under(node);
-        if (inside > 0 && inside === committedClipCount()) {
-            console.log('[MockBackend] setPeriodSource refused:', id,
-                'holds all of the island\'s committed content');
-            popUndoForRefusal();
-            return;
-        }
-    }
+    if (!node || (node.periodSource || 'own') === next) return;
+    const inside = committedClipCount(node);
+    if (next === 'context' && inside > 0 && inside === committedClipCount()) return;
     node.periodSource = next;
 }

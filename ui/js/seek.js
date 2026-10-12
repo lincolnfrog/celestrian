@@ -1,18 +1,16 @@
 /**
- * seek.js — the seek's arithmetic, shared by the ruler scrub and the
- * play start (docs/frame.md). The engine's `seekTransport` takes a
- * PHASE ADVANCE in samples, not a position: the engine reads no frame,
- * and only the view knows where the frame's zero is seated. So the
- * view turns a target phase — samples into the audible loop, as the
- * ruler draws it — into the advance that lands it, and tells the
- * engine which transport reading the advance was computed against so
- * the engine can correct for the clock having moved since the poll.
+ * The seek's arithmetic, shared by the ruler scrub and the play start.
  *
- * The engine answers what it applied, and when. A scrub streams seeks
- * faster than the poll, and every seek moves the seated zero (every
- * origin rides it), so the view folds each answer back into its frame
- * facts (seekApplied) — the next seek in the same poll interval is
- * then computed against the truth, not a stale picture.
+ * THE ENGINE READS NO FRAME (docs/frame.md): only the view knows where
+ * the frame's zero is seated. So `seekTransport` takes a PHASE ADVANCE
+ * in samples, not a position. The view turns a target phase — samples
+ * into the audible loop, as the ruler draws it — into the advance that
+ * lands it (seekDelta), and names the transport reading it computed
+ * against, so the engine can correct for the clock having moved since.
+ *
+ * Every seek moves the seated zero (every origin rides it), and a scrub
+ * streams seeks faster than the poll: each answer is folded back into
+ * the frame facts (seekApplied) before the next seek is computed.
  */
 
 import { posMod } from './math_utils.js';
@@ -33,8 +31,7 @@ export function seekDelta(targetSamples, frame) {
     if (!(loopSamples > 0)) return null;
     const phase = posMod(rawClock - zero, loopSamples);
     // The smallest advance that lands the target: a whole loop either
-    // way is the same phase and the same picture (every origin rides
-    // the move, so nothing on screen changes but the cursor).
+    // way is the same phase and the same picture.
     let delta = posMod(targetSamples - phase, loopSamples);
     if (delta > loopSamples / 2) delta -= loopSamples;
     return Math.round(delta);

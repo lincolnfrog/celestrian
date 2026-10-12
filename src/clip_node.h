@@ -2,204 +2,192 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "audio_node.h"
-#include "take_storage.h"
 #include "midi_sequence.h"
+#include "take_storage.h"
 
 namespace celestrian {
 
 /**
- * A leaf node: a recorded slot (one origin, one period) holding one or
- * more takes, and its playback.
+ * A leaf node: a recorded slot — one origin, one period — holding one or
+ * more takes, and its playback. Four jobs, one file each:
  *
- * Three cooperating pieces, each documented at its members:
- *   - the recording STATE MACHINE (RecState below) — arm targets, the
- *     capture window, stop boundaries, commit;
- *   - the CONTENT model — one buffer reached through one atomic
- *     pointer: a huge virtual reservation at arm, compacted after commit,
- *     write-once thereafter (no overdub), with content_base_ letting a
- *     lock-collapse re-window storage without copying;
- *   - the kernel PLAYBACK equation in render() — a pure function of
- *     (buffer, origin, active map, t); every cyclic behavior (loops,
- *     windows, one-shots, spliced maps) is a parameter of that one
- *     equation, never a separate code path.
+ *   clip_node_capture.cc  the recording state machine (RecState): the
+ *                         arm, capture, the stop boundary, the commit;
+ *   clip_node_takes.cc    the content model: the take list and the comp,
+ *                         a new take's settle, strip / restore, the
+ *                         lock-collapse and the splice, load and import;
+ *   clip_node_render.cc   playback: the render equation (timing.h) over
+ *                         samples or notes, the live tail, the output
+ *                         stage;
+ *   clip_node.cc          construction, the content swaps, and what the
+ *                         UI reads (metadata, peaks).
+ *
+ * THE CONTENT POINTERS. The audio buffer and the note sequence are each
+ * reached through ONE atomic pointer (the one-pointer discipline,
+ * AudioNode::fxChain). The message thread installs a successor through
+ * swapContent / swapMidi and nowhere else; each hands back the displaced
+ * owner, which the caller RETIRES — through the engine reclaimer, or
+ * inside a log entry — and never frees inline: a render in flight may
+ * still be reading it. One caller drops what it displaces in place: a
+ * session load (the node is not yet in the graph). The audio thread
+ * loads each pointer once per pass and writes through it only while
+ * capturing, when the message thread swaps nothing.
  */
 class ClipNode : public AudioNode {
  public:
   /**
-   * The recording lifecycle (kernel.md §3): ONE explicit state, so
-   * illegal flag combinations are unrepresentable.
+   * The recording lifecycle (kernel.md §3): ONE explicit state.
    *
    *   Idle ──startRecording()──▶ Armed ──target reached──▶ Capturing
    *    ▲          (msg thread)     │        (audio thread)     │
-   *    │◀── stopRecording() = cancel                           │
-   *    │                                stopRecording(), Q>0 ──┤
-   *    │◀── commit ─── PendingStop ◀── (boundary computed on   │
-   *    │               (audio thread)   the audio thread)      │
-   *    └◀────────── commit (immediate: Q==0 first clip) ◀──────┘
+   *    │◀── stopRecording() = cancel          stopRecording() ─┤
+   *    │                                 = a request, taken up │
+   *    │                                 at the next block top │
+   *    │◀── commit ─── PendingStop ◀── Q > 0: a boundary ──────┤
+   *    └◀── commit ◀── Q == 0 (the island's first take): there ┘
    *
-   * "Committed" is Idle-with-content. While Armed, the arm decision
-   * re-evaluates every block — deliberate: the latency-compensated
-   * clock must be able to land back on a boundary the raw clock has
-   * already passed. Transitions: message thread arms/cancels/requests
-   * stop; the audio thread starts capture, picks stop boundaries, and
-   * commits. Every field is atomic; each state's parameters
-   * (awaiting_start_at / awaiting_stop_at) are written before the state
+   * "Committed" is Idle-with-content. The message thread arms, cancels
+   * an arm, and ASKS for a stop; the audio thread starts capture, takes
+   * the request up at a block top, picks the stop boundary and commits —
+   * every commit is its own. An island's first take has no boundary to
+   * finish at: it commits at the top that takes its stop up, at its
+   * write head, and that block plays it. While Armed the target is
+   * re-evaluated every block, so the latency-compensated clock can land
+   * back on a boundary the raw clock has passed. A state's parameters
+   * (awaiting_start_at, awaiting_stop_at) are written before the state
    * flips.
+   *
+   * THE END-OF-TAKE ORDER: the audio thread publishes a take's end (a
+   * commit, a new take's cancel) as its facts — the duration, a new
+   * take's outcome — then Idle, then the island's count (takeCommitted /
+   * takeCancelled). A clip seen Idle holds every fact of its take, and
+   * an island that counts no live take has every clip of the
+   * performance settled: what AudioEngine::reconcileTakes reads.
    */
   enum class RecState : int { Idle = 0, Armed, Capturing, PendingStop };
 
-  /**
-   * What a take's CONTENT is (docs/vst3.md §8, phase 5): AUDIO — a
-   * sample buffer captured from the assigned device input(s); MIDI — a
-   * note sequence captured from the MIDI input, rendered through the
-   * chain's instrument slot. Decided at ARM from the clip's own chain
-   * (an instrument slot makes it a MIDI track — one class, because the
-   * take lifecycle is content-agnostic) and fixed for the take's
-   * lifetime; the
-   * kernel playback equation, arm/stop/commit math, through-map fold
-   * and undo entries are shared verbatim.
-   */
+  /** What a take's content is: AUDIO, samples captured from the assigned
+   * device input(s); MIDI, notes captured from the MIDI input and
+   * rendered through the chain's instrument slot (vst3.md §8). Decided
+   * at arm from the clip's own chain, fixed for the take, and one kind
+   * per slot (prepareRetake). The lifecycle and the render equation are
+   * the same for both. */
   enum class ContentKind : int { Audio = 0, Midi };
 
-  // The default rate is a convenience for unit tests; the engine passes
-  // the actual device rate when creating clips.
+  /** The engine passes the device's rate; the default serves node-level
+   * tests. */
   ClipNode(juce::String name, double source_sample_rate = 44100.0);
   ~ClipNode() override = default;
 
-  // AudioNode implementation (§2.3 control/render split)
-  /** Decisions + capture: arm targets, stop boundaries, input ingest,
-   * commit (with island consequences). */
   void control(const float* const* input_channels, int num_input_channels,
                const ProcessContext& context) override;
-  /** The kernel playback equation — pure; see AudioNode::render. */
   void render(float* const* output_channels, int num_output_channels,
               const ProcessContext& context) const override;
-
-  /**
-   * Overrides GetWaveform to return peak data from the internal buffer.
-   */
+  /** Peaks of the committed content; empty while a take is live (the
+   * message thread reads content only in Idle). */
   juce::var getWaveform(int num_peaks) const override;
-
-  /**
-   * Returns NodeType::Clip.
-   */
   NodeType getNodeType() const override { return NodeType::Clip; }
-
   int64_t getIntrinsicDuration() const override {
     return duration_samples.load();
   }
-  int64_t getEffectiveQuantum() const override;
-
-  /**
-   * Returns clip-specific metadata (sample rate, etc.).
-   */
   juce::var getMetadata() const override;
 
-  /**
-   * Assigns the preferred hardware input channel for this clip (the
-   * LEFT channel of a stereo pair when a right input is also set).
-   */
+  // --- Inputs ---
+  /** The device input this clip records and monitors — the LEFT of a
+   * stereo pair when a right input is set. inputFor resolves it against
+   * the device. */
   void setInputChannel(int index) { preferred_input_channel.store(index); }
   int getInputChannel() const { return preferred_input_channel.load(); }
-  /**
-   * Assigns the RIGHT hardware input of a stereo pair; −1 (default)
-   * keeps the clip mono. The channel COUNT of a take is fixed at arm
-   * (startRecording sizes the content buffer from this), so flipping it
-   * mid-take does nothing until the next arm.
-   */
+  /** The RIGHT input of a stereo pair; −1 keeps the clip mono. A take's
+   * channel count is fixed at its arm. */
   void setInputChannelRight(int index) {
     preferred_input_channel_right.store(index);
   }
   int getInputChannelRight() const {
     return preferred_input_channel_right.load();
   }
-  /** Two device inputs assigned → the next take captures stereo. */
   bool isStereoInput() const {
     return preferred_input_channel_right.load() >= 0;
   }
-  /**
-   * Software input monitoring (Q20, design_language.md §5): while on,
-   * render adds this block's arrivals for the clip's input channel(s)
-   * — read from the pre-record ring — into the dry signal ahead of the
-   * gate and the rack, so the input is heard through the clip's chain,
-   * gain and pan like content. Independent of the recording state (a
-   * capturing clip renders no content, so nothing doubles). OFF by
-   * default; not undoable (a monitoring gesture, like solo/midiArmed);
-   * persisted and captured by track templates as input setup.
-   */
+  /** SOFTWARE INPUT MONITORING (Q20, design_language.md §5): while on,
+   * render adds this block's arrivals on the clip's input(s) to the dry
+   * signal AHEAD of the gate and the rack, so the input is heard through
+   * the clip's gate, chain, gain and pan like content — whatever the
+   * take and the transport are doing, and through a rest handed down
+   * from a group (ProcessContext::content_silent silences content, not
+   * live input). Read from the pre-record ring: no latency beyond the
+   * device round trip, and never in a bounce, which carries no ring.
+   * Off by default; not undoable; saved, and captured by templates. */
   bool isMonitoring() const { return monitor_.load(); }
   void setMonitoring(bool on) { monitor_.store(on); }
-  /** Channel count of the clip's CONTENT (committed or capturing). */
+
+  // --- Content ---
   int contentChannels() const { return content_.load()->getNumChannels(); }
-  /** The content kind of the current/last take (Audio until a MIDI
-   * take is armed). Audio-thread safe. */
+  /** The kind of the current / last take (Audio until a MIDI take is
+   * armed). Either thread. */
   ContentKind contentKind() const { return (ContentKind)content_kind_.load(); }
-  /** True when this clip records/renders NOTES: it holds MIDI content,
-   * or it is empty and its chain carries an instrument slot (the next
-   * take will be MIDI). Message thread (metadata / arm decisions). */
-  bool isMidiClip() const {
-    if (contentKind() == ContentKind::Midi) return true;
-    return duration_samples.load() <= 0 && !isArmedOrRecording() &&
-           fxChain()->hasInstrumentSlot();
-  }
-  /** The note sequence (message thread reads only while Idle). */
+  /** This clip records and renders NOTES: it holds MIDI content, or it
+   * is empty and its chain carries an instrument slot (the next take
+   * will be MIDI). Message thread. */
+  bool isMidiClip() const;
+  /** The note sequence (the message thread reads it only in Idle). */
   const MidiSequence& midiSequence() const { return *midi_.load(); }
-  /** Asks the next MIDI render block to send the sound-off pair
-   * (docs/vst3.md §11) to the instrument — the device-stop edge, where
-   * no block is running to carry it. Any thread; consumed once. */
+  const juce::AudioBuffer<float>& getAudioBuffer() const {
+    return *content_.load();
+  }
+  /** Ask the next block to send the instrument the sound-off pair
+   * (vst3.md §8.3) — the device-stop edge, where no block is running to
+   * carry it. Any thread; consumed once. */
   void requestMidiSoundOff() { midi_sound_off_pending_.store(true); }
   double getSampleRate() const { return sample_rate; }
-  /** The take's heard frame (contextCycle) — a recorded fact that must
-   * persist (session_io); 0 for the first take. */
+  /** The island cycle the slot's first take was performed against — the
+   * modulus its display mark folds on (Q14); 0 for an island's first
+   * take. Persisted. */
   int64_t contextCycle() const { return take_context_cycle_.load(); }
 
-  // THE TOP AND THE RE-TIME live on AudioNode (fractal, clip or group:
-  // storedTop / retime / keepsTop / effectiveTop). A clip adds one rule:
-  // a settled NEW TAKE resets its re-time (it plays as performed, owner
-  // 2026-09-24: the re-time then describes the newest take; the older
-  // takes keep their shift, baked into the shared origin).
-  // Clip-specific methods
-  /**
-   * Starts capturing hardware input into the internal buffer.
-   *
-   * `through_map_commit_cycle` > 0 arms the take THROUGH an enclosing
-   * ACTIVE time-map (time_maps.md phase 2): the value is C, the mapping
-   * node's full inner cycle — the dense buffer span the take commits at
-   * (ruling 2). The engine computes it on the message thread (nearest
-   * active-map ancestor's intrinsic duration); 0 = plain recording.
-   */
-  void startRecording(int64_t through_map_commit_cycle = 0);
-  /** startRecording in two halves, for atomic GROUP arms: reserve the
-   * take buffer + reset the capture facts (may be slow: 4 GB virtual
-   * reservation), then publish the Armed state. Returns false when the
-   * clip is not idle (nothing to publish). Message thread. */
-  bool prepareRecording(int64_t through_map_commit_cycle = 0);
+  // --- The recording verbs (message thread) ---
+  struct TakeState;
+  // THE ARM: a JUDGE, then two halves that cannot fail — so a GROUP arms
+  // as one: every member is prepared first (slow where the OS does not
+  // overcommit lazily), then the Armed states are published back to
+  // back, one block top sees them all, and N mics share one origin.
+  /** A first take may arm here: the clip is Idle. (Which clips an arm
+   * targets — the empty ones — is the engine's to say.) */
+  bool mayRecord() const { return recState() == RecState::Idle; }
+  /** The first half, on a clip that may record: the take's storage is
+   * reserved and the capture facts start over. `through_map_commit_cycle`
+   * > 0 arms the take THROUGH an enclosing active map (time_maps.md §3):
+   * it is C, the mapping node's full inner cycle, the dense span the
+   * take commits at. Returns what the arm DISPLACED — the content its
+   * storage replaced — for the caller to retire (the class comment). */
+  TakeState prepareRecording(int64_t through_map_commit_cycle = 0);
+  /** The second half: Idle → Armed. */
   void publishArm();
-
-  /**
-   * Signals the recording thread to stop and flush the buffer.
-   */
-  void stopRecording();
-  /** Group-stop variant (Q7): the caller snapshots whether the island
-   * had a quantum BEFORE stopping ANY clip of the set. Without the
-   * snapshot, a simultaneous first-take group stop diverges: the first
-   * clip's immediate commit establishes Q, flipping its siblings onto
-   * the record-to-next-boundary path — they'd run a full extra Q. One
-   * performance must mean one committed duration, so all first takes
-   * of a group stop take the immediate-commit path together. */
-  /** `group_generation` != 0 parks the stop until the island root
-   * publishes that generation (one block top for every member). */
-  void stopRecording(bool island_has_quantum, uint32_t group_generation = 0);
-
-  /**
-   * Opens the content-sounds gate (`is_playing`) — the internal flag
-   * commit also sets. NOT a user verb (Q16: there is no per-node
-   * Play/Stop); tests use it to make a clip render without a full
-   * record→commit pass.
-   */
+  /** Both halves, for one clip; nothing when it may not record. */
+  TakeState startRecording(int64_t through_map_commit_cycle = 0);
+  /** ASK a live take to stop. Armed: a cancel, here. Capturing: a
+   * request the audio thread takes up at a block top (RecState) — the
+   * take is still live when this returns. `group_generation` != 0 parks
+   * the request until the island root publishes that generation, so
+   * every member of a group takes it up at one block top. */
+  void stopRecording(uint32_t group_generation = 0);
+  /** Commit the take: `final_duration` > 0 names the boundary it
+   * finishes at, else its length is what it holds (a first take, a
+   * through-map cycle, a new take's period). AUDIO THREAD: `context` is
+   * the block's. */
+  void commitRecording(const ProcessContext& context,
+                       int64_t final_duration = -1);
+  /** Opens the content-sounds gate (is_playing), as a commit does. Not a
+   * user verb (there is no per-node Play): tests use it. */
   void startPlayback();
 
   RecState recState() const { return (RecState)rec_state_.load(); }
@@ -212,90 +200,81 @@ class ClipNode : public AudioNode {
   }
   bool isPlaying() const { return is_playing.load(); }
   bool isPendingStart() const { return recState() == RecState::Armed; }
+  /** From the moment a stop was asked for (the request is pending until
+   * the audio thread picks the boundary). */
   bool isAwaitingStop() const {
-    // True from the moment the user asked to stop (stop_requested_ is
-    // the one-block bridge until the audio thread picks the boundary).
     return recState() == RecState::PendingStop ||
            (recState() == RecState::Capturing &&
             (stop_requested_.load() || stop_pending_gen_.load() != 0));
   }
-  int64_t getCommitMasterPos() const { return commit_master_pos.load(); }
   int64_t getAwaitingStartAt() const { return awaiting_start_at.load(); }
-
-  /**
-   * Returns the atomic write position for the recording process.
-   */
-  int getWritePosition() const { return write_position.load(); }
-
-  /**
-   * Returns the latest peak sample level captured by the process loop.
-   */
-  float getCurrentPeak() const override { return last_block_peak.load(); }
-
-  /** Commit the take. `ctx` is present on the audio-thread path (from
-   * process) and carries the island facts + snapshot; null on the
-   * message-thread first-clip immediate stop (parent walks are fine
-   * there). */
-  void commitRecording(int64_t final_duration = -1,
-                       const ProcessContext* ctx = nullptr);
-  const juce::AudioBuffer<float>& getAudioBuffer() const {
-    return *content_.load();
-  }
-
-  // --- Take content storage (NO recording wall) ---
-  // The content buffer is reached through ONE atomic pointer. At ARM it
-  // becomes a REFERRING buffer over reserved storage (take_storage.h):
-  // address space for the whole bound, pages committed ahead of the
-  // write head by the engine's grower — so a take's memory cost is
-  // what it records plus a headroom, on every platform (a plain malloc
-  // is lazy on macOS but charges the full reservation per mic on
-  // Windows). The reservation bound (~6.7 h at 44.1 kHz; juce sample
-  // counts are int) exists for integrity, not policy: reaching it — or
-  // the committed edge, if the grower ever starves — auto-finishes
-  // CLEANLY at the last boundary that fits (never a silent zombie). At
-  // SETTLE the engine COMPACTS: an exact-size heap copy swaps in
-  // atomically (safe under an actively rendering clip) and the old
-  // buffer + its storage retire through the reclaimer.
-  static constexpr int64_t kMaxTakeSamples = (int64_t{1} << 30);
-  /** Committed at arm and kept ahead of the write head by the engine's
-   * grower (~60 s at 48 kHz per channel): the take's real memory cost
-   * is what it recorded plus this headroom. */
-  static constexpr int64_t kArmCommitSamples = int64_t{48000} * 60;
-  int64_t contentCapacity() const { return content_.load()->getNumSamples(); }
-  /** Total recorded samples (the full take, ≥ duration after a
-   * lock-collapse — compaction must keep it all for uncollapse). */
-  int64_t recordedLength() const { return write_position.load(); }
-  /** Message thread: swap in a replacement content buffer (compaction).
-   * The caller retires the returned old buffer — an in-flight render
-   * may still be reading it this block. */
-  juce::AudioBuffer<float>* swapContent(
-      std::unique_ptr<juce::AudioBuffer<float>> fresh) {
-    juce::AudioBuffer<float>* old = content_owned_.release();
-    content_owned_ = std::move(fresh);
-    content_.store(content_owned_.get());
-    return old;
-  }
-  /** The reserved storage behind the current content (null = heap). */
-  TakeStorage* reservedStorage() const { return take_storage_.get(); }
-  /** Message thread: detach the reserved storage (after the referring
-   * buffer has been swapped out); the caller retires it. */
-  std::unique_ptr<TakeStorage> releaseStorage() {
-    storage_rt_.store(nullptr);
-    return std::move(take_storage_);
-  }
-  /** The samples per channel capture may write: the buffer's extent,
-   * capped by the storage's committed edge (audio thread). */
-  int64_t writableCapacity() const {
-    const int64_t cap = content_.load()->getNumSamples();
-    if (const TakeStorage* st = storage_rt_.load()) return std::min(cap, st->committed());
-    return cap;
-  }
-  /** TEST-ONLY: mutable content access (wall-guard simulations). */
-  juce::AudioBuffer<float>& contentForTest() { return *content_.load(); }
+  /** The last capture met its wall (wallGuard) and was finished there.
+   * A diagnostic of the live take, cleared at the next arm. */
   bool capHit() const { return cap_hit_.load(); }
 
-  /** THE SEAM FADE's length (docs/kernel.md §2): 4 ms — long enough
-   * that no seam clicks, short enough to hear as a cut, not a fade. */
+  // --- Take storage (take_storage.h states the law) ---
+  /** The reservation bound, samples per channel (~6.7 h at 44.1 kHz:
+   * juce sample counts are int). Integrity, not policy. */
+  static constexpr int64_t kMaxTakeSamples = (int64_t{1} << 30);
+  /** How much capture the grower keeps committed ahead of a take beyond
+   * what the take needs to stop (~60 s at 48 kHz per channel) — how long
+   * the message thread may stall before a take meets its wall. */
+  static constexpr int64_t kArmCommitSamples = int64_t{48000} * 60;
+  /** The blocks either side of a stop boundary: the request lands a
+   * block before the boundary is chosen, and the block that crosses the
+   * boundary is written whole. */
+  static constexpr int64_t kStopSlackSamples = 8192;
+  /** What a take still writes once a stop is asked for: on to its next
+   * Q boundary (at most Q away), and the slack around it. */
+  static int64_t stopRun(int64_t quantum) {
+    return std::max<int64_t>(0, quantum) + kStopSlackSamples;
+  }
+  /**
+   * THE TAKE'S REACH: the furthest sample (per channel, exclusive) the
+   * live take may touch before the grower next runs — the one figure
+   * the arm, the new take and the grower commit the storage to, and the
+   * wall guard measures the write head against:
+   *   - the dense spans a take owns whole from its arm — a through-map
+   *     take's commit cycle [0, C); a new take's slot, i.e. its period
+   *     behind the shared content base and the old extent of a collapsed
+   *     slot (what an uncollapse would expose) — both cleared at arm;
+   *   - ahead of the linear write head: the stop run, so a stop asked
+   *     for now still reaches its boundary, plus kArmCommitSamples.
+   * `quantum` is the island Q. Message thread.
+   */
+  int64_t takeReach(int64_t quantum) const;
+  /** Commit the reserved storage out to the take's reach (nothing to do
+   * for heap content). Message thread: the arm, and the engine's grower
+   * on every poll while the take is live. */
+  void commitTakeReach(int64_t quantum);
+  int64_t contentCapacity() const { return content_.load()->getNumSamples(); }
+  /** The samples per channel capture may write: the buffer's extent,
+   * cut at the storage's committed edge. */
+  int64_t writableCapacity() const;
+  /** The recorded extent of the active take: storage samples from the
+   * buffer's start, so ≥ base + duration after a lock-collapse (the
+   * whole recording — what compaction must keep for an uncollapse). */
+  int64_t recordedLength() const { return write_position.load(); }
+  /** Install `fresh` as the audio content; returns the DISPLACED buffer
+   * (the class comment: retire it). Message thread. */
+  std::unique_ptr<juce::AudioBuffer<float>> swapContent(
+      std::unique_ptr<juce::AudioBuffer<float>> fresh);
+  /** The reserved storage behind the current content (null = heap). */
+  TakeStorage* reservedStorage() const { return take_storage_.get(); }
+  /** Detach the reserved storage once the buffer referring to it has
+   * been swapped out; the caller retires it. Message thread. */
+  std::unique_ptr<TakeStorage> releaseStorage();
+  /** TEST-ONLY: mutable content access (wall-guard simulations). */
+  juce::AudioBuffer<float>& contentForTest() { return *content_.load(); }
+  /** TEST-ONLY: the samples the render scratch pair holds, both
+   * channels together (a growth of either shows). */
+  int renderScratchSamplesForTest() const {
+    return (int)(fx_scratch_.size() + fx_scratch2_.size());
+  }
+
+  // --- The seam fade (kernel.md §2) ---
+  /** Its length, 4 ms: long enough that no seam clicks, short enough to
+   * hear as a cut, not a fade. */
   static int64_t seamFadeSamples(double sample_rate) {
     return (int64_t)(sample_rate * 0.004);
   }
@@ -307,368 +286,133 @@ class ClipNode : public AudioNode {
     return 0.5f - 0.5f * std::cos(juce::MathConstants<float>::pi *
                                   ((float)j + 0.5f) / (float)len);
   }
-  /** THE SEAM FADE's switch: on in the app. The test runner turns it
-   * off so the kernel-law oracles stay sample-exact
-   * (content[(t − origin) mod period]); tests/seam_fade_tests.cc turns
-   * it back on for its own checks. Process-wide; read once per render. */
+  /** On in the app. The test runner turns it off so the kernel-law
+   * oracles stay sample-exact; tests/seam_fade_tests.cc turns it back on
+   * for its own checks. Process-wide; read once per render. */
   static inline std::atomic<bool> seam_fades_enabled{true};
 
-  // --- Q13 lock-collapse ---
-  /** Where this clip's committed content begins inside the storage
-   * buffer. 0 for every normally-recorded take; a lock-collapse shifts
-   * it to the trimmed window's start. Content coordinates (loop points,
-   * playback phase, waveform, save) stay 0-based — the base is a pure
-   * storage detail, so nothing downstream ever sees the dead air. */
+  // --- The lock-collapse (composition.md §5) ---
+  /** Where the committed content begins inside the storage buffer: 0
+   * for a take as recorded; a collapse moves it to the trimmed window's
+   * start. Content coordinates — the map, the playback phase, peaks, the
+   * saved file — stay 0-based; every take of the slot shares the base. */
   int64_t getContentBase() const { return content_base_.load(); }
-  /** Collapse the committed content to its window [shift, shift+len):
-   * the trimmed region BECOMES the take — content base and origin move
-   * by `shift`, duration := len, window consumed (full-span). The take
-   * now reads as performed exactly; the cut material stays in the
-   * buffer, unreachable except by uncollapse (undo). Message thread;
-   * all-atomic (same exposure discipline as setLoopPoints). */
-  void collapseContent(int64_t shift, int64_t len) {
-    // THE LEAF HALF of a lock-collapse (composition.md §5): the content
-    // view moves by `shift`, the duration becomes `len`, the clip's
-    // own window is consumed. The ORIGIN is NOT touched here — the
-    // applier (AudioEngine::collapseNode) moves the collapsed node's
-    // whole subtree once, clip or stack alike (Q18: a window anchors at
-    // its node's origin, so window top → origin keeps the collapse
-    // audio-neutral).
-    //
-    // THE COLLAPSE MARKER (nesting: collapse → cancel take → re-trim →
-    // arm again is a legal second collapse): `collapsed_from_` keeps the
-    // ORIGINAL duration (set only on the first level). What the
-    // collapses shifted by IS `content_base_` — the base starts at 0 on
-    // every commit and only collapses move it — so the re-opening
-    // restore (which unwinds ALL levels) reads the base; no second
-    // counter to keep in step.
-    if (collapsed_from_.load() == 0) collapsed_from_.store(duration_samples.load());
-    content_base_.store(content_base_.load() + shift);
-    duration_samples.store(len);
-    setLoopPoints(0, 0);  // the window is consumed: the take IS the window
-    // THE TOP rides the content view (loop_selection.md §9): a raw
-    // position, so the same sample is `shift` earlier in the collapsed
-    // take — and with the origin moving by `shift` too, the top keeps
-    // its moment. A plain shift, exactly invertible: a group member's
-    // top outside the consumed window stays stored (dormant, masked by
-    // effectiveTop) until the next map edit reconciles it.
-    if (const int64_t t = loop_top_.load(); t != timing::kNoTop)
-      loop_top_.store(t - shift);
-    take_files_dirty_ = true;  // the mirrored WAV is the committed window
-  }
-  /** Inverse of collapseContent: restore the pre-collapse buffer view
-   * and the trim (window [shift, shift + current duration)). Like the
-   * forward, the origin is the applier's (AudioEngine::uncollapseNode
-   * moves the subtree back by `shift`). */
-  void uncollapseContent(int64_t shift, int64_t old_duration) {
-    const int64_t len = duration_samples.load();
-    content_base_.store(content_base_.load() - shift);
-    duration_samples.store(old_duration);
-    setLoopPoints(shift, shift + len);
-    if (const int64_t t = loop_top_.load(); t != timing::kNoTop)
-      loop_top_.store(t + shift);
-    // Fully unwound (the content view is back at 0) → not collapsed.
-    if (content_base_.load() == 0) collapsed_from_.store(0);
-    take_files_dirty_ = true;
-  }
-  /** True when the committed content is a lock-collapsed window of a
-   * longer recording (trimmed-away material still in the buffer). */
+  /** The LEAF half of a lock-collapse: the window [shift, shift + len)
+   * BECOMES the take — the content view moves by `shift`, the duration
+   * is `len`, the window is consumed, and the top and the comp ride the
+   * view. The cut material stays in the buffer, reachable only by the
+   * uncollapse. The origin is the applier's (AudioEngine::collapseNode
+   * moves the node's whole subtree once). */
+  void collapseContent(int64_t shift, int64_t len);
+  /** The inverse: the pre-collapse view, with the trim back as the
+   * window [shift, shift + the current duration). */
+  void uncollapseContent(int64_t shift, int64_t old_duration);
+  /** The content is a collapsed window of a longer recording. */
   bool isCollapsed() const { return collapsed_from_.load() > 0; }
   /** The pre-collapse duration (0 when not collapsed). */
   int64_t collapsedFrom() const { return collapsed_from_.load(); }
 
-  // --- Multi-segment lock-collapse (time_maps.md phase 3) ---
-  /** The multi-segment twin of collapseToWindow: the map's kept
-   * material BECOMES the take — a SPLICE COPY concatenates the
-   * segments into an exact-size buffer (a content_base_ shift cannot
-   * express a discontiguous keep). New facts: duration := period,
-   * origin += mapOffset(0) (the anchoring law — playback is
-   * sample-identical to the mapped playback it replaces), window
-   * full-span, content_base 0. Returns the OLD buffer — the caller
-   * (the edit inverse) OWNS it for undo; it must not be freed inline
-   * (in-flight renders may read it for ≤2 callbacks). Message thread,
-   * committed clip only. The caller clears/retires the map override.
-   */
-  std::unique_ptr<juce::AudioBuffer<float>> spliceToMap(
-      const timing::TimeMap& m) {
-    const int64_t period = m.period();
-    const auto& src = *content_.load();
-    const int chans = std::max(1, src.getNumChannels());
-    // A MIDI clip's audio buffer is the idle baseline (its content is
-    // the note sequence — spliceMidiToMap); keep the audio side minimal.
-    const bool midi = contentKind() == ContentKind::Midi;
-    auto spliced = std::make_unique<juce::AudioBuffer<float>>(
-        chans, midi ? 1 : (int)period);
-    spliced->clear();
-    const int64_t base = content_base_.load();
-    int64_t w = 0;
-    for (int i = 0; i < (midi ? 0 : m.n); ++i) {
-      const int64_t s = m.segs[i].start;
-      const int64_t len = m.segs[i].end - s;
-      const int64_t from = base + s;
-      const int64_t avail = std::max<int64_t>(
-          0, std::min<int64_t>(len, src.getNumSamples() - from));
-      if (avail > 0) {
-        for (int c = 0; c < chans; ++c) {
-          spliced->copyFrom(c, (int)w, src, c, (int)from, (int)avail);
-        }
-      }
-      w += len;
-    }
-    origin_samples.store(origin_samples.load() + m.mapOffset(0));
-    duration_samples.store(period);
-    setLoopPoints(0, period);
-    // THE TOP rides the splice: raw T lands at its heard offset in the
-    // spliced take (the kept cells concatenated), so with origin += a0
-    // it keeps its moment. A stored top the map does not play was not
-    // the effective one — the region start stood in, and the splice
-    // puts that at 0, where the top stays a fact (only a take never
-    // edited is unset: timing::kNoTop stays). The inverse carries the
-    // old one.
-    if (const int64_t t = loop_top_.load(); t != timing::kNoTop) {
-      const int64_t h = m.heardOffsetOf(t);
-      loop_top_.store(h >= 0 ? h : 0);
-    }
-    content_base_.store(0);
-    // The spliced buffer IS the take now: no trimmed-away material, so
-    // no collapse marker (the inverse restores it with the old buffer).
-    collapsed_from_.store(0);
-    write_position.store((int)period);
-    take_files_dirty_ = true;
-    std::unique_ptr<juce::AudioBuffer<float>> old = std::move(content_owned_);
-    content_owned_ = std::move(spliced);
-    content_.store(content_owned_.get());
-    return old;
-  }
-  /** Inverse of spliceToMap: reinstall the pre-splice buffer + facts
-   * (the top included — a splice can drop it). Returns the DISPLACED
-   * spliced buffer — the caller retires it (an in-flight render may
-   * still read it). Loop points restore to full-span: the reinstalled
-   * map override shadows them (the same documented looseness as
-   * LoopPoints-under-override). */
-  std::unique_ptr<juce::AudioBuffer<float>> unspliceFromMap(
-      std::unique_ptr<juce::AudioBuffer<float>> old_buffer, int64_t old_origin,
-      int64_t old_duration, int64_t old_base, int64_t old_recorded,
-      int64_t old_collapsed_from, int64_t old_top) {
-    std::unique_ptr<juce::AudioBuffer<float>> displaced =
-        std::move(content_owned_);
-    content_owned_ = std::move(old_buffer);
-    content_.store(content_owned_.get());
-    origin_samples.store(old_origin);
-    duration_samples.store(old_duration);
-    setLoopPoints(0, old_duration);
-    loop_top_.store(old_top);
-    content_base_.store(old_base);
-    collapsed_from_.store(old_collapsed_from);
-    write_position.store((int)old_recorded);
-    take_files_dirty_ = true;
-    return displaced;
-  }
-
-  // --- TAKES ARE UNDOABLE (docs/sequencer.md §11.5; edit.h Kind::Take
-  // / Untake) ---
-  /** Everything a committed take IS, detachable as one value: the
-   * content (audio buffer and/or note sequence — moved, not copied)
-   * plus the recorded facts. The caller (an edit) OWNS the content. */
+  // --- Takes (takes.md §1) ---
+  // A committed clip holds N takes of its ONE slot: alternate content
+  // for the same origin, period and content base. The ACTIVE take is the
+  // live content; the others sit in `takes_` as detached records, the
+  // slot at the active index holding none (a single-take clip may keep
+  // the list empty). A take is immutable once committed.
+  /** A take, detached as one value; its holder OWNS the content. The
+   * first group is what a take IS (exchangeLive is its one statement);
+   * the slot facts ride only a WHOLE-clip strip and are at rest in a
+   * list record. */
   struct TakeState {
     std::unique_ptr<juce::AudioBuffer<float>> buffer;
     std::unique_ptr<TakeStorage> storage;  // when `buffer` refers to it
     std::unique_ptr<MidiSequence> midi;
-    int64_t origin = 0, duration = 0, base = 0, recorded = 0;
+    int64_t recorded = 0;  // storage samples from the buffer's start
+    int content_kind = 0;  // a ContentKind
+
+    int64_t origin = 0, duration = 0, base = 0;
     int64_t context_cycle = 0, loop_start = 0, loop_end = 0;
     int64_t collapsed_from = 0;
-    // The slot's top and re-time (per clip, so only a WHOLE-clip strip
-    // carries them; a take-list record leaves them at rest).
     int64_t top = timing::kNoTop;
     int64_t retime = 0;
-    int content_kind = 0;
-    bool cap_hit = false;
   };
-  /** Strip the committed take: the clip returns to EMPTY (idle, silent,
-   * no duration, no origin) and the take's content + facts come back
-   * as a value for the undo log to own. Message thread, Idle clip only
-   * (the caller gates). Atomic-swap discipline: an in-flight render may
-   * still read the old buffer this block — the returned content must
-   * not be freed inline (the log keeps it for as long as it matters). */
-  TakeState stripTake() {
-    TakeState s;
-    s.origin = origin_samples.load();
-    s.duration = duration_samples.load();
-    s.base = content_base_.load();
-    s.recorded = write_position.load();
-    s.context_cycle = take_context_cycle_.load();
-    s.loop_start = getLoopStart();
-    s.loop_end = getLoopEnd();
-    s.content_kind = content_kind_.load();
-    s.cap_hit = cap_hit_.load();
-    s.collapsed_from = collapsed_from_.load();
-    s.top = loop_top_.load();
-    s.retime = retime_.load();
-    // Silence first (render reads duration/is_playing before content).
-    is_playing.store(false);
-    duration_samples.store(0);
-    auto empty = std::make_unique<juce::AudioBuffer<float>>(
-        1, std::max(1, (int)sample_rate));
-    empty->clear();
-    s.buffer = std::move(content_owned_);
-    s.storage = releaseStorage();  // travels with the referring buffer
-    content_owned_ = std::move(empty);
-    content_.store(content_owned_.get());
-    auto empty_midi = std::make_unique<MidiSequence>(0);
-    s.midi = std::move(midi_owned_);
-    midi_owned_ = std::move(empty_midi);
-    midi_.store(midi_owned_.get());
-    content_kind_.store((int)ContentKind::Audio);
-    origin_samples.store(0);
-    content_base_.store(0);
-    write_position.store(0);
-    take_context_cycle_.store(0);
-    cap_hit_.store(false);
-    collapsed_from_.store(0);
-    setLoopPoints(0, 0);
-    // An empty clip has no top and nothing re-timed: the next take
-    // starts as played.
-    loop_top_.store(timing::kNoTop);
-    retime_.store(0);
-    rec_state_.store((int)RecState::Idle);
-    // A strip is legal only on a single-take clip (the applier gates);
-    // the list and comp go with the content.
-    takes_.clear();
-    active_take_.store(0);
-    setCompCells({}, 0);
-    publishTakeTable();
-    take_files_dirty_ = true;
-    return s;
-  }
-  /** Reinstall a stripped take (redo). Returns the DISPLACED empty
-   * placeholders for the caller to retire (an in-flight render may read
-   * them this block). Message thread, Idle empty clip only. */
-  std::pair<std::unique_ptr<juce::AudioBuffer<float>>,
-            std::unique_ptr<MidiSequence>>
-  restoreTake(TakeState&& s) {
-    std::pair<std::unique_ptr<juce::AudioBuffer<float>>,
-              std::unique_ptr<MidiSequence>>
-        displaced;
-    displaced.first = std::move(content_owned_);
-    content_owned_ = std::move(s.buffer);
-    take_storage_ = std::move(s.storage);
-    storage_rt_.store(take_storage_.get());
-    content_.store(content_owned_.get());
-    displaced.second = std::move(midi_owned_);
-    midi_owned_ = std::move(s.midi);
-    midi_.store(midi_owned_.get());
-    content_kind_.store(s.content_kind);
-    content_base_.store(s.base);
-    write_position.store((int)s.recorded);
-    take_context_cycle_.store(s.context_cycle);
-    cap_hit_.store(s.cap_hit);
-    collapsed_from_.store(s.collapsed_from);
-    origin_samples.store(s.origin);
-    setLoopPoints(s.loop_start, s.loop_end);
-    loop_top_.store(s.top);
-    retime_.store(s.retime);
-    rec_state_.store((int)RecState::Idle);
-    // Content last, then sound (the commit publication order).
-    duration_samples.store(s.duration);
-    is_playing.store(true);
-    take_files_dirty_ = true;
-    return displaced;
-  }
-
-  // --- TAKES AND COMPING (docs/takes.md; edit.h SelectTake / DeleteTake
-  // / Comp, Take / Untake with a take index) ---
-  // A committed clip holds N takes sharing its ONE origin and period:
-  // alternate content buffers for the same musical slot. The ACTIVE
-  // take lives in the live content fields (content_owned_, midi_owned_,
-  // write_position, cap_hit_); the others sit in `takes_` as detached
-  // TakeState records, the slot at active_take_ holding no content. A
-  // single-take clip may keep `takes_` empty. Every take of a clip
-  // shares content_base_ (a lock-collapse shifts the whole slot, so one
-  // base serves all; the record's `base` is the persisted fact). Take
-  // buffers are immutable once committed: a removed record travels into
-  // the edit log and retires through the reclaimer, never freed inline.
-  // The audio thread sees the list through the seqlocked take table
-  // (the buffers + the comp cells), read once per render.
   static constexpr int kMaxTakes = 32;
   static constexpr int kMaxCompCells = 256;
-  /** Takes held: 0 for an empty clip, else max(1, list size). Message
-   * thread. */
-  int takeCount() const {
-    if (duration_samples.load() <= 0) return 0;
-    return std::max<int>(1, (int)takes_.size());
-  }
+  /** 0 for an empty clip, else max(1, the list's size). */
+  int takeCount() const;
   int activeTake() const { return active_take_.load(); }
-  /** Take k's audio buffer / note sequence (the active one's live
-   * content), or null when k is out of range. Message thread, Idle. */
+  /** Take k's audio buffer / notes (the live content for the active
+   * one); null when k is out of range. Idle. */
   const juce::AudioBuffer<float>* takeBuffer(int k) const;
   const MidiSequence* takeMidi(int k) const;
-  /** Recorded length of take k (the active's write position). */
-  int64_t takeRecorded(int k) const;
-  /** Content base of take k — shared by every take (see above). */
-  int64_t takeBase(int) const { return content_base_.load(); }
-  /** Make take k the active one: an atomic content-pointer swap (the
-   * displaced pointers live on in the list). False when k is out of
-   * range, already active, or the clip is not Idle. Message thread. */
+  /** Make take k the active one. False when k is out of range, already
+   * active, or the clip is not Idle. */
   bool selectTake(int k);
-  /** Detach take k (count >= 2). An active k hands activity to its
-   * lower neighbour (k − 1, else the new 0). The caller OWNS the record.
-   * Message thread, Idle clip. */
+  /** Detach take k (of two or more); an active k hands activity to its
+   * lower neighbour (k − 1, else the new 0). */
   TakeState removeTake(int k);
-  /** Reinsert a detached record at index k (the inverse of removeTake);
-   * activity stays where it is. Message thread, Idle clip. */
+  /** Reinsert a detached record at index k; activity stays where it is. */
   void insertTake(int k, TakeState&& s);
-  /** Session load: append take k's content behind the active take 0. */
+  /** Session load: append a further take behind the active take 0. */
   void appendLoadedTake(const juce::AudioBuffer<float>& audio);
   void appendLoadedMidiTake(std::vector<MidiEvent> events);
-  /** True once a removeTake/insertTake renumbered the list since the
-   * last session write: the per-take files must be rewritten whole. */
+  /** THE MIRROR'S FLAG (session_io): every message-thread change to
+   * committed content or its frame sets it, and the mirror rewrites the
+   * clip's files when it is set. The audio-thread commit cannot:
+   * AudioEngine::reconcileTakes marks the take when it settles. */
   bool takeFilesDirty() const { return take_files_dirty_; }
-  void markTakeFilesWritten() const { take_files_dirty_ = false; }
-  /** The ONE truth for the mirror (session_io): every message-thread
-   * mutation of committed content or its frame sets this; the mirror
-   * rewrites the clip's WAVs iff it is set (or a file is missing). The
-   * audio-thread commit cannot set it — reconcileTakes does, when the
-   * take settles into the log. */
   void markTakeFilesDirty() { take_files_dirty_ = true; }
+  void markTakeFilesWritten() const { take_files_dirty_ = false; }
 
-  /** NEW TAKE (docs/takes.md): arm a further take of a COMMITTED clip
-   * without emptying it — the active content moves into its list slot,
-   * fresh storage is reserved, and the clip renders silence until the
-   * take settles. Origin, period, loop points and base stay. The arm
-   * target is the next t ≡ origin (mod period); capture runs exactly
-   * one period and auto-finishes. False when the clip is not Idle with
-   * content, the list is full, or the next take's kind would differ
-   * from the active's. Publish with publishArm(). Message thread. */
-  bool prepareRetake();
+  /** STRIP the committed take of a single-take clip: the clip returns
+   * to EMPTY and the take — content and slot facts — comes back for the
+   * log to own. */
+  TakeState stripTake();
+  /** Reinstall a stripped take on an empty clip. Returns the displaced
+   * placeholders (the class comment: retire them). */
+  std::pair<std::unique_ptr<juce::AudioBuffer<float>>,
+            std::unique_ptr<MidiSequence>>
+  restoreTake(TakeState&& s);
+
+  /** A NEW TAKE (takes.md §2) may arm here: the clip is Idle with
+   * content, its list has room, and its chain's kind is the slot's (one
+   * kind per slot, or the list could not be saved as one clip). */
+  bool mayRetake() const;
+  /** The arm's first half for a further take of a clip that may take
+   * one: the active content parks in its list slot and the clip is
+   * silent until the take settles; origin, period, map and base stand.
+   * Returns what the arm displaced, as prepareRecording does; publish
+   * with publishArm(). */
+  TakeState prepareRetake();
   /** A new take has committed or cancelled and awaits settleRetake. */
   bool retakeSettled() const {
     return retake_committed_.load() || retake_cancelled_.load();
   }
-  /** Settle a finished new take (message thread): a COMMITTED one is
-   * appended to the list and becomes active (returns true); a
-   * CANCELLED one restores the previous active take, the abandoned
-   * reservation coming back in `displaced` for the caller to retire
-   * (returns false). */
+  /** Settle a finished new take: a COMMITTED one joins the list as the
+   * active take (true); a CANCELLED one gives the slot back to the take
+   * that was active, the abandoned reservation coming back in
+   * `displaced` for the caller to retire (false). */
   bool settleRetake(TakeState& displaced);
 
-  /** The comp: one take index per Q cell of the period (−1 = the
-   * active take), cells = ceil(period / cell_len). Empty = no comp.
-   * Written whole behind the take seqlock. Message thread. */
+  /** THE COMP: one take index per cell (−1 = the active take). Cell k
+   * covers the inner positions [offset + k·cell_len, offset + (k + 1)·
+   * cell_len): authored at offset 0 with cell_len = Q, and RIDING the
+   * content view from then on — a lock-collapse slides the offset with
+   * the material, so a cell keeps naming the stretch of the recording
+   * it was drawn on, and cells the collapsed take no longer reaches stay
+   * stored for the uncollapse. Empty = no comp. */
   std::vector<int> compCells() const;
   int64_t compCellLength() const { return take_[0].comp_q.load(); }
-  void setCompCells(const std::vector<int>& cells, int64_t cell_len);
+  int64_t compCellOffset() const { return take_[0].comp_off.load(); }
+  void setCompCells(const std::vector<int>& cells, int64_t cell_len,
+                    int64_t cell_offset = 0);
   /** Peaks of take k over the committed span (the take-list view). */
   juce::var getTakeWaveform(int k, int num_peaks) const;
 
-  /** THE PEAK BUCKET (navigation N7, 2026-09-22): peak `i` of `n` over
-   * `total` samples covers the base-relative span [start, end) =
-   * [⌊i·total/n⌋, ⌊(i+1)·total/n⌋) — proportional bounds, so the last
-   * bucket reaches the end of the take and no peak drifts early (the
-   * floor-divided window it replaces dropped the `total mod n` tail and
-   * slid peak i up to n samples early — harmless at 800 peaks, large at
-   * the densities zoom asks for). Never empty: when n > total a bucket
-   * holds one sample. One statement for audioPeaks and midiPeaks; JS
-   * twin ui/js/mock/waveform.js peakBucket. */
+  /** THE PEAK BUCKET: peak `i` of `n` over `total` samples covers the
+   * base-relative span [⌊i·total/n⌋, ⌊(i+1)·total/n⌋) — proportional
+   * bounds, so the last bucket reaches the take's end and no peak drifts
+   * early at any density. Never empty: with n > total a bucket holds one
+   * sample. JS twin: ui/js/mock/waveform.js peakBucket. */
   struct PeakBucket {
     int64_t start = 0;
     int64_t end = 0;
@@ -679,317 +423,374 @@ class ClipNode : public AudioNode {
     return {start, std::max(start + 1, (int64_t)(i + 1) * total / n)};
   }
 
-  /**
-   * Restore a committed take on session load (session_io): copies `audio`
-   * into the buffer, marks it playable, and sets the recorded facts that
-   * are not public atomics (write position, contextCycle). The caller
-   * sets origin/duration/loop points/mute separately (public). Message
-   * thread only — the node is not yet in the live graph.
-   */
-  void loadCommitted(const juce::AudioBuffer<float>& audio,
-                     int64_t context_cycle) {
-    // Exact-size: a saved take is never truncated to some prior
-    // capacity (a fixed-capacity buffer would clip long takes on load).
-    // Channel count follows the audio (stereo takes reload as stereo).
-    auto& buffer = *content_.load();
-    const int n = audio.getNumSamples();
-    const int chans = std::max(1, audio.getNumChannels());
-    if (n > 0)
-      buffer.setSize(chans, n, /*keepExistingContent=*/false,
-                     /*clearExtraSpace=*/false, /*avoidReallocating=*/false);
-    buffer.clear();
-    for (int c = 0; c < chans && n > 0; ++c)
-      buffer.copyFrom(c, 0, audio, c, 0, n);
-    write_position.store(n);
-    take_context_cycle_.store(context_cycle);
-    rec_state_.store((int)RecState::Idle);
-    is_playing.store(true);  // committed clips sound
-  }
-
-  /**
-   * IMPORT (docs/import.md): install a decoded audio buffer as the
-   * committed take of an EMPTY idle clip that already lives in the
-   * graph. The exact-size buffer goes in through the atomic content
-   * pointer (the displaced placeholder comes back for the caller to
-   * retire — an in-flight render may read it this block), then the
-   * recorded facts publish in the commit order: origin, base and loop
-   * points first, duration last, then sound. Message thread; the
-   * caller establishes the island and logs the take.
-   */
-  std::unique_ptr<juce::AudioBuffer<float>> installImportedTake(
-      std::unique_ptr<juce::AudioBuffer<float>> audio, int64_t origin,
-      int64_t duration, int64_t loop_end, int64_t context_cycle) {
-    const int n = audio->getNumSamples();
-    std::unique_ptr<juce::AudioBuffer<float>> displaced(
-        swapContent(std::move(audio)));
-    origin_samples.store(origin);
-    content_base_.store(0);
-    write_position.store(n);
-    take_context_cycle_.store(context_cycle);
-    setLoopPoints(0, loop_end);
-    rec_state_.store((int)RecState::Idle);
-    duration_samples.store(duration);
-    is_playing.store(true);
-    take_files_dirty_ = true;
-    return displaced;
-  }
-
-  /**
-   * Restore a committed MIDI take on session load (session_io): the
-   * events become the content (exact-size), the clip becomes a MIDI
-   * clip, playable. Origin/duration/loop points set by the caller.
-   * Message thread only — the node is not yet in the live graph.
-   */
-  void loadCommittedMidi(std::vector<MidiEvent> events,
-                         int64_t context_cycle) {
-    auto fresh = std::make_unique<MidiSequence>();
-    fresh->assign(std::move(events));
-    midi_owned_ = std::move(fresh);
-    midi_.store(midi_owned_.get());
-    content_kind_.store((int)ContentKind::Midi);
-    write_position.store((int)duration_samples.load());
-    take_context_cycle_.store(context_cycle);
-    rec_state_.store((int)RecState::Idle);
-    is_playing.store(true);
-  }
-
-  /** The MIDI twin of spliceToMap (call it BEFORE spliceToMap, which
-   * rewrites the shared facts): events inside the kept cells move to
-   * their spliced positions; the rest are cut. Returns the OLD
-   * sequence — the caller (the edit inverse) OWNS it for undo; never
-   * freed inline. Message thread, committed MIDI clip only. */
-  std::unique_ptr<MidiSequence> spliceMidiToMap(const timing::TimeMap& m) {
-    const MidiSequence& src = *midi_.load();
-    const int64_t base = content_base_.load();
-    std::vector<MidiEvent> kept;
-    kept.reserve((size_t)src.count());
-    int64_t w = 0;
-    for (int i = 0; i < m.n; ++i) {
-      const int64_t s = m.segs[i].start;
-      const int64_t len = m.segs[i].end - s;
-      for (int k = 0; k < src.count(); ++k) {
-        const int64_t rel = src[k].pos - base - s;
-        if (rel >= 0 && rel < len) {
-          MidiEvent e = src[k];
-          e.pos = w + rel;
-          kept.push_back(e);
-        }
-      }
-      w += len;
-    }
-    auto spliced = std::make_unique<MidiSequence>();
-    spliced->assign(std::move(kept));
-    std::unique_ptr<MidiSequence> old = std::move(midi_owned_);
-    midi_owned_ = std::move(spliced);
-    midi_.store(midi_owned_.get());
-    return old;
-  }
-  /** Inverse of spliceMidiToMap: reinstall the pre-splice sequence;
-   * returns the DISPLACED one for the caller to retire. */
+  // --- The splice (time_maps.md §5): a CUT map's lock-collapse ---
+  // The kept cells BECOME the take: each take of the slot is copied,
+  // cell after cell, into an exact-size buffer. ORDER: the other takes
+  // and the notes first, then spliceToMap — it rewrites the content base
+  // all three read. Each call returns what it displaced, for the edit's
+  // inverse to own; the un-splice calls take those back and return the
+  // spliced content to retire.
+  /** The active take: duration := the map's period, origin +=
+   * mapOffset(0) (playback is sample-identical to the mapped playback it
+   * replaces), no window, base 0, the top at its heard offset. THE COMP
+   * is consumed with the cut — the kept cells no longer sit on one grid
+   * — so the take holds what the comp SOUNDED, read from `pre_splice`
+   * (what spliceOtherTakesToMap returned), and the comp clears. */
+  std::unique_ptr<juce::AudioBuffer<float>> spliceToMap(
+      const timing::TimeMap& m,
+      const std::vector<std::pair<int, TakeState>>* pre_splice = nullptr);
+  /** The inverse: the pre-splice buffer and facts. The caller then puts
+   * the cut map and the comp back. */
+  std::unique_ptr<juce::AudioBuffer<float>> unspliceFromMap(
+      std::unique_ptr<juce::AudioBuffer<float>> old_buffer, int64_t old_origin,
+      int64_t old_duration, int64_t old_base, int64_t old_recorded,
+      int64_t old_collapsed_from, int64_t old_top);
+  /** A MIDI clip's notes: those inside the kept cells move to their
+   * spliced positions, the rest are cut. */
+  std::unique_ptr<MidiSequence> spliceMidiToMap(const timing::TimeMap& m);
   std::unique_ptr<MidiSequence> unspliceMidi(
-      std::unique_ptr<MidiSequence> old_sequence) {
-    std::unique_ptr<MidiSequence> displaced = std::move(midi_owned_);
-    midi_owned_ = std::move(old_sequence);
-    midi_.store(midi_owned_.get());
-    return displaced;
-  }
-  /** The INACTIVE takes' twin of spliceToMap / spliceMidiToMap (call
-   * it BEFORE spliceToMap rewrites the shared base): every other take
-   * of the slot is spliced the same way, so the takes keep one period
-   * and one base. Returns (index, OLD record) pairs — the edit inverse
-   * OWNS the records. */
+      std::unique_ptr<MidiSequence> old_sequence);
+  /** Every inactive take, as (index, pre-splice record) pairs. */
   std::vector<std::pair<int, TakeState>> spliceOtherTakesToMap(
       const timing::TimeMap& m);
-  /** Inverse: reinstall the pre-splice records at their indices; the
-   * displaced spliced ones come back for the caller to retire. */
   std::vector<TakeState> unspliceOtherTakes(
       std::vector<std::pair<int, TakeState>>&& old);
 
+  // --- Session load and import ---
+  /** Session load: `audio` becomes the committed content of a clip not
+   * yet in the graph. The caller sets origin, duration, map and mute. */
+  void loadCommitted(const juce::AudioBuffer<float>& audio,
+                     int64_t context_cycle);
+  /** The MIDI form: the events become the content and the clip a MIDI
+   * clip. The duration is set first: it is the recorded extent. */
+  void loadCommittedMidi(std::vector<MidiEvent> events, int64_t context_cycle);
+  /** IMPORT (import.md): install a decoded buffer as the committed take
+   * of an EMPTY idle clip that lives in the graph. Returns the displaced
+   * placeholder to retire. The caller establishes the island and logs
+   * the take. */
+  std::unique_ptr<juce::AudioBuffer<float>> installImportedTake(
+      std::unique_ptr<juce::AudioBuffer<float>> audio, int64_t origin,
+      int64_t duration, int64_t loop_end, int64_t context_cycle);
+
  private:
-  // Content storage (see the take-storage block above): owned on the message
-  // thread, read through the atomic by both threads.
+  // --- Content (the class comment states the pointer law) ---
   std::unique_ptr<juce::AudioBuffer<float>> content_owned_;
-  // The live take's reserved storage (take_storage.h) when content_owned_
-  // is a REFERRING buffer over it; null for plain heap content. Swapped
-  // only for idle clips (message thread); the audio thread reads the
-  // raw pointer for its write wall.
-  std::unique_ptr<TakeStorage> take_storage_;
-  std::atomic<TakeStorage*> storage_rt_{nullptr};
   std::atomic<juce::AudioBuffer<float>*> content_{nullptr};
-  // MIDI content (phase 5): the note twin of content_, same
-  // discipline (message thread owns/swaps on idle clips, audio thread
-  // appends during capture and reads during render).
   std::unique_ptr<MidiSequence> midi_owned_;
   std::atomic<MidiSequence*> midi_{nullptr};
+  // The reservation `content_owned_` refers to, when it does (null:
+  // heap content). The audio thread reads the raw pointer for its wall.
+  std::unique_ptr<TakeStorage> take_storage_;
+  std::atomic<TakeStorage*> storage_rt_{nullptr};
   std::atomic<int> content_kind_{(int)ContentKind::Audio};
-  // MIDI capture state (audio-thread only, the capture_next_clock_
-  // discipline): the arrival index content position write_position
-  // corresponds to, the history cursor (next sequence number to
-  // consider), the held-note meter, and the lost-events log latch.
+  // Samples, three meanings by phase. CAPTURING: heard samples written,
+  // from the capture base (the write head). COMMITTED: the recorded
+  // extent from the buffer's start, base included — max(base + written,
+  // the old extent of a collapsed slot) for a new take (recordedLength).
+  // A loaded MIDI take: its duration.
+  std::atomic<int64_t> write_position{0};
+  // Where the committed content begins in the buffer (getContentBase),
+  // and the pre-collapse duration (0 = not collapsed).
+  std::atomic<int64_t> content_base_{0};
+  std::atomic<int64_t> collapsed_from_{0};
+  // The content-sounds gate: the clip holds committed content and plays
+  // it. NOT the transport (ProcessContext::is_playing); render needs
+  // both. Down while a take is armed or live and on an empty clip.
+  std::atomic<bool> is_playing{false};
+  // Hz, fixed at construction: published as `sampleRate`, and the length
+  // of the empty placeholder.
+  double sample_rate;
+
+  /** An empty clip's audio content: one zeroed second. Never zero-sized:
+   * render folds positions on its length. */
+  std::unique_ptr<juce::AudioBuffer<float>> makeEmptyContent() const;
+  /** swapContent's twin for the note sequence. */
+  std::unique_ptr<MidiSequence> swapMidi(std::unique_ptr<MidiSequence> fresh);
+
+  // --- The take list (message thread) ---
+  std::vector<TakeState> takes_;
+  std::atomic<int> active_take_{0};
+  mutable bool take_files_dirty_ = false;
+  // THE TAKE TABLE: the audio thread's view of the inactive buffers and
+  // the comp, all-atomic behind one seqlock (seq_locked.h: take_[0] the
+  // primary, take_[1] the shadow; single-field readers read the
+  // primary). buffers[active] is null — the active buffer is content_ —
+  // and a cell naming the active take, an index out of range or a null
+  // entry reads the active buffer.
+  SeqLock take_lock_;
+  struct TakeTableCopy {
+    std::atomic<int> count{0};
+    std::atomic<const juce::AudioBuffer<float>*> buffers[kMaxTakes]{};
+    // Each inactive buffer's recorded extent: the seam fade reads past a
+    // run's end only inside it.
+    std::atomic<int64_t> recorded[kMaxTakes]{};
+    std::atomic<int> comp_n{0};
+    std::atomic<int64_t> comp_q{0};
+    std::atomic<int64_t> comp_off{0};  // inner position of cell 0's start
+    std::atomic<int8_t> comp_cells[kMaxCompCells]{};
+  };
+  TakeTableCopy take_[2];
+  /** Republish the table from the list: after any list change, and
+   * before a detached buffer may be retired. */
+  void publishTakeTable();
+  /** Slide the comp's cells by `delta` inner samples. */
+  void shiftComp(int64_t delta);
+  /** Grow `takes_` to hold the active slot when it is still empty. */
+  void ensureTakeList();
+  /** The content of no take, of `kind`: the empty placeholders. */
+  TakeState emptyTake(ContentKind kind) const;
+  /** Install `in` as the live take's content and return what was live —
+   * the buffer with the storage it refers to, the notes, the recorded
+   * extent, the kind. */
+  TakeState exchangeLive(TakeState&& in);
+  // A new take: its period (the capture's cap), set at arm; 0 = not a
+  // new take. Cleared at commit / cancel, whose outcome waits in the two
+  // flags for settleRetake.
+  std::atomic<int64_t> retake_period_{0};
+  std::atomic<bool> retake_committed_{false};
+  std::atomic<bool> retake_cancelled_{false};
+
+  static juce::var audioPeaks(const juce::AudioBuffer<float>& buffer,
+                              int64_t base, int total_samples, int num_peaks);
+  static juce::var midiPeaks(const MidiSequence& seq, int64_t base,
+                             int total_samples, int num_peaks);
+
+  // --- The recording state (clip_node_capture.cc) ---
+  std::atomic<int> rec_state_{(int)RecState::Idle};
+  // The message thread's stop request, consumed by the audio thread; and
+  // a parked group stop's generation (0 = none), which becomes a request
+  // at the block top whose context carries a generation >= it.
+  std::atomic<bool> stop_requested_{false};
+  std::atomic<uint32_t> stop_pending_gen_{0};
+  // Two different clocks. Armed: the arm target, a moment on the HEARD
+  // clock (0 = none yet). PendingStop: the commit boundary, a position
+  // of the WRITE HEAD (heard samples into the take).
+  std::atomic<int64_t> awaiting_start_at{0};
+  std::atomic<int64_t> awaiting_stop_at{0};
+  std::atomic<int64_t> take_context_cycle_{0};  // contextCycle()
+  std::atomic<bool> cap_hit_{false};            // capHit()
+  // Set by a commit, cleared at the next control pass: the commit block
+  // renders SILENT, and playback begins on the block after. The one
+  // commit that leaves it clear is a first take's at the block top that
+  // takes its stop up (consumeStopRequest): that block plays.
+  std::atomic<bool> committed_this_block_{false};
+  // A through-map take's commit cycle C, set at arm (0 = a plain take);
+  // cleared at commit / cancel.
+  std::atomic<int64_t> map_commit_cycle_{0};
+
+  // AUDIO-THREAD-ONLY capture facts (plain fields), fixed at beginCapture
+  // and ended by the commit. The take's channel count is fixed earlier,
+  // at arm: the Armed store publishes it.
+  int capture_channels_ = 1;
+  // The capture window (performance.md §3): content position p holds the
+  // input that arrived at capture_next_clock_ + p on the input clock.
+  int64_t capture_next_clock_ = 0;
+  bool capture_uses_ring_ = false;
+  bool underrun_logged_ = false;  // one log line per capture
+  // The heard-length cap — one map pass, or a new take's period; 0 =
+  // none — and where content position 0 sits in the buffer.
+  int64_t capture_cap_ = 0;
+  int64_t capture_base_ = 0;
+  // A through-map take: the map shaping it, frozen when capture begins,
+  // and the anchor's heard offset within the map's period.
+  bool through_map_capture_ = false;
+  timing::TimeMap take_map_{};
+  int64_t map_anchor_off_ = 0;
+  // A MIDI take: the arrival index of the write head, the next history
+  // sequence number to read, the notes held now (the meter and the end
+  // seam) and before the window opened (the prelude), and the log
+  // latches.
   int64_t midi_capture_next_clock_ = 0;
   int64_t midi_history_cursor_ = 0;
   HeldNotes capture_held_;
-  bool midi_lost_logged_ = false;
-  // The take's PRELUDE: notes struck before the capture window that are
-  // still down when it opens land as note-ons at content 0 (the note IS
-  // sounding at the take's top — I1); folded once, at the window's
-  // first block.
   HeldNotes capture_prelude_;
   bool midi_prelude_folded_ = false;
-  // MIDI render scratch (mutable: DSP scratch written by the CONST
-  // render phase, §2.3): the block's event buffer (preallocated in
-  // the constructor), the notes the content has sounding (released at
-  // seams / stop), whether content ran last block, and the content
-  // position the next block is expected to continue from (−1 = none)
-  // — a jump anywhere is a discontinuity that releases held notes.
-  mutable juce::MidiBuffer render_midi_;
-  mutable HeldNotes render_held_;
-  mutable bool midi_content_was_active_ = false;
-  mutable int64_t midi_render_next_pos_ = -1;
-  // The sound-off edges (docs/vst3.md §11): the channels the
-  // instrument has heard since the last sound-off pair (content and
-  // live events alike — the pair goes to exactly those), whether the
-  // S7 gate was fully closed last block (its closing is an edge), and
-  // the device-stop request (requestMidiSoundOff).
-  mutable juce::uint16 midi_channels_in_use_ = 0;
-  mutable bool midi_gate_was_closed_ = false;
-  mutable std::atomic<bool> midi_sound_off_pending_{false};
-  // Release-tail budget: the chain keeps running this many samples
-  // after the last content/live event so envelopes ring out.
-  mutable int64_t midi_tail_samples_left_ = 0;
-  // Set when the take auto-finished at the reservation bound.
-  std::atomic<bool> cap_hit_{false};
+  bool midi_lost_logged_ = false;
+  bool midi_full_logged_ = false;
 
-  // Playback scratch for the effect rack: playback renders here, the
-  // rack processes in place, then the result sums into the parent
-  // (panned). fx_scratch_ carries channel 0; fx_scratch2_ carries
-  // channel 1 of stereo content. Sized in the constructor; grow only if
-  // the device block exceeds them (rare — the StackNode::mix_buffer
-  // precedent). Audio-thread only. `mutable`: DSP scratch written by
-  // the CONST render phase (§2.3).
-  mutable std::vector<float> fx_scratch_;
-  mutable std::vector<float> fx_scratch2_;
-
-  // §2.3 phase split: set when commitRecording fires, cleared at the
-  // top of the next control pass. render() gates on it so the commit
-  // block stays SILENT.
-  mutable std::atomic<bool> committed_this_block_{false};
-
-  std::atomic<int> write_position{0};
-
-  // Q13 lock-collapse: storage offset of the committed content (see
-  // getContentBase). Playback/waveform/save add it; capture never does
-  // (recording clips always have base 0).
-  std::atomic<int64_t> content_base_{0};
-  std::atomic<int64_t> collapsed_from_{0};  // pre-collapse duration; 0 = not collapsed
-
-  // Pre-record capture window (docs/performance.md §3). When the engine
-  // provides a pre-record ring, capture does not copy "whatever input
-  // arrived after recording started" — it copies the input that *arrived*
-  // at the times the clip semantically covers: clip position p holds the
-  // input sample that arrived at input-clock (window start + p), where the
-  // window start maps the trigger through the latency compensation.
-  // Audio-thread only.
-  int64_t capture_next_clock_ = 0;
-  bool capture_uses_ring_ = false;
-  // Underrun log latch (audio-thread only): one line per capture, reset
-  // at beginCapture — a persistent underrun otherwise posts every block
-  // and overwhelms the drain FIFO.
-  bool underrun_logged_ = false;
-  // Channel count of the CURRENT take, fixed at arm (startRecording
-  // sizes the buffer and stores this before the state flips to Armed —
-  // the seq-cst state store publishes it to the audio thread).
-  int capture_channels_ = 1;
-
-  /** Armed-state evaluation (audio thread, once per block). */
+  /** A stop request, taken up at the block top: PendingStop at the
+   * boundary chosen here; a new take's cancel; an island's first take's
+   * commit. True when the take ended at this top. */
+  bool consumeStopRequest(const ProcessContext& context);
+  /** THE WALL GUARD — integrity, not policy: a take whose write head
+   * nears its writable edge finishes at the last boundary that fits (a
+   * first take, with no boundary, commits where it is — true). */
+  bool wallGuard(const ProcessContext& context);
+  /** One block of an audio take, from the pre-record ring, else the live
+   * block, else silence. May commit (finishCaptureBlock). */
+  void captureAudioBlock(const ProcessContext& context,
+                         const float* const* input_channels,
+                         int num_input_channels);
+  /** One block of a MIDI take, from the arrival history, else the live
+   * block. May commit. */
+  void captureMidiBlock(const ProcessContext& context);
+  /** Write `n` samples whose heard index starts at `heard_pos` into
+   * channel `dest_ch`: linearly behind the capture base, or folded
+   * through the take's map. */
+  void captureWrite(juce::AudioBuffer<float>& buffer, int dest_ch,
+                    int64_t heard_pos, const float* src, int n);
+  /** Append one event at heard position `pos`, placed as captureWrite
+   * places samples. */
+  void captureMidiEvent(int64_t pos, const juce::uint8* bytes, int size,
+                        float& block_peak);
+  /** What every capture block ends with: the meter, the write head, and
+   * the two commits a block can cross — the PendingStop boundary and
+   * the cap. Nothing may touch capture state after it returns. */
+  void finishCaptureBlock(int written, float block_peak,
+                          const ProcessContext& context);
+  /** How many more heard samples the take may write from write head
+   * `wp`: to its writable edge, and to its cap. */
+  int64_t captureSpace(int64_t wp) const;
+  /** How many of `n` samples from storage position `start` lie inside
+   * the writable extent. Every write into the live take is cut to this;
+   * a cut means the reach was not committed ahead of the writer, and is
+   * counted (TakeStorage::cut_writes). */
+  int writableRun(int64_t start, int64_t n) const;
+  /** Zero [0, end) of every channel of the live take's buffer. Message
+   * thread, clip idle. */
+  void clearTakeSpan(int64_t end);
+  /** Where a live take's content position 0 sits in its buffer: a new
+   * take lands at the slot's shared base, any other at 0. */
+  int64_t captureBase() const {
+    return retake_period_.load() > 0 ? content_base_.load() : 0;
+  }
+  /** Armed, once per block: choose the target; begin capture once it is
+   * reached. */
   void armEvaluate(const ProcessContext& context);
   /** Armed → Capturing: fixes the capture window for `target`. */
   void beginCapture(const ProcessContext& context, int64_t target,
                     int64_t compensated_pos);
-  /** Write `n` captured samples whose heard-elapsed index starts at
-   * `heard_pos` into content channel `dest_ch` — plain takes write
-   * linearly; through-map takes fold destinations through the frozen
-   * map (bounded seam runs). */
-  void captureWrite(juce::AudioBuffer<float>& buffer, int dest_ch,
-                    int64_t heard_pos, const float* src, int n);
-  /** The capture bookkeeping tail shared by the ring and live-block
-   * paths: peak telemetry, write-position/live-duration advance, the
-   * PendingStop boundary crossing, and the through-map one-period wall
-   * (both of which may COMMIT the take). Callers must not touch capture
-   * state after this returns — nothing may follow a commit. */
-  void finishCaptureBlock(int written, float block_peak,
-                          const ProcessContext& context);
-  /** MIDI take capture for one block (phase 5): the history-ring path
-   * (arrival-indexed, latency-compensated — the note twin of the
-   * pre-record path) or the live-block fallback. Calls
-   * finishCaptureBlock, which may commit. */
-  void captureMidiBlock(const ProcessContext& context);
-  /** Append one event to the take at content position `pos` (through-
-   * map takes fold it like captureWrite does for samples). */
-  void captureMidiEvent(int64_t pos, const juce::uint8* bytes, int size,
-                        float& block_peak);
-  /** The MIDI clip render path (phase 5): the kernel playback equation
-   * over the note sequence — the block's covered content window(s)
-   * sliced into sample-accurate events, seam releases, live play-
-   * through, one chain run over silence from the instrument down. */
-  void renderMidi(float* const* output_channels, int num_output_channels,
-                  const ProcessContext& context) const;
-  /** Solo/mute audibility for this block (Q16 canon; snapshot walk). */
+  /** An arm target is REACHED by the run — `n` samples — that takes the
+   * heard clock, or `raw`, the uncompensated one, up to it or past it.
+   * Judged per run, so a block a stack has split starts the take in the
+   * run that holds the target, not in an earlier one. */
+  static bool armReached(int64_t heard, int64_t raw, int n, int64_t target) {
+    return heard + n >= target || (raw < target && raw + n >= target);
+  }
+  /** The arm's storage and capture-fact reset, shared by a plain arm and
+   * a new take; returns the content the storage displaced. Message
+   * thread, Idle clip. */
+  TakeState reserveTakeStorage(int64_t through_map_commit_cycle);
+
+  // --- Inputs ---
+  // Written on the message thread, read by capture and monitoring.
+  std::atomic<int> preferred_input_channel{0};
+  std::atomic<int> preferred_input_channel_right{-1};  // −1 = mono
+  std::atomic<bool> monitor_{false};
+  /** WHICH INPUT IS THIS CLIP'S — one rule for capture and monitoring,
+   * so what is monitored is what records. `side` 0 is the left (or mono)
+   * input, 1 the right of a stereo pair; a mono clip's right follows its
+   * left. An assignment the device cannot serve — none (−1), or past its
+   * `channels` — is the nearest channel it has, so a take is never
+   * silently empty. −1 only when there is no channel at all. */
+  int inputFor(int side, int channels) const;
+  /** `n` samples of a ring from position `clock`, as the straight span
+   * [idx, idx + first) and — when the run wraps — the rest from 0. */
+  struct RingSpan {
+    int idx = 0;
+    int first = 0;
+  };
+  static RingSpan ringSpan(int64_t clock, int n, int ring_len) {
+    const int idx = (int)(clock % ring_len);
+    return {idx, std::min(n, ring_len - idx)};
+  }
+
+  // --- Playback (clip_node_render.cc) ---
+  // DSP scratch and view telemetry the const render writes
+  // (AudioNode::render states the exception). The scratch pair carries
+  // channel 0 and, for stereo, channel 1: content renders into it, the
+  // gate and the rack work in place, the output stage sums it into the
+  // parent. Sized at construction for the block ceiling
+  // (kMaxBlockSamples): no block within it grows them.
+  mutable std::vector<float> fx_scratch_;
+  mutable std::vector<float> fx_scratch2_;
+  // The most content and live events renderMidi takes in one block (a
+  // denser block drops the rest), and the most it then hands
+  // render_midi_: those, a note-off for every note the content had
+  // sounding — carried into the block or struck in it — and one
+  // sound-off pair per channel. render_midi_ is reserved for that at
+  // construction, so no block grows it.
+  static constexpr int kMaxBlockEvents = 4096;
+  static constexpr int kMaxRenderMidiEvents =
+      2 * kMaxBlockEvents + HeldNotes::kMaxHeld + 2 * kMidiChannels;
+  // MIDI render state: the block's events, the notes the content has
+  // sounding, whether content ran last block, and the storage position
+  // the next run should continue from (−1 = none; a jump is a
+  // discontinuity).
+  mutable juce::MidiBuffer render_midi_;
+  mutable HeldNotes render_held_;
+  mutable bool midi_content_was_active_ = false;
+  mutable int64_t midi_render_next_pos_ = -1;
+  // The sound-off edges (vst3.md §8.3): the channels the instrument has
+  // heard since the last pair, whether the gate was shut last block, and
+  // the device-stop edge control latched for render to send (it clears
+  // the latch when it does).
+  mutable juce::uint16 midi_channels_in_use_ = 0;
+  mutable bool midi_gate_was_closed_ = false;
+  mutable bool midi_sound_off_due_ = false;
+  // requestMidiSoundOff's flag: any thread sets it, control consumes it.
+  std::atomic<bool> midi_sound_off_pending_{false};
+  // Samples the chain still runs after the last event.
+  mutable int64_t midi_tail_samples_left_ = 0;
+
+  /** The arguments of the render equation (timing::innerAt) for this
+   * block: the effective map — the active one, else the whole take —
+   * the origin, and the fold: the map's period, or the context cycle for
+   * a one-shot (AudioNode::period_from_context_). A period of 0: nothing
+   * to play. */
+  struct PlaybackFrame {
+    timing::TimeMap map;
+    int64_t origin = 0;
+    int64_t fold = 0;
+  };
+  PlaybackFrame playbackFrame(const ProcessContext& context) const;
+  /** Publish the view's cursor (AudioNode::playhead_pos) for clock `t`:
+   * the heard phase as a fraction of the MAP period — what the view maps
+   * through the map's segments — and 0 in a one-shot's rest. */
+  void publishPlayhead(const PlaybackFrame& frame, int64_t t) const;
+  /** The scratch pair holds `n` samples (`pair`: both channels). A
+   * guard for a block past the ceiling — a test's, never a device's:
+   * within kMaxBlockSamples it changes nothing. */
+  void ensureScratch(int n, bool pair) const;
+  /** Muted, or lost to a solo elsewhere (AudioNode::is_soloed). */
   bool isSilencedThisBlock(const ProcessContext& context) const;
-  /** Monitoring is on AND the context carries a pre-record ring (a
-   * bounce carries none, so monitoring never reaches a bounce). */
+  /** Monitoring is on and the context carries a pre-record ring. */
   bool monitorLive(const ProcessContext& context) const {
     return monitor_.load() && context.prerecord_ring != nullptr &&
            context.prerecord_ring_channels > 0 &&
            context.prerecord_ring_len > 0;
   }
-  /** Adds this block's ring arrivals into the fx scratch pair: the
-   * left input into fx_scratch_ (and into fx_scratch2_ too when the
-   * pair is already stereo — a mono input sits center), the right
-   * input of a stereo pair into fx_scratch2_, promoting a mono scratch
-   * (zeroed first). A channel outside the ring contributes nothing.
-   * Ring index (input_clock + i) mod ring_len: at most one wrap, so two
-   * bounded adds per channel. Returns whether the pair is now stereo.
-   * Audio thread: pointer arithmetic only. */
+  /** Add this block's arrivals on the clip's input(s) into the scratch
+   * pair; a stereo input pair promotes a mono scratch. Returns whether
+   * the pair is now stereo. */
   bool addMonitorInput(const ProcessContext& context, bool stereo) const;
-  /** THE PRE-FX GATE (S7): a linear g0→g1 ramp over the scratch pair. */
+  /** THE LIVE TAIL: what sounds when the content branch did not run the
+   * rack this block (a stopped transport, an empty clip, a live take) —
+   * the monitored input and / or MIDI play-through, once through the
+   * gate, the rack and the output stage. */
+  void renderLiveTail(float* const* output_channels, int num_output_channels,
+                      const ProcessContext& context, float gate_g0,
+                      float gate_g1, bool user_shut) const;
+  /** The pre-fx gate (AudioNode::gateEndpoints) over the scratch pair: a
+   * linear g0 → g1 ramp. */
   void applyGate(float g0, float g1, bool stereo, int n) const;
-  /** THE OUTPUT STAGE (unification_audit.md §2.4): the scratch pair —
-   * mono, or stereo — summed into the parent's channels at gain·pan
-   * (balance law; a stereo pair folds to a mono device as equal
-   * halves; channels ≥ 2 hear the fader-scaled unpanned mono). */
+  /** The scratch pair through the output stage (celestrian::
+   * sumOutputStage) under this clip's pan and fader. */
   void sumOutputStage(float* const* output_channels, int num_output_channels,
                       bool stereo, int n) const;
+  void renderMidi(float* const* output_channels, int num_output_channels,
+                  const ProcessContext& context) const;
+  void markChannelInUse(juce::uint8 status) const {
+    if (status < 0xF0) {
+      midi_channels_in_use_ |= (juce::uint16)(1u << (status & 0x0F));
+    }
+  }
 
-  // --- Take list (docs/takes.md; the public block above states the
-  // ownership law) ---
-  std::vector<TakeState> takes_;  // message thread; slot active_take_ empty
-  std::atomic<int> active_take_{0};
-  mutable bool take_files_dirty_ = false;  // session_io's rewrite flag
-  // THE TAKE TABLE: the audio thread's view of the inactive buffers
-  // and the comp, all-atomic behind one seqlock (the map's discipline)
-  // — no heap, no reclaimer. the buffers[active] is null (the active
-  // buffer is content_); a cell naming the active, an out-of-range or
-  // a null entry reads the active buffer. Stored in the latch's two
-  // copies (take_[0] the primary, take_[1] the shadow — seq_locked.h);
-  // single-field readers read the primary.
-  SeqLock take_lock_;
-  struct TakeTableCopy {
-    std::atomic<int> count{0};
-    std::atomic<const juce::AudioBuffer<float>*> buffers[kMaxTakes]{};
-    // Each inactive buffer's recorded extent (raw samples) — the seam
-    // fade reads past a run's end only inside it (never the
-    // reservation).
-    std::atomic<int64_t> recorded[kMaxTakes]{};
-    std::atomic<int> comp_n{0};
-    std::atomic<int64_t> comp_q{0};
-    std::atomic<int8_t> comp_cells[kMaxCompCells]{};
-  };
-  TakeTableCopy take_[2];
-  /** A consistent copy of the table for one render (audio thread). */
+  /** A consistent copy of the take table for one render. */
   struct CompView {
     int n = 0;
     int64_t q = 0;
+    int64_t off = 0;
     int count = 0;
     int active = 0;
     int8_t cells[kMaxCompCells] = {};
@@ -999,9 +800,8 @@ class ClipNode : public AudioNode {
   void readCompView(CompView& v) const;
   /** One run's read source: the channel of the buffer the comp names at
    * inner position `inner` (else the active buffer), its size, and the
-   * raw extent [lo, hi) the seam fade may read beyond a run — the
-   * take's own recorded content, never the reservation past it. Audio
-   * thread; the one pick rule for content reads and the seam fade. */
+   * raw extent [lo, hi) the seam fade may read beyond the run. The one
+   * pick rule for content reads and the seam fade. */
   struct RunSource {
     const float* data = nullptr;
     int64_t cap = 0;
@@ -1009,92 +809,17 @@ class ClipNode : public AudioNode {
   };
   RunSource runSource(const juce::AudioBuffer<float>& active, int c,
                       int64_t inner, const CompView& comp) const;
-  /** THE SEAM FADE (docs/kernel.md §2, "The seam fade"): a pure pass
-   * over the rendered channel `scratch` for the block [t, t + n) that
-   * smooths every seam within `fade` samples of the block — the loop
-   * wrap, a map splice, a comp cell changing takes, a one-shot's edges
-   * — so a jump in the source never reaches the speaker as a step.
-   * Stateless in t, like the render equation itself (a bounce hears
-   * exactly what playback does). */
+  /** THE SEAM FADE (kernel.md §2): a pure pass over the rendered channel
+   * `scratch` for the block [t, t + n) that smooths every seam within
+   * `fade` samples of it — the loop wrap, a map splice, a comp cell
+   * changing takes, a one-shot's edges — so a jump in the source never
+   * reaches the speaker as a step. Stateless in t, like the render
+   * equation: a bounce hears what playback does. */
   void applySeamFades(float* scratch, int c,
                       const juce::AudioBuffer<float>& active,
                       const CompView& comp, int64_t t, int n, int64_t origin,
                       const timing::TimeMap& map, int64_t fold,
-                      int64_t cell_len, int64_t fade) const;
-  /** Republish the take table from the list (message thread, after any
-   * list change and before a detached buffer retires). */
-  void publishTakeTable();
-  /** Grow `takes_` to hold the active slot when it is still empty. */
-  void ensureTakeList();
-  /** Move the live content into `slot` / adopt `slot` as the live
-   * content (the two halves of selectTake). */
-  void stashLive(TakeState& slot);
-  void adoptSlot(TakeState& slot);
-  /** The reservation + capture-fact reset shared by prepareRecording
-   * and prepareRetake (message thread, Idle clip). */
-  void reserveTakeStorage(int64_t through_map_commit_cycle);
-  static juce::var audioPeaks(const juce::AudioBuffer<float>& buffer,
-                              int64_t base, int total_samples, int num_peaks);
-  static juce::var midiPeaks(const MidiSequence& seq, int64_t base,
-                             int total_samples, int num_peaks);
-
-  // --- New-take state (docs/takes.md) ---
-  // The period the new take captures (its cap), set at arm on the
-  // message thread; 0 = not a new take. Cleared at commit/cancel.
-  std::atomic<int64_t> retake_period_{0};
-  // Audio-thread commit/cancel outcome awaiting settleRetake.
-  std::atomic<bool> retake_committed_{false};
-  std::atomic<bool> retake_cancelled_{false};
-  // Capture facts fixed at beginCapture (audio-thread plain fields):
-  // the heard-length cap (a through-map pass or a new take's period; 0
-  // = none) and the buffer offset capture writes at (a new take lands
-  // at the shared content base; a fresh clip's is 0).
-  int64_t capture_cap_ = 0;
-  int64_t capture_base_ = 0;
-
-  // --- Through-map take state (time_maps.md phase 2) ---
-  // The commit cycle C, set at arm on the message thread (atomic: the
-  // audio thread's arm branch keys on it); cleared at commit/cancel.
-  std::atomic<int64_t> map_commit_cycle_{0};
-  // Frozen by the through-map arm branch when capture begins — the map
-  // shaping this take and the anchor's heard offset within its period.
-  // Audio-thread-only plain fields (capture_next_clock_ discipline).
-  bool through_map_capture_ = false;
-  timing::TimeMap take_map_{};
-  int64_t map_anchor_off_ = 0;
-
-  std::atomic<int> rec_state_{(int)RecState::Idle};
-  // Message-thread stop request; consumed by the audio thread, which
-  // computes the boundary from its own write position.
-  std::atomic<bool> stop_requested_{false};
-  // A parked group-stop generation (0 = none); becomes stop_requested_
-  // at the block top whose context carries a generation >= this.
-  std::atomic<uint32_t> stop_pending_gen_{0};
-  // (origin_rt_ / origin_gate_gen_ / setOriginGated live on AudioNode
-  // — stacks render with a gated origin too, Q18.)
-  std::atomic<bool> is_playing{false};
-
-  std::atomic<int64_t> awaiting_start_at{
-      0};  // Armed: the chosen arm target (0 = none yet)
-  std::atomic<int64_t> awaiting_stop_at{0};  // PendingStop: commit boundary
-  // The committed island cycle this take was performed against (its
-  // heard frame; 0 for the first take). Set at capture start, kept
-  // after commit — published as `contextCycle` for display take-marking.
-  std::atomic<int64_t> take_context_cycle_{0};
-  std::atomic<int64_t> commit_master_pos{
-      0};  // Master pos when recording commits
-
-  double sample_rate;
-
-  // Wiring facts written on the message thread and read by the audio
-  // thread (capture, monitoring): atomic so the cross-thread read is a
-  // defined one (a plain int here is a data race, however benign).
-  std::atomic<int> preferred_input_channel{0};
-  // Right input of a stereo pair; −1 = mono clip (the default).
-  std::atomic<int> preferred_input_channel_right{-1};
-  // Software input monitoring (Q20): off by default. Message-thread
-  // toggle, audio-thread read per block.
-  std::atomic<bool> monitor_{false};
+                      int64_t fade) const;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipNode)
 };

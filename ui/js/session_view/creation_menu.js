@@ -1,36 +1,35 @@
 /**
  * The creation menu (design_language.md Q17): every + is a TEMPLATE
- * PICKER. The menu opens with a fixed "Track" default row anchored
- * directly under the pointer — click-click in place reproduces the old
- * one-verb add — with the user's track templates listed below (one
- * short travel picks Guitar/Drums/…; the template click REPLACES the
- * rename + input-pick it saves). One control, no second button: all
- * three + affordances (top-level ＋ Track, group rail +, add-row) open
- * THIS menu; group entry points insert into their group.
+ * PICKER. All three + affordances (top-level ＋ Track, a group rail's +,
+ * the add-row) open this one menu; a group's entry points insert into
+ * that group.
  *
- * The default row is FIXED, never last-used: muscle memory needs the
- * same thing under the cursor every time (an adaptive default would
- * sabotage the double-click habit).
- *
- * Templates are fetched ON OPEN (the input-menu pattern — a fresh save
- * appears without a reload) and appended BELOW the already-positioned
- * default row, so the anchor never shifts while the list loads.
- *
- * With exactly one lane selected, the menu's last row saves that lane
- * to the library ("Save 'Guitar' as template…") — save-from-selection,
- * per the Q17 ruling.
+ * It opens with a FIXED "Track" default row directly under the pointer,
+ * so click-click in place adds a bare track — never a last-used row:
+ * the double-click habit needs the same thing under the cursor every
+ * time. The user's templates are fetched on open (a fresh save shows
+ * without a reload) and appended BELOW the already-placed default row,
+ * so the anchor never shifts while the list loads. With exactly one
+ * lane selected, the last row saves that lane as a template.
  */
 
 import { ctx } from './context.js';
 import { el } from './sv_util.js';
 import { selection } from './selection.js';
+import { openPopover, closePopover, closePopoverOf, menuNote }
+    from './popover.js';
 
-export function closeCreationMenu() {
-    document.querySelectorAll('.creation-menu').forEach(m => m.remove());
-}
-
-/** A non-interactive heading/status line (input-menu vocabulary). */
-const menuNote = text => el('div', 'creation-menu-note', { textContent: text });
+/* The menu keeps this far from the window's edges (px). */
+const MENU_EDGE_PX = 8;
+/* The pointer sits this far inside the default row's left edge (px). */
+const POINTER_INSET_PX = 14;
+/* A row's height before layout can say (px). */
+const DEFAULT_ROW_H_PX = 28;
+/* Opened at the window's foot, the menu still has this much height: its
+ * default row, the rest a scroll away (px). */
+const MIN_MENU_H_PX = 40;
+/* A template's name is at most this long. */
+const TEMPLATE_NAME_MAX = 64;
 
 /** One menu action row: label + optional right-aligned meta chip. */
 function menuItem(label, meta, onPick, extraClass = '') {
@@ -41,7 +40,7 @@ function menuItem(label, meta, onPick, extraClass = '') {
             { textContent: meta }));
     }
     item.addEventListener('click', () => {
-        closeCreationMenu();
+        closePopover();
         onPick();
     });
     return item;
@@ -58,112 +57,102 @@ function soleSelection() {
     return { id, name: lane.name || id };
 }
 
+/** The save-from-selection row: name the selected lane `sel` as a
+ * template. */
+function saveRow(sel) {
+    const row = el('div', 'creation-save-row');
+    const input = el('input', 'creation-save-input', {
+        type: 'text',
+        placeholder: `Save "${sel.name}" as template…`,
+    });
+    input.maxLength = TEMPLATE_NAME_MAX;
+    const commit = () => {
+        const name = input.value.trim();
+        if (!name) return;
+        closePopover();
+        ctx.cb.onSaveTemplate(sel.id, name);
+    };
+    input.addEventListener('keydown', e => {
+        e.stopPropagation();  // typing reaches no hotkey
+        if (e.key === 'Enter') commit();
+        else if (e.key === 'Escape') closePopover();
+    });
+    const go = el('button', 'creation-save-btn', { textContent: 'Save' });
+    go.addEventListener('click', commit);
+    row.append(input, go);
+    return row;
+}
+
+/** The rows under the default one: the templates, audio import, and the
+ * save row. */
+function fillRest(rest, templates, groupId) {
+    rest.textContent = '';
+    templates.forEach(t => {
+        const meta = t.kind === 'group'
+            ? `${t.tracks} track${t.tracks === 1 ? '' : 's'}`
+            : 'track';
+        rest.appendChild(menuItem(t.name, meta,
+            () => ctx.cb.onCreateFromTemplate(t.name, groupId)));
+    });
+    if (!templates.length) {
+        rest.appendChild(menuNote('creation',
+            'no templates yet — select a track, save it below'));
+    }
+    // AUDIO FILE IMPORT (docs/import.md): a new track from a
+    // WAV/AIFF/FLAC, picked natively, placed at the frame top.
+    if (ctx.cb.onImportAudio) {
+        rest.appendChild(el('div', 'creation-menu-sep'));
+        rest.appendChild(menuItem('Import audio…', 'file',
+            () => ctx.cb.onImportAudio(groupId, 0), ' import'));
+    }
+    const sel = soleSelection();
+    if (sel && ctx.cb.onSaveTemplate) {
+        rest.appendChild(el('div', 'creation-menu-sep'));
+        rest.appendChild(saveRow(sel));
+    }
+}
+
 /**
- * Open the menu for a + affordance. `groupId` is '' for top level, a
- * group's id for its + / add-row (picks insert into that group).
- * Anchoring: the DEFAULT row is placed under the pointer — the menu is
- * positioned so (clientX, clientY) lands inside that first row.
+ * Open the menu for the + affordance that `ev` (its click) came from.
+ * `groupId` is '' for the top level, a group's id for its + / add-row.
+ * The menu is placed so the pointer lands inside its default row.
  */
 export function openCreationMenu(ev, groupId = '') {
-    // Toggle: a second press on the same affordance closes.
-    if (document.querySelector('.creation-menu')) {
-        closeCreationMenu();
-        return;
-    }
+    const trigger = ev.currentTarget;
+    if (closePopoverOf(trigger)) return;
 
     const menu = el('div', 'creation-menu');
-
-    // The FIXED default row — bare empty track, default input. Sits
-    // under the cursor; click-click = today's one-verb behavior.
     menu.appendChild(menuItem('Track', 'empty', () => {
         if (groupId) ctx.cb.onAddClip(groupId);
         else ctx.cb.onAddTrack();
     }, ' default'));
-
-    // Async sections land below the anchored default row.
     const rest = el('div', 'creation-menu-rest');
     menu.appendChild(rest);
-    rest.appendChild(menuNote('templates…'));
+    rest.appendChild(menuNote('creation', 'templates…'));
+    openPopover({ menu, trigger, mount: document.body });
 
-    document.body.appendChild(menu);
-
-    // Anchor: default row under the pointer (clamped to the viewport).
+    // The default row under the pointer, clamped into the window. The
+    // rows that load below it never run past the window's foot: the
+    // menu ends MENU_EDGE_PX above it and scrolls (session.css).
     const first = menu.querySelector('.creation-item');
-    const rowH = first.offsetHeight || 28;
-    const x = Math.max(8, Math.min((ev.clientX || 0) - 14,
-        window.innerWidth - menu.offsetWidth - 8));
-    const y = Math.max(8, Math.min((ev.clientY || 0) - rowH / 2,
-        window.innerHeight - 40));
+    const rowH = first.offsetHeight || DEFAULT_ROW_H_PX;
+    const x = Math.max(MENU_EDGE_PX, Math.min((ev.clientX || 0) - POINTER_INSET_PX,
+        window.innerWidth - menu.offsetWidth - MENU_EDGE_PX));
+    const y = Math.max(MENU_EDGE_PX, Math.min((ev.clientY || 0) - rowH / 2,
+        window.innerHeight - MIN_MENU_H_PX));
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
+    menu.style.maxHeight = (window.innerHeight - y - MENU_EDGE_PX) + 'px';
 
     Promise.resolve()
         .then(() => ctx.cb.getTrackTemplates ? ctx.cb.getTrackTemplates() : [])
         .then(templates => {
-            if (!menu.isConnected) return;  // dismissed while fetching
-            rest.textContent = '';
-            (templates || []).forEach(t => {
-                const meta = t.kind === 'group'
-                    ? `${t.tracks} track${t.tracks === 1 ? '' : 's'}`
-                    : 'track';
-                rest.appendChild(menuItem(t.name, meta,
-                    () => ctx.cb.onCreateFromTemplate(t.name, groupId)));
-            });
-            if (!(templates || []).length) {
-                rest.appendChild(menuNote(
-                    'no templates yet — select a track, save it below'));
-            }
-            // AUDIO FILE IMPORT (docs/import.md): a new track from a
-            // WAV/AIFF/FLAC, picked natively, placed at the frame top.
-            if (ctx.cb.onImportAudio) {
-                rest.appendChild(el('div', 'creation-menu-sep'));
-                rest.appendChild(menuItem('Import audio…', 'file',
-                    () => ctx.cb.onImportAudio(groupId, 0), ' import'));
-            }
-            // Save-from-selection: the library grows from the session.
-            const sel = soleSelection();
-            if (sel && ctx.cb.onSaveTemplate) {
-                rest.appendChild(el('div', 'creation-menu-sep'));
-                const row = el('div', 'creation-save-row');
-                const input = el('input', 'creation-save-input', {
-                    type: 'text',
-                    placeholder: `Save "${sel.name}" as template…`,
-                });
-                input.maxLength = 64;
-                const commit = () => {
-                    const name = input.value.trim();
-                    if (!name) return;
-                    closeCreationMenu();
-                    ctx.cb.onSaveTemplate(sel.id, name);
-                };
-                input.addEventListener('keydown', e => {
-                    e.stopPropagation();  // typing must not hit hotkeys
-                    if (e.key === 'Enter') commit();
-                    else if (e.key === 'Escape') closeCreationMenu();
-                });
-                const go = el('button', 'creation-save-btn',
-                    { textContent: 'Save' });
-                go.addEventListener('click', commit);
-                row.append(input, go);
-                rest.appendChild(row);
-            }
+            if (menu.isConnected) fillRest(rest, templates || [], groupId);
         })
         .catch(err => {
             console.error('Template list fetch failed:', err);
-            if (!menu.isConnected) return;
+            if (!menu.isConnected) return;  // dismissed while fetching
             rest.textContent = '';
-            rest.appendChild(menuNote('templates unavailable'));
+            rest.appendChild(menuNote('creation', 'templates unavailable'));
         });
-}
-
-/** Dismiss on outside press (Escape lives in init.js' dispatcher). */
-export function wireCreationMenuDismiss() {
-    document.addEventListener('pointerdown', e => {
-        if (!e.target.closest('.creation-menu') &&
-            !e.target.closest('#create-track-btn') &&
-            !e.target.closest('.add-clip-btn') &&
-            !e.target.closest('.add-track-row-btn')) {
-            closeCreationMenu();
-        }
-    });
 }

@@ -8,14 +8,12 @@
  * kept while the new region plays it, else the new region start). The
  * preview is dropped when the polled node MATCHES it — every part.
  *
- * Since 2026-09-29 a loop that slots into the frame shows its ↺ where
- * it STARTS PLAYING (the sample at the frame's top, view_model
- * topFields), which is not the engine's top. Predicted from the ↺ as
- * shown, the preview's top never matched the commit's answer: the
- * preview outlived it by the whole hold cap (COMMIT_HOLD_MAX_MS), and
- * an undo, a nudge or a panel edit made meanwhile did not show on the
- * lane (field audit 2026-10-01: ⌘Z right after a splice drag on clip 3
- * showed 1.5 s late).
+ * A loop that slots into the frame shows its ↺ where it STARTS PLAYING
+ * (the sample at the frame's top, view_model topFields), which is not
+ * the engine's top. A preview predicted from the ↺ as shown would never
+ * match the commit's answer and would outlive it by the whole hold cap
+ * (COMMIT_HOLD_MAX_MS), hiding an undo, a nudge or a panel edit made
+ * meanwhile.
  *
  * What this pins:
  *   (a) the lane carries BOTH tops: `topQ` (the ↺ as shown) and
@@ -31,28 +29,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { callNative, getState, loadScenario, pauseTransport } from '../mock_backend.js';
-import { state } from '../mock/state.js';
+import { callNative, getState } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
 import { bandState } from '../session_view/map_core.js';
 import { topAfterSwap } from '../session_view/splice_handles.js';
 import { setPendingEdit, clearAllPendingEdits, hasPendingEdits, pendingEditsFor }
     from '../session_view/pending_edits.js';
-import { MOCK_Q as Q, nodeById, recordTake } from './helpers.mjs';
-
-const pub = id => nodeById(id, getState().nodes);
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
+import { MOCK_Q as Q, nodeById, laneOf } from './helpers.mjs';
+import { published as pub, recordIsland, holdStill } from './mock_scene.mjs';
 
 /** A 1Q definer; B, a 12Q take looped to [4, 8) — the first loop longer
  * than Q, so it places the frame; C, a 16Q take looped to [6, 10), which
  * slots in. The clock is held still: no continuity re-anchor. */
 async function island() {
-    loadScenario('empty');
-    const a = await recordTake('', Q, { stopEarly: 0, settle: 0 });
-    const b = await recordTake('', 12 * Q);
-    const c = await recordTake('', 16 * Q);
-    pauseTransport();
-    state.isPlaying = false;
+    const [a, b, c] = await recordIsland(Q, 12 * Q, 16 * Q);
+    holdStill();
     await callNative('setLoopPoints', b, 4 * Q, 8 * Q);
     await callNative('setLoopPoints', c, 6 * Q, 10 * Q);
     return { a, b, c };
@@ -100,9 +91,8 @@ for (const [name, segsQ] of [
 }
 
 test('(b) predicted from the ↺ as shown, the preview would never be answered', async () => {
-    // The bug this file exists for, stated as a property of the fixture:
-    // the two tops disagree after a swap, so only the engine's own can
-    // predict the commit.
+    // A property of the fixture: the two tops disagree after a swap, so
+    // only the engine's own can predict the commit.
     const { c } = await island();
     const vm = deriveViewModel(getState());
     const C = laneOf(vm, c);

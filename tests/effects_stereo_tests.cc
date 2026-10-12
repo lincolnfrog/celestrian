@@ -5,42 +5,26 @@
 
 #include "../src/dsp/effects.h"
 #include "../src/dsp/fx_chain.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
+using test_utils::makeSine;
+using test_utils::peakOf;
+
 /**
- * Stereo paths of the built-in effects (src/dsp/effects.h).
- *
- * Pins the header's stereo invariants: every effect keeps SEPARATE
- * per-channel DSP state (biquads, echo lines) so one channel never
- * leaks into the other, EXCEPT the compressor, which is stereo-LINKED
- * (one envelope from the channel maximum, the same gain to both). The
- * rack's processStereo mirrors the mono rack contracts: bit-identical
- * passthrough when nothing is enabled, and fail-silent before prepare.
+ * The laws only the stereo paths of the built-in effects have
+ * (src/dsp/effects.h): every effect keeps SEPARATE per-channel DSP
+ * state (biquads, echo lines) so one channel never leaks into the
+ * other, EXCEPT the compressor, which is stereo-LINKED (one envelope
+ * from the channel maximum, the same gain to both); and an echo nobody
+ * prepared is fail-silent on both paths. What processStereo shares with
+ * the mono path number for number — the echo's taps, the reverb's
+ * tail, the disabled rack's passthrough — is in effects_tests.cc.
  */
 class EffectsStereoTests : public juce::UnitTest {
  public:
   EffectsStereoTests() : juce::UnitTest("Effects Stereo", "DSP") {}
-
-  static float peakOf(const std::vector<float>& samples, size_t from,
-                      size_t to) {
-    float peak = 0.0f;
-    for (size_t i = from; i < to && i < samples.size(); ++i) {
-      peak = std::max(peak, std::abs(samples[i]));
-    }
-    return peak;
-  }
-
-  static std::vector<float> makeSine(double frequency, double sample_rate,
-                                     int length, float amplitude) {
-    std::vector<float> samples((size_t)length);
-    for (int i = 0; i < length; ++i) {
-      samples[(size_t)i] =
-          amplitude * (float)std::sin(2.0 * juce::MathConstants<double>::pi *
-                                      frequency * (double)i / sample_rate);
-    }
-    return samples;
-  }
 
   void runTest() override {
     const double sample_rate = 44100.0;
@@ -85,27 +69,6 @@ class EffectsStereoTests : public juce::UnitTest {
       }
       expectWithinAbsoluteError(max_difference, 0.0f, 1.0e-6f,
                                 "R path matches an identical mono chain");
-    }
-
-    beginTest("Echo stereo: L impulse does not echo on R");
-    {
-      dsp::FxEcho echo;
-      echo.prepare(sample_rate);
-      echo.time_s.store(0.1f);  // 4410 samples
-      echo.feedback.store(0.5f);
-      echo.mix.store(0.8f);
-
-      std::vector<float> left(16384, 0.0f), right(16384, 0.0f);
-      left[0] = 1.0f;
-      echo.processStereo(left.data(), right.data(), (int)left.size());
-
-      expectWithinAbsoluteError(left[0], 1.0f, 0.001f, "dry passes through");
-      expectWithinAbsoluteError(left[4410], 0.8f, 0.001f,
-                                "delayed copy appears on L");
-      expectWithinAbsoluteError(left[8820], 0.4f, 0.001f,
-                                "second L echo = mix times feedback");
-      expectWithinAbsoluteError(peakOf(right, 0, right.size()), 0.0f, 1.0e-6f,
-                                "R stays silent (line_r_ independence)");
     }
 
     beginTest("Compressor stereo link: loud L reduces R by the same gain");
@@ -157,44 +120,6 @@ class EffectsStereoTests : public juce::UnitTest {
                                 "both channels receive the identical gain");
     }
 
-    beginTest("Reverb stereo: tail appears and decays");
-    {
-      dsp::FxReverb reverb;
-      reverb.prepare(sample_rate);
-      reverb.mix.store(0.5f);
-
-      std::vector<float> left(44100, 0.0f), right(44100, 0.0f);
-      left[0] = 1.0f;
-      right[0] = 1.0f;
-      reverb.processStereo(left.data(), right.data(), (int)left.size());
-
-      const float early_left = peakOf(left, 2000, 12000);
-      const float late_left = peakOf(left, 30000, 44100);
-      const float early_right = peakOf(right, 2000, 12000);
-      const float late_right = peakOf(right, 30000, 44100);
-      expectGreaterThan(early_left, 0.001f, "L tail exists");
-      expectGreaterThan(early_right, 0.001f, "R tail exists");
-      expectLessThan(late_left, early_left, "L tail decays");
-      expectLessThan(late_right, early_right, "R tail decays");
-    }
-
-    beginTest("Chain processStereo: disabled is bit-identical passthrough");
-    {
-      auto chain = dsp::FxChain::makeDefault();
-      chain->prepare(sample_rate);
-      std::vector<float> left(4096), right(4096);
-      for (size_t i = 0; i < left.size(); ++i) {
-        left[i] = (float)std::sin(0.01 * (double)i);
-        right[i] = (float)std::cos(0.017 * (double)i);
-      }
-      const std::vector<float> left_reference = left;
-      const std::vector<float> right_reference = right;
-      chain->processStereo(left.data(), right.data(), (int)left.size());
-      expect(left == left_reference, "all-disabled chain leaves L untouched");
-      expect(right == right_reference,
-             "all-disabled chain leaves R untouched");
-    }
-
     beginTest(
         "Chain processStereo: enabled effect shapes both channels through "
         "separate state");
@@ -222,30 +147,6 @@ class EffectsStereoTests : public juce::UnitTest {
                                 0.0f, 0.001f, "L's echo does not land on R");
       expectWithinAbsoluteError(left[(size_t)(right_impulse_position + 2205)],
                                 0.0f, 0.001f, "R's echo does not land on L");
-    }
-
-    beginTest(
-        "slot setParam: unknown ids return false, valid ones true; "
-        "params clamp");
-    {
-      auto chain = dsp::FxChain::makeDefault();
-      chain->prepare(sample_rate);
-      expect(dsp::FxChain::makeBuiltIn("flanger") == nullptr,
-             "unknown type rejected");
-      auto* echo_slot = dynamic_cast<dsp::EchoSlot*>(chain->slots()[2].get());
-      auto* comp_slot =
-          dynamic_cast<dsp::CompressorSlot*>(chain->slots()[1].get());
-      expect(!echo_slot->setParam("nonsense", 1.0), "unknown param rejected");
-
-      expect(comp_slot->setParam("ratio", 999.0), "valid param accepted");
-      expectWithinAbsoluteError(comp_slot->compressor.ratio.load(), 20.0f,
-                                0.001f, "ratio clamps to 20");
-      expect(echo_slot->setParam("time", 99.0));
-      expectWithinAbsoluteError(echo_slot->echo.time_s.load(), 2.0f, 0.001f,
-                                "echo time clamps to 2.0");
-      expect(echo_slot->setParam("feedback", 5.0));
-      expectWithinAbsoluteError(echo_slot->echo.feedback.load(), 0.9f, 0.001f,
-                                "echo feedback clamps to 0.9");
     }
 
     beginTest(

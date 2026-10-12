@@ -25,8 +25,10 @@ test('eqResponseDb: +12 low shelf lifts the lows, leaves the highs', () => {
 });
 
 test('eqResponseDb: −12 mid peak notches 1 kHz symmetrically', () => {
-    const dbs = eqResponseDb([1000], { low: 0, mid: -12, high: 0 });
-    assert.ok(dbs[0] < -10.5, `1 kHz cut ~12 dB, got ${dbs[0]}`);
+    const [below, centre, above] = eqResponseDb([500, 1000, 2000], { low: 0, mid: -12, high: 0 });
+    assert.ok(centre < -10.5, `1 kHz cut ~12 dB, got ${centre}`);
+    assert.ok(below > centre && below < 0, `an octave below is cut less, got ${below}`);
+    assert.ok(Math.abs(below - above) < 0.5, `an octave either side alike: ${below} / ${above}`);
 });
 
 test('echoTaps: dry pulse then geometric repeats at k·time', () => {

@@ -10,8 +10,9 @@
  *    sounds), the grid's columns are the visits, the lanes tile over it;
  *  - a RADIO (a branch with chance, or an intro that never returns) is
  *    ROOT-ONLY (S12): a nested target refuses it and records no undo step;
- *  - the seed is data: the same seed replays the same run; re-roll is one
- *    undoable setSequence; the run survives the mock's session round trip;
+ *  - the seed is data (the run a seed draws is the golden's, in
+ *    sequence_program.test.mjs; a seeded song and its undo are held to
+ *    the engine by ui/differential/ seq/cue-and-successors);
  *  - the step audition of a revisited step loops its FIRST visit; an
  *    orphan cannot be auditioned.
  */
@@ -23,19 +24,7 @@ import { callNative, getState, loadScenario }
     from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
 import { programOf } from '../sequence_program.js';
-import { recordTake } from './helpers.mjs';
-
-const opts = { fxOpen: new Set(),
-               pinFrameQ: null, pinFoldQ: null };
-
-async function seedTwoTracks() {
-    loadScenario('empty');
-    await callNative('setSequence', 'mock-root', null);
-    if (getState().sequence) await callNative('toggleSequence', 'mock-root');
-    const a = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
-    const b = await recordTake('', 2000);
-    return { a, b, Q: getState().quantum };
-}
+import { seedTwoTracks } from './mock_scene.mjs';
 
 const threeSteps = (Q, nexts, seed = 0) => ({
     steps: nexts.map((next, i) => ({
@@ -60,7 +49,7 @@ test('a jump graph: the program is the timeline (period law, grid, lanes)', asyn
     assert.equal(st.sequence.steps[1].next, undefined,
         'the default successor stores as no list');
 
-    const vm = deriveViewModel(st, { ...opts, seqOpen: new Set(['mock-root']) });
+    const vm = deriveViewModel(st, { seqOpen: new Set(['mock-root']) });
     assert.equal(vm.cycleQ, 4, 'the frame is the PROGRAM (2 visits × 2Q)');
     const grid = vm.lanes.find(l => l.kind === 'seq');
     assert.equal(grid.steps.length, 3, 'three authored steps');
@@ -106,30 +95,12 @@ test('a radio is ROOT-ONLY (S12): nested refuses, records no undo; the root take
     assert.equal(st.sequence.program.length, 256, 'the horizon');
     assert.deepEqual(st.sequence.program, programOf(branch.steps, 5).visits,
         'the published program IS the mirror\'s unroll');
-    const vm = deriveViewModel(st, { ...opts, seqOpen: new Set(['mock-root']) });
+    const vm = deriveViewModel(st, { seqOpen: new Set(['mock-root']) });
     const grid = vm.lanes.find(l => l.kind === 'seq');
     assert.equal(grid.radio, true);
     assert.equal(grid.seed, 5);
     assert.equal(grid.visits.length, 256);
     assert.equal(vm.cycleQ, grid.totalQ, 'the frame is the whole program');
-});
-
-test('the seed is data: re-roll is one undoable edit; another seed, another run', async () => {
-    const { Q } = await seedTwoTracks();
-    const branch = seed => threeSteps(
-        Q, [[{ to: 1, w: 1 }, { to: 2, w: 1 }], [{ to: 0, w: 1 }], [{ to: 0, w: 1 }]],
-        seed);
-    await callNative('setSequence', 'mock-root', branch(1));
-    const run1 = getState().sequence.program.slice();
-    await callNative('setSequence', 'mock-root', branch(2));
-    const run2 = getState().sequence.program.slice();
-    assert.notDeepEqual(run1, run2, 'another seed is another performance');
-    await callNative('undo');
-    assert.equal(getState().sequence.seed, 1, 'undo restores the seed');
-    assert.deepEqual(getState().sequence.program, run1, '…and its run');
-    await callNative('setSequence', 'mock-root', branch(1));
-    assert.deepEqual(getState().sequence.program, run1,
-        'the same seed replays the same run');
 });
 
 test('malformed successors refuse: out of range, non-positive weight', async () => {

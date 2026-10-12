@@ -4,10 +4,9 @@
  *
  * The hammer: one writer alternates between two distinct records while
  * a reader spins, and every read must equal one of the two records
- * EXACTLY — never a mix. On x86 the old release-RMW / acquire-load
- * shape passed this by TSO alone; on ARM64 (this machine) a torn read
- * is a real outcome of the old memory orders, so this is the pin. Run
- * it under TSan when the sanitizer build lands (audit D10-4).
+ * EXACTLY — never a mix. x86's total store order hides weaker memory
+ * orders; on ARM64 a torn read is a real outcome of them, so this is
+ * the pin.
  */
 
 #include <juce_core/juce_core.h>
@@ -25,7 +24,7 @@ namespace {
  * optimizer cannot drop (volatile), no syscall (macOS's yield returns
  * at once on an otherwise idle core). */
 void pace() {
-  for (volatile int k = 0; k < 4000; ++k) {
+  for (volatile int k = 0; k < 4000; k = k + 1) {
   }
 }
 }  // namespace
@@ -41,8 +40,8 @@ class SeqLockTests : public juce::UnitTest {
       SeqLock lock;
       int payload[2] = {0, 0};
       lock.write([&](int slot) { payload[slot] = 7; });
-      expectEquals(payload[0], 7, "the write stores the primary…");
-      expectEquals(payload[1], 7, "…and the shadow");
+      expectEquals(payload[0], 7, "the write stores the primary...");
+      expectEquals(payload[1], 7, "...and the shadow");
       int seen = 0;
       expect(lock.read([&](int slot) { seen = payload[slot]; }), "stable read");
       expectEquals(seen, 7, "payload observed");
@@ -50,13 +49,14 @@ class SeqLockTests : public juce::UnitTest {
 
     beginTest("latch: a writer stalled mid-write never stalls or tears a reader");
     {
-      // THE BUG THE LATCH FIXES: the OS preempts the writer (the
-      // message thread) between its payload stores. Single-copy, the
-      // mark stayed odd and every read burned its retry bound and took
-      // a mixed record. Here the writer parks inside each copy's stores
-      // with the record half written; a read in between must come back
-      // at once, consistent, and whole — the previous record while the
-      // primary is half written, the new one while the shadow is.
+      // WHAT THE LATCH IS FOR: the OS preempts the writer (the message
+      // thread) between its payload stores. With a single copy the mark
+      // would stay odd, and every read would burn its retry bound and
+      // take a mixed record. Here the writer parks inside each copy's
+      // stores with the record half written; a read in between must
+      // come back at once, consistent, and whole — the previous record
+      // while the primary is half written, the new one while the shadow
+      // is.
       SeqLock lock;
       std::atomic<int64_t> a[2] = {{1}, {1}}, b[2] = {{-1}, {-1}};
       std::atomic<int> parked{-1};  // the copy the writer is parked in
@@ -80,11 +80,11 @@ class SeqLockTests : public juce::UnitTest {
       int64_t ra = 0, rb = 0;
       while (parked.load() != 0) std::this_thread::yield();
       expect(readOnce(ra, rb), "primary half written: the read is consistent");
-      expect(ra == 1 && rb == -1, "…and is the previous record, whole");
+      expect(ra == 1 && rb == -1, "...and is the previous record, whole");
       go.store(true);
       while (parked.load() != 1) std::this_thread::yield();
       expect(readOnce(ra, rb), "shadow half written: the read is consistent");
-      expect(ra == 2 && rb == -2, "…and is the new record, whole");
+      expect(ra == 2 && rb == -2, "...and is the new record, whole");
       go.store(true);
       writer.join();
       expect(readOnce(ra, rb) && ra == 2 && rb == -2, "after the write: the new record");
@@ -169,9 +169,9 @@ class SeqLockTests : public juce::UnitTest {
       // sixteen writes landing inside one read — the only way a read
       // comes back unchecked — do not happen; every read must then be
       // whole. A writer the OS preempts mid-write costs the reader
-      // nothing (the latch: it reads the other copy) — on Windows the
-      // single-copy form tore here. (A yield is not a pause on macOS
-      // when the core has nothing else to run — hence the spin.)
+      // nothing (the latch: it reads the other copy). (A yield is not a
+      // pause on macOS when the core has nothing else to run — hence
+      // the spin.)
       for (int i = 0; i < 5000; ++i) {
         node.setMap((i & 1) ? B : A);
         pace();

@@ -1,22 +1,20 @@
 /**
- * mock/effects.js — the effect CHAIN (docs/vst3.md phase 2): default
- * chain construction, lazy per-node installation, and the slot-uuid
- * keyed setters (engine parity: AudioEngine::setSlotEnabled /
- * setSlotParam / moveChainSlot on dsp::FxChain).
- *
- * Shape contract: node.effects = { chain: [entry...], scope? } where an
- * entry is {slot, type, enabled, ...params} — the same array
- * FxChain::getMetadata publishes and session_io persists. Slot uuids
- * are stable per node (engine parity: reorders preserve identity).
+ * mock/effects.js — the effect chain (docs/vst3.md; engine dsp::FxChain
+ * and the AudioEngine slot verbs). node.effects = { chain: [entry…] },
+ * an entry being { slot, type, enabled, …params } — the array the engine
+ * publishes and saves. Every node carries its rack from creation
+ * (ensureEffects), the root's being the master rack; slot uuids are
+ * stable. Chain STRUCTURE is undoable; a slot's switch and parameters
+ * are knobs.
  */
 
-import { popUndoForRefusal } from './undo.js';
-import { findNode, state } from './state.js';
+import { EFFECT_SCHEMA } from '../effect_schema.js';
+import { state, findNode, nodeOrRoot, eachNode } from './state.js';
 import { getKnownPlugins } from './plugins.js';
 
 let slotCounter = 0;
 
-// Built-in defaults (engine parity: the dsp:: classes' initial values).
+/** The built-ins' initial values (engine: the dsp:: classes'). */
 const BUILT_IN_DEFAULTS = [
     ['eq', { low: 0, mid: 0, high: 0 }],
     ['compressor', { threshold: -18, ratio: 4, attack: 10, release: 100, makeup: 0 }],
@@ -24,8 +22,7 @@ const BUILT_IN_DEFAULTS = [
     ['reverb', { size: 0.5, damp: 0.5, mix: 0.3 }],
 ];
 
-/** A fresh default chain: the four built-ins in canonical order, all
- * disabled — FxChain::makeDefault's twin. */
+/** Engine FxChain::makeDefault: the four built-ins, all off. */
 function defaultEffects() {
     return {
         chain: BUILT_IN_DEFAULTS.map(([type, params]) => ({
@@ -37,77 +34,62 @@ function defaultEffects() {
     };
 }
 
+/** The node's rack, installed if it has none. */
 export function ensureEffects(node) {
     if (!node.effects) node.effects = defaultEffects();
     return node.effects;
 }
 
-/** The node whose rack `id` addresses: the synthetic root holder for
- * 'mock-root' (the master rack, B5), else the graph node. */
-function rackHolder(id) {
-    return id === 'mock-root' ? state.root : findNode(id);
-}
+const chainOf = id => {
+    const node = nodeOrRoot(id);
+    return node ? ensureEffects(node).chain : null;
+};
 
-/** Instruments head the chain, each group keeping its order (engine
- * parity: FxChain::makeFromSlots — an instrument overwrites the buffer,
- * so nothing may sit upstream of it). */
+/** Engine FxChain::makeFromSlots: instruments head the chain, each group
+ * keeping its order. */
 function instrumentsFirst(chain) {
-    const ordered = [...chain.filter(s => s.isInstrument),
-        ...chain.filter(s => !s.isInstrument)];
-    chain.splice(0, chain.length, ...ordered);
+    chain.splice(0, chain.length, ...chain.filter(s => s.isInstrument),
+        ...chain.filter(s => !s.isInstrument));
 }
 
-function findSlotEntry(node, slotUuid) {
-    return node && ensureEffects(node).chain.find(s => s.slot === slotUuid);
-}
-
+/** False for an unknown node or slot. */
 export function setSlotEnabled(id, slotUuid, enabled) {
-    const entry = findSlotEntry(rackHolder(id), slotUuid);
-    if (entry) {
-        entry.enabled = !!enabled;
-        console.log('[MockBackend] Slot', entry.type, slotUuid, 'on', id,
-            '→', enabled ? 'ENABLED' : 'DISABLED');
-    }
+    const entry = (chainOf(id) || []).find(s => s.slot === slotUuid);
+    if (!entry) return false;
+    entry.enabled = !!enabled;
+    return true;
 }
 
+/** A built-in's parameter clamps to its row's range (effect_schema.js,
+ * pinned to fx_chain.cc). */
 export function setSlotParam(id, slotUuid, key, value) {
-    const entry = findSlotEntry(rackHolder(id), slotUuid);
-    if (entry && key !== 'slot' && key !== 'type' && key !== 'enabled' &&
-        Object.prototype.hasOwnProperty.call(entry, key)) {
-        entry[key] = value;
-        console.log('[MockBackend] Slot param', entry.type + '.' + key,
-            'on', id, '→', value);
-    }
+    const entry = (chainOf(id) || []).find(s => s.slot === slotUuid);
+    if (!entry || ['slot', 'type', 'enabled'].includes(key) ||
+        !Object.prototype.hasOwnProperty.call(entry, key)) return;
+    const schema = EFFECT_SCHEMA.find(e => e.type === entry.type);
+    const row = schema && schema.params.find(p => p.key === key);
+    entry[key] = row ? Math.max(row.min, Math.min(row.max, Number(value))) : value;
 }
 
-/** Chain STRUCTURE (undoable, unlike the knobs — see mock/undo.js). */
 export function moveChainSlot(id, slotUuid, newIndex) {
-    const node = rackHolder(id);
-    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
-    const chain = ensureEffects(node).chain;
+    const chain = chainOf(id);
+    if (!chain) return;
     const from = chain.findIndex(s => s.slot === slotUuid);
+    if (from < 0) return;
     const to = Math.max(0, Math.min(chain.length - 1, newIndex | 0));
-    if (from < 0 || from === to) return;
-    const [moved] = chain.splice(from, 1);
-    chain.splice(to, 0, moved);
+    chain.splice(to, 0, chain.splice(from, 1)[0]);
     instrumentsFirst(chain);
-    console.log('[MockBackend] Slot', slotUuid, 'on', id, 'moved →', to);
 }
 
-/** VST3 slot add (docs/vst3.md phase 3). The REAL backend is async
- * (instantiation completes later); the mock lands the slot
- * immediately — the UI contract is only "the chip appears when the
- * chain publishes it". Arrives ENABLED, like the engine's. */
+/** The engine instantiates a plugin asynchronously; the mock lands the
+ * slot at once, enabled. An unknown uid adds nothing. */
 export function addPluginToChain(id, pluginUid, index) {
-    const node = rackHolder(id);
-    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
-    const known = getKnownPlugins().find(p => p.uid === pluginUid);
-    if (!known) {
-        console.log('[MockBackend] addPluginToChain: unknown uid', pluginUid);
-        return;
-    }
-    const chain = ensureEffects(node).chain;
-    const entry = {
+    const chain = chainOf(id);
+    const known = chain && getKnownPlugins().find(p => p.uid === pluginUid);
+    if (!known) return;
+    const at = typeof index === 'number' && index >= 0 ? Math.min(chain.length, index)
+                                                       : chain.length;
+    chain.splice(at, 0, {
         slot: 'slot-vst3-' + (++slotCounter),
         type: 'vst3',
         enabled: true,
@@ -115,63 +97,40 @@ export function addPluginToChain(id, pluginUid, index) {
         uid: known.uid,
         file: known.file,
         missing: false,
+        unsupported: false,
         isInstrument: !!known.isInstrument,
         latency: 0,
-    };
-    const at = (typeof index === 'number' && index >= 0)
-        ? Math.min(chain.length, index) : chain.length;
-    chain.splice(at, 0, entry);
-    instrumentsFirst(chain);
-    console.log('[MockBackend] Plugin', known.name, 'added to', id, 'at',
-        chain.indexOf(entry));
-}
-
-/** VST3-only removal (engine parity: built-ins are the fixed cards). */
-export function removeChainSlot(id, slotUuid) {
-    const node = rackHolder(id);
-    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
-    const chain = ensureEffects(node).chain;
-    const at = chain.findIndex(s => s.slot === slotUuid && s.type === 'vst3');
-    if (at < 0) return;
-    chain.splice(at, 1);
-    console.log('[MockBackend] Slot', slotUuid, 'removed from', id);
-}
-
-export function openPluginEditor(id, slotUuid) {
-    // Native windows do not exist in the mock; log the gesture so e2e
-    // can assert the bridge call happened if it ever needs to.
-    console.log('[MockBackend] openPluginEditor', id, slotUuid);
-    return true;
-}
-
-/** Single-armed play-through target (engine parity: setMidiArmed
- * clears every other node's flag first). Not undoable. */
-export function setMidiArmed(id, on) {
-    const clearAll = nodes => nodes.forEach(n => {
-        n.midiArmed = false;
-        if (n.nodes) clearAll(n.nodes);
     });
-    clearAll(state.nodes);
-    if (on) {
-        const node = findNode(id);
-        if (node) {
-            node.midiArmed = true;
-            console.log('[MockBackend] MIDI armed on', id);
-        }
-    }
+    instrumentsFirst(chain);
 }
 
-/** Diagnostics fixture (engine parity: {devices, dropped}). */
+/** Only a plugin slot is removable: the built-ins are the fixed cards. */
+export function removeChainSlot(id, slotUuid) {
+    const chain = chainOf(id);
+    const at = chain ? chain.findIndex(s => s.slot === slotUuid && s.type === 'vst3') : -1;
+    if (at >= 0) chain.splice(at, 1);
+}
+
+/** No native window in the mock: answers whether there is an editor to
+ * show — a plugin slot whose plugin is loaded. */
+export function openPluginEditor(id, slotUuid) {
+    const entry = (chainOf(id) || []).find(s => s.slot === slotUuid);
+    return !!entry && entry.type === 'vst3' && !entry.missing;
+}
+
+/** One node holds the live MIDI play-through at a time. */
+export function setMidiArmed(id, on) {
+    eachNode(n => { n.midiArmed = false; });
+    const node = on ? findNode(id) : null;
+    if (node) node.midiArmed = true;
+}
+
 export function getMidiInputs() {
     return { devices: ['Mock Keys 61'], dropped: 0 };
 }
 
+/** Scope telemetry is published only while a panel watches. */
 export function setEffectScope(id, active) {
-    // Engine parity (FxScope::setActive): scope telemetry only exists
-    // while a panel watches.
-    const node = rackHolder(id);
-    if (node) {
-        node._scopeOn = !!active;
-        console.log('[MockBackend] Effect scope on', id, '→', active ? 'OPEN' : 'CLOSED');
-    }
+    const node = nodeOrRoot(id);
+    if (node) node._scopeOn = !!active;
 }

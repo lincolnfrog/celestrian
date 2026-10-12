@@ -6,37 +6,39 @@
  * advanceBy / getState / deriveViewModel).
  *
  * Each iteration: from an empty session, 20-60 random ops (create /
- * combine / record / advance / stop / cancel / setLoopPoints incl.
- * deliberately invalid / setSegments incl. malformed / toggleLoopWindow /
- * seek / delete / undo / redo / togglePlayback), asserting after EVERY
- * op:
+ * combine / reorder / rename / record / new take / advance / stop /
+ * cancel / setLoopPoints incl. deliberately invalid / setSegments incl.
+ * malformed / toggleLoopWindow / setTiming / setDefiner /
+ * setPeriodSource / setSequence incl. malformed / toggleSequence /
+ * selectTake / deleteTake / setComp / seek / delete / undo / redo /
+ * togglePlayback), asserting after EVERY op:
  *   I1 getState() + deriveViewModel() succeed; every lane has finite
  *      periodQ/intrinsicQ >= 0 and reps within [0, cycleQ + eps].
  *   I2 Q coherence: every ACTIVE non-definer window/map period is a
- *      whole multiple or exact divisor of state.quantum.
+ *      whole multiple or exact divisor of state.quantum — until Q is
+ *      handed to a track (setDefiner): from there other tracks drift.
  *   I3 subtree anchoring (docs/composition.md I10/I11, Q18): the
  *      DEFINER STACK (state.definerId) is anchored and its members'
  *      origins equal the stack's (they ride with their parent).
- *   I4 undo/redo round-trip: graph-shape facts (ids, durations,
- *      origins, loop points, segments, quantum, zero) return EXACTLY
- *      after k undos + k redos.
+ *   I4 undo/redo round-trip: the graph facts (the tree, names,
+ *      durations, origins, maps, tops, re-times, takes, comps, songs,
+ *      period sources, quantum, zero, the definer) return EXACTLY after
+ *      k undos + k redos.
  *   I5 no NaN/Infinity anywhere in the published state.
+ *   I6 an undoable edit that leaves the graph facts as they were — a
+ *      refusal, an identity — leaves the undo/redo bookkeeping too; one
+ *      aimed at a nonexistent node changes neither.
  *
  * DETERMINISTIC: the op stream derives only from the seeded LCG
  * (helpers.mjs makeLcg); op descriptors carry their random draws, so a
  * recorded sequence replays and shrinks exactly. On a violation the
  * seed + full op log is printed, then the sequence is greedily shrunk
- * and the MINIMAL repro reported.
+ * and the MINIMAL repro reported. A violation is a bug: fix it — no
+ * invariant is ever suppressed or skipped.
  *
  * Env knobs (deep local runs):
- *   FUZZ_SEED=<n>   run only that seed (skip-list ignored)
+ *   FUZZ_SEED=<n>   run only that seed
  *   FUZZ_ITERS=<n>  iterations per seed (CI default below)
- *
- * KNOWN BUGS (see KNOWN_BUG_SIGS below): minimal repros found by this
- * fuzzer that reproduce real law violations in the mock's bookkeeping.
- * Their signatures are suppressed so CI stays green while they are
- * fixed; remove entries as fixes land. FUZZ_STRICT=1 disables the
- * suppression.
  */
 
 import test from 'node:test';
@@ -44,9 +46,11 @@ import assert from 'node:assert/strict';
 
 import { advanceBy, callNative, getState, loadScenario }
     from '../mock_backend.js';
+import { findNode as rawNode, state as mockState } from '../mock/state.js';
 import { deriveViewModel } from '../view_model.js';
 import { flatSegPeriod } from '../time_map.js';
-import { makeLcg } from './helpers.mjs';
+import { posMod } from '../math_utils.js';
+import { makeLcg, nodeById } from './helpers.mjs';
 
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
@@ -60,75 +64,14 @@ const CI_SEEDS = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23,
 const ENV_SEED = process.env.FUZZ_SEED ? Number(process.env.FUZZ_SEED) : null;
 const ITERS = process.env.FUZZ_ITERS ? Number(process.env.FUZZ_ITERS)
     : (ENV_SEED != null ? 200 : 100);  // CI: 20 seeds x 100 = 2000/run
-const STRICT = !!process.env.FUZZ_STRICT;
 const SHRINK_BUDGET = 600;             // max replays per shrink
-// Deep-run helper: FUZZ_IGNORE=I2,I6 disables whole invariants so a
-// ubiquitous known family cannot shadow rarer bugs behind it.
-const IGNORE = new Set((process.env.FUZZ_IGNORE || '')
-    .split(',').map(s => s.trim()).filter(Boolean));
-
-/**
- * KNOWN-BUG suppression list (the "documented skip list"). Suppression
- * is by violation SIGNATURE rather than by seed, so the fixed seeds
- * keep all their other coverage; FUZZ_STRICT=1 or deleting an entry
- * re-arms a family. Each entry names the root cause and one minimal
- * repro found by this fuzzer (2026-08-31 campaign, ~27k iterations).
- *
- * FAMILY A — I2: the coherence guard is skipped while islandQ == 0
- * (both setLoopPoints and setSegments guard with `q > 0 &&`), so a
- * window/map authored BEFORE the first commit survives Q
- * establishment unvalidated and is published windowActive with an
- * incoherent period — the exact LCM-explosion state the categorical
- * guard (owner ruling 2026-08-09) exists to prevent: mock
- * effectiveCycle() then wraps masterPos on lcm(Q, period) (minutes
- * instead of one bar) while the VM frames 1Q. Contributing mock-only
- * holes: (1) setLoopPoints does not clamp/refuse windows on an EMPTY
- * clip (engine clamps to duration → empty); (2) the mock never got the
- * engine's audit-§1.5 fix refusing a non-definer STACK window past its
- * inner cycle (negative/absurd stack windows are stored verbatim);
- * (3) commitClip() resets loopStart/loopEnd but NOT node.segments, so
- * a pre-arm multi-segment override survives commit and loops cells
- * addressed past the recorded material.
- *   Minimal repro (empty-clip window):
- *     createNode clip A; createNode clip B; setLoopPoints(B, 3072,
- *     15360); startRecordingInNode(A); advanceBy(2048); stop(A)
- *     → B publishes windowActive, period 12288, Q 2048-ish: incoherent.
- *   Minimal repro (segments survive commit):
- *     createNode clip A; setSegments(A, [100,200,300,400]);
- *     startRecordingInNode(A); advanceBy(1000); stop(A)
- *     → committed dur 1000 with segments [100,200,300,400] still on.
- */
-/* RE-ARMED (2026-08-31): every family below was FIXED — engine, mock
- * and UI together (docs/loop_region_audit.md §5) — and its entries
- * removed so the fuzzer bites again:
- *   FAMILY A (I2, stale/warped geometry): empty-clip windows clamp to
- *     cleared; empty-target windows/segments refuse; the mid-take gate
- *     covers the recording target; the definer paths (clip AND stack)
- *     refuse through wrapper warps, so re-establishment can no longer
- *     strand an ancestor's geometry off-grid.
- *   FAMILY B (I3, zero establishment): the first-clip arm sets the
- *     provisional zero, first commit establishes (Q, zero) together,
- *     and combineNodes no longer fabricates a declared Q.
- *   FAMILY C (I6, refusal bookkeeping): unknown-node paths pop the
- *     dispatch snapshot, and a refusal restores the redo branch.
- * A new violation here is a NEW bug: fix it, never re-suppress. */
-const I2_KNOWN = [];
-const I3_KNOWN = [];
-const I6_KNOWN = [];
-const KNOWN_BUG_SIGS = [...I2_KNOWN, ...I3_KNOWN, ...I6_KNOWN]
-    .map(sig => ({ sig }));
-
-function suppressed(sig) {
-    if (STRICT) return false;
-    return KNOWN_BUG_SIGS.some(k => sig.startsWith(k.sig));
-}
 
 /* ------------------------------------------------------------------ */
 /* Small utilities                                                     */
 /* ------------------------------------------------------------------ */
 
-const posMod = (a, m) => ((a % m) + m) % m;
 const idx = (r, n) => Math.min(n - 1, Math.floor(r * n));
+const findIn = (nodes, id) => nodeById(id, nodes);
 
 /** a is (nearly) a whole multiple of m. */
 function wholeMultiple(a, m) {
@@ -143,15 +86,6 @@ function flatNodes(st, out = []) {
     const walk = ns => (ns || []).forEach(n => { out.push(n); walk(n.nodes); });
     walk(st.nodes);
     return out;
-}
-
-function findIn(nodes, id) {
-    for (const n of nodes || []) {
-        if (n.id === id) return n;
-        const f = n.nodes && findIn(n.nodes, id);
-        if (f) return f;
-    }
-    return null;
 }
 
 /** First NaN/Infinity found anywhere in a JSON-ish value, as a path. */
@@ -180,30 +114,77 @@ function findNonFinite(v, path) {
  * (recording/pending) clips excluded — the transport grows them. */
 function graphFacts(st) {
     const nodes = [];
-    const walk = ns => (ns || []).forEach(n => {
+    // A song's undoable facts (the audition is a monitoring gesture).
+    const song = h => (h.sequence ? {
+        steps: h.sequence.steps, gates: h.sequence.gates, seed: h.sequence.seed,
+        bypassed: !!h.sequence.bypassed,
+    } : null);
+    const walk = (ns, parent) => (ns || []).forEach(n => {
         const hot = !!(n.isRecording || n.isPendingStart);
+        // The STORED map and top, from the mock's own node: a step
+        // audition publishes its derived window over them, and an edit
+        // may store the top a lane already showed.
+        const stored = rawNode(n.id) || {};
         nodes.push({
-            id: n.id, type: n.type, hot,
+            id: n.id, type: n.type, parent, name: n.name, hot,
             dur: hot ? null : (n.duration || 0),
             origin: n.origin || 0,
-            ls: n.loopStart || 0, le: n.loopEnd || 0,
-            byp: !!n.loopBypassed,
-            segs: n.segments || null,
+            ls: stored.loopStart || 0, le: stored.loopEnd || 0,
+            byp: !!stored.loopBypassed,
+            segs: stored.segments || null,
+            storedTop: stored.storedTop ?? null,
+            retime: n.retime || 0,
+            source: n.periodSource || 'own',
+            takes: hot ? null : (n.takes || 0), active: n.activeTake || 0,
+            comp: n.comp || [], compCell: n.compCellLen || 0, compOff: n.compOffset || 0,
+            domain: n.windowDomain || null, song: song(n),
         });
-        walk(n.nodes);
+        walk(n.nodes, n.id);
     });
-    walk(st.nodes);
-    return JSON.stringify({ q: st.quantum, zero: st.islandZero, nodes });
+    walk(st.nodes, '');
+    // The root is a stack too: its song, its anchor, its own stored map.
+    const root = mockState.root;
+    return JSON.stringify({ q: st.quantum, zero: st.islandZero, definer: st.definerId,
+                            song: song(st), anchored: !!st.anchored,
+                            rootOrigin: st.anchored ? st.origin : 0,
+                            rootMap: [root.loopStart || 0, root.loopEnd || 0,
+                                      root.segments || null, !!root.loopBypassed,
+                                      root.storedTop ?? null, root.windowDomain || null],
+                            nodes });
 }
 
 /* ------------------------------------------------------------------ */
 /* Invariants                                                          */
 /* ------------------------------------------------------------------ */
 
+/** Q was handed to a track in this run (setDefiner, Q22): from then on
+ * the definer's trims move Q under the other tracks' geometry, which
+ * DRIFTS instead of being refused — I2 no longer binds. */
+let handOffSeen = false;
+
+/** Nodes whose map was BYPASSED when Q moved under it (a bypassed map is
+ * not in use, so it does not hold the definer back): switched on again
+ * it plays against a grid it was not judged on, and drifts. I2 binds an
+ * edit, not these. */
+const staleMaps = new Set();
+let lastQuantum = 0;
+function noteQuantum(st) {
+    if (st.quantum !== lastQuantum) {
+        for (const n of flatNodes(st)) {
+            const stores = (Array.isArray(n.segments) && n.segments.length >= 4) ||
+                (n.loopEnd || 0) > (n.loopStart || 0);
+            if (n.loopBypassed && stores) staleMaps.add(n.id);
+        }
+    }
+    lastQuantum = st.quantum;
+}
+
 function checkInvariants() {
     let st;
     try { st = getState(); }
     catch (e) { return { inv: 'I1', msg: 'getState threw: ' + (e && e.stack || e) }; }
+
+    noteQuantum(st);
 
     // I5 — no NaN/Infinity anywhere in the published state.
     const nf = findNonFinite(st, 'state');
@@ -237,17 +218,19 @@ function checkInvariants() {
     // I2 — Q coherence of every ACTIVE non-definer window/map. Skipped:
     // the provisional definer itself, direct clip members of a definer
     // STACK (the Q13 exemption zone — their raw extents are legally
-    // incommensurate while provisional, audit §3.5), and full-span clip
-    // windows (they select nothing; their "period" is the material).
+    // incommensurate while provisional), and full-span clip windows
+    // (they select nothing; their "period" is the material).
     const q = st.quantum;
-    if (q > 0 && !IGNORE.has('I2')) {
+    if (q > 0 && !handOffSeen) {
         const definer = st.definerId ? findIn(st.nodes, st.definerId) : null;
         const definerMembers = new Set(
             definer && definer.type === 'stack'
                 ? (definer.nodes || []).map(m => m.id) : []);
         for (const n of flatNodes(st)) {
             if (!n.windowActive || n.id === st.definerId) continue;
-            if (definerMembers.has(n.id)) continue;
+            if (definerMembers.has(n.id) || staleMaps.has(n.id)) continue;
+            // A song's steps are free lengths (S10), its audition one of them.
+            if (n.sequence && !n.sequence.bypassed) continue;
             const multi = Array.isArray(n.segments) && n.segments.length >= 4;
             if (!multi && n.type === 'clip' && n.duration > 0 &&
                 (n.loopStart || 0) <= 0 && (n.loopEnd || 0) >= n.duration) {
@@ -273,11 +256,13 @@ function checkInvariants() {
     // and its members' origins ride with it — a member's origin equals
     // the stack's, since the group's one take anchored the stack there
     // and every re-anchor since (definer trim, seek, lock-collapse)
-    // moved the whole subtree by one delta. (The pre-Q18 form, "zero
-    // ≡ member origin (mod duration)", encoded the zero-anchored stack
-    // map: after a Q18 trim zero = origin + window start, so that
-    // congruence is no longer a law — composition.md §4.)
-    if (st.definerId && !IGNORE.has('I3')) {
+    // moved the whole subtree by one delta. (After a trim zero = origin
+    // + window start, so "zero ≡ member origin (mod duration)" is no
+    // law — composition.md §4.) It binds through a hand-off and a
+    // member's re-time too: a mic's own lock leaves the group on the
+    // mics it still holds, and mics moved off their group are not its
+    // one take.
+    if (st.definerId) {
         const d = findIn(st.nodes, st.definerId);
         if (d && d.type === 'stack') {
             if (!d.anchored) {
@@ -309,6 +294,9 @@ const OP_WEIGHTS = [
     ['toggleWindow', 4], ['seek', 4], ['deleteNode', 5],
     ['undo', 4], ['redo', 3], ['togglePlayback', 3], ['roundtrip', 6],
     ['groupTake', 4],
+    ['timing', 5], ['definer', 3], ['periodSource', 3], ['newTake', 4],
+    ['sequence', 4], ['toggleSequence', 2], ['reorder', 4], ['rename', 2],
+    ['selectTake', 2], ['deleteTake', 2], ['comp', 3],
 ];
 const TOTAL_W = OP_WEIGHTS.reduce((s, [, w]) => s + w, 0);
 
@@ -389,23 +377,58 @@ function drawSegments(st, node, r) {
 /* Execution                                                           */
 /* ------------------------------------------------------------------ */
 
-/** I6 — an undoable edit aimed at a NONEXISTENT node must be a pure
- * no-op: no graph change, no undo/redo bookkeeping change (the
- * popUndoForRefusal contract: a refused edit records nothing). Checked
- * only when no take is hot (the probe's extra getState() polls tick the
- * transport, which could commit a take — a false positive). */
-async function callCheckedNoop(method, id, args, all) {
+/** I6 — AN EDIT THAT CHANGES NOTHING RECORDS NOTHING: an undoable verb
+ * that leaves the graph facts as it found them — a refusal, an identity
+ * — leaves the undo/redo bookkeeping too; and one aimed at a NONEXISTENT
+ * node (`mustRefuse`) changes neither. Checked only when no take is hot
+ * (the probe's extra getState() polls tick the transport, which could
+ * commit a take — a false positive). */
+async function callEdit(method, args, all, { mustRefuse = false } = {}) {
     const anyHot = all.some(n => n.isRecording || n.isPendingStart);
-    if (anyHot || IGNORE.has('I6')) { await callNative(method, id, ...args); return; }
+    if (anyHot) return callNative(method, ...args);
     const b = getState();
-    const before = graphFacts(b) + `|undo:${b.canUndo},redo:${b.canRedo}`;
-    await callNative(method, id, ...args);
+    const factsBefore = graphFacts(b);
+    const logBefore = `undo:${b.canUndo},redo:${b.canRedo}`;
+    const answer = await callNative(method, ...args);
     const a = getState();
-    const after = graphFacts(a) + `|undo:${a.canUndo},redo:${a.canRedo}`;
-    if (before !== after) {
-        throw new FuzzViolation('I6', `${method}('${id}') on a nonexistent ` +
-            `node changed state or undo bookkeeping:\nBEFORE ${before}\nAFTER  ${after}`);
+    const factsAfter = graphFacts(a);
+    const logAfter = `undo:${a.canUndo},redo:${a.canRedo}`;
+    if (mustRefuse && factsBefore !== factsAfter) {
+        throw new FuzzViolation('I6', `${method}('${args[0]}') on a nonexistent ` +
+            `node changed the graph:\nBEFORE ${factsBefore}\nAFTER  ${factsAfter}`);
     }
+    if (factsBefore === factsAfter && logBefore !== logAfter) {
+        throw new FuzzViolation('I6', `${method}(${JSON.stringify(args)}) changed ` +
+            `nothing but the undo bookkeeping: ${logBefore} -> ${logAfter}`);
+    }
+    return answer;
+}
+
+const callCheckedNoop = (method, id, args, all) =>
+    callEdit(method, [id, ...args], all, { mustRefuse: true });
+
+/** A song payload for setSequence: 1-4 steps on the Q grid, some cued,
+ * gates on the holder's children — now and then null (a clear) or
+ * malformed (a zero length, a successor out of range). */
+function drawSequence(st, holder, r) {
+    if (r[2] < 0.15) return null;
+    const q = st.quantum > 0 ? st.quantum : 2048;
+    const count = 1 + idx(r[3], 4);
+    const lens = [q / 2, q, 2 * q, 4 * q];
+    const steps = Array.from({ length: count }, (_, i) => ({
+        name: String.fromCharCode(65 + i),
+        len: Math.round(lens[idx((r[4] * (i + 3)) % 1, lens.length)]),
+        cue: ((r[5] * (i + 2)) % 1) < 0.3,
+    }));
+    if (r[2] < 0.22) steps[0].len = 0;
+    else if (r[2] < 0.29) steps[0].next = [{ to: count + 2, w: 1 }];
+    const gates = {};
+    for (const child of (holder && holder.nodes) || []) {
+        if (((r[4] * 7 + child.id.length) % 1) < 0.5) {
+            gates[child.id] = steps.map((_, i) => (i + child.id.length) % 2 === 0);
+        }
+    }
+    return { steps, gates };
 }
 
 /** Apply one descriptor against the LIVE state. Records the concrete
@@ -475,7 +498,7 @@ async function applyOp(op, log, tombstones) {
             const [a, b] = drawWindow(st, node, r);
             log.push(`setLoopPoints('${id}', ${a}, ${b})`);
             if (isBogus(id)) await callCheckedNoop('setLoopPoints', id, [a, b], all);
-            else await callNative('setLoopPoints', id, a, b);
+            else await callEdit('setLoopPoints', [id, a, b], all);
             break;
         }
         case 'segments': {
@@ -484,14 +507,14 @@ async function applyOp(op, log, tombstones) {
             const flat = drawSegments(st, node, r);
             log.push(`setSegments('${id}', [${flat.join(', ')}])`);
             if (isBogus(id)) await callCheckedNoop('setSegments', id, [flat], all);
-            else await callNative('setSegments', id, flat);
+            else await callEdit('setSegments', [id, flat], all);
             break;
         }
         case 'toggleWindow': {
             const id = pickId(st, r[0], r[1], tombstones);
             log.push(`toggleLoopWindow('${id}')`);
             if (isBogus(id)) await callCheckedNoop('toggleLoopWindow', id, [], all);
-            else await callNative('toggleLoopWindow', id);
+            else await callEdit('toggleLoopWindow', [id], all);
             break;
         }
         case 'seek': {
@@ -526,7 +549,7 @@ async function applyOp(op, log, tombstones) {
             // spare redo would replay a pre-existing redo branch, which
             // is a state change, not a violation.
             const anyHot = all.some(n => n.isRecording || n.isPendingStart);
-            if (anyHot || IGNORE.has('I4')) { log.push('(roundtrip skipped)'); break; }
+            if (anyHot) { log.push('(roundtrip skipped)'); break; }
             const k = 1 + idx(r[0], 3);
             log.push(`# I4 probe: facts, up to ${k}x undo, same-count redo, compare`);
             const before = graphFacts(getState());
@@ -559,6 +582,110 @@ async function applyOp(op, log, tombstones) {
             advanceBy(Math.max(1, Math.round(r[2] * len)));
             break;
         }
+        case 'timing': {
+            const id = pickId(st, r[0], r[1], tombstones);
+            const node = findIn(st.nodes, id);
+            const q = st.quantum > 0 ? st.quantum : 2048;
+            const shifts = [0, q / 4, -q / 4, q, -q, 3 * q, 0.5, Math.floor(r[3] * q)];
+            const shift = shifts[idx(r[2], shifts.length)];
+            // No top, the top it shows, a random one (kept or not), a bad one.
+            const span = node && node.duration > 0 ? node.duration : 4 * q;
+            const tops = [null, null, node ? node.loopTop : 0, Math.floor(r[5] * span), -5];
+            const top = tops[idx(r[4], tops.length)];
+            log.push(`setTiming('${id}', ${shift}, ${top})`);
+            await callEdit('setTiming', [id, shift, top], all, { mustRefuse: isBogus(id) });
+            break;
+        }
+        case 'definer': {
+            const id = pickId(st, r[0], r[1], tombstones);
+            log.push(`setDefiner('${id}')`);
+            const facts = graphFacts(st);
+            await callEdit('setDefiner', [id], all, { mustRefuse: isBogus(id) });
+            if (graphFacts(getState()) !== facts) handOffSeen = true;
+            break;
+        }
+        case 'periodSource': {
+            const id = pickId(st, r[0], r[1], tombstones);
+            const source = r[2] < 0.65 ? 'context' : 'own';
+            log.push(`setPeriodSource('${id}', '${source}')`);
+            await callEdit('setPeriodSource', [id, source], all, { mustRefuse: isBogus(id) });
+            break;
+        }
+        case 'newTake': {
+            const pool = [...all.map(n => n.id), 'mock-root'];
+            const id = pool[idx(r[0], pool.length)];
+            log.push(`newTake('${id}')`);
+            await callNative('newTake', id);
+            // Half the time run it through: to its top, then one period.
+            if (r[1] < 0.5) {
+                const q = st.quantum > 0 ? st.quantum : 2048;
+                const span = Math.max(q, ...all.map(n => n.duration || 0));
+                log.push(`advanceBy(${2 * span})  # the new take runs its period`);
+                advanceBy(2 * span);
+            }
+            break;
+        }
+        case 'sequence': {
+            const holders = ['mock-root', ...stacks.map(n => n.id), ...tombstones,
+                             ...all.filter(n => n.type === 'clip').slice(0, 1).map(n => n.id)];
+            const id = holders[idx(r[0], holders.length)];
+            const payload = drawSequence(st, id === 'mock-root' ? st : findIn(st.nodes, id), r);
+            log.push(`setSequence('${id}', ${JSON.stringify(payload)})`);
+            await callEdit('setSequence', [id, payload], all, { mustRefuse: isBogus(id) });
+            break;
+        }
+        case 'toggleSequence': {
+            const holders = ['mock-root', ...stacks.map(n => n.id), 'no-such-node'];
+            const id = holders[idx(r[0], holders.length)];
+            const holder = id === 'mock-root' ? st : findIn(st.nodes, id);
+            log.push(`toggleSequence('${id}')`);
+            // (A holder with no song keeps the flag for its next one —
+            // a step, but nothing the published state shows.)
+            if (holder && !holder.sequence) await callNative('toggleSequence', id);
+            else await callEdit('toggleSequence', [id], all, { mustRefuse: isBogus(id) });
+            break;
+        }
+        case 'reorder': {
+            const id = pickId(st, r[0], r[1], tombstones);
+            // The root, a stack (its own subtree included), a clip, nothing.
+            const parents = ['mock-root', 'mock-root', ...stacks.map(n => n.id),
+                             ...all.slice(0, 1).map(n => n.id), '', 'no-such-node'];
+            const parent = parents[idx(r[2], parents.length)];
+            const index = idx(r[3], 4) - 1;
+            log.push(`reorderNode('${id}', '${parent}', ${index})`);
+            await callEdit('reorderNode', [id, parent, index], all,
+                { mustRefuse: isBogus(id) || id === 'mock-root' });
+            break;
+        }
+        case 'rename': {
+            const id = pickId(st, r[0], r[1], tombstones);
+            const name = `fuzz ${idx(r[2], 4)}`;
+            log.push(`renameNode('${id}', '${name}')`);
+            await callEdit('renameNode', [id, name], all, { mustRefuse: isBogus(id) });
+            break;
+        }
+        case 'selectTake': case 'deleteTake': {
+            const id = pickId(st, r[0], r[1], tombstones);
+            const node = findIn(st.nodes, id);
+            const k = idx(r[2], (node && node.takes ? node.takes : 1) + 2) - 1;  // −1 … count
+            log.push(`${op.t}('${id}', ${k})`);
+            await callEdit(op.t, [id, k], all, { mustRefuse: isBogus(id) });
+            break;
+        }
+        case 'comp': {
+            const id = pickId(st, r[0], r[1], tombstones);
+            const node = findIn(st.nodes, id);
+            const q = st.quantum > 0 ? st.quantum : 2048;
+            const want = node && node.duration > 0 ? Math.ceil(node.duration / q) : 1;
+            const count = r[2] < 0.2 ? 0 : (r[2] < 0.3 ? want + 1 : Math.min(want, 64));
+            const takes = node && node.takes ? node.takes : 1;
+            // Take indices in range, −1, and now and then one past the list.
+            const cells = Array.from({ length: count },
+                (_, i) => idx((r[3] * (i + 2)) % 1, takes + 2) - 1 + (r[4] < 0.1 ? 1 : 0));
+            log.push(`setComp('${id}', [${cells.join(', ')}])`);
+            await callEdit('setComp', [id, cells], all, { mustRefuse: isBogus(id) });
+            break;
+        }
         default: break;
     }
 }
@@ -571,6 +698,9 @@ class FuzzViolation extends Error {
  * Returns null, or { violation, at, log }. */
 async function runOps(ops) {
     loadScenario('empty');
+    handOffSeen = false;
+    staleMaps.clear();
+    lastQuantum = 0;
     const log = [];
     const tombstones = [];
     for (let i = 0; i < ops.length; i++) {
@@ -613,17 +743,13 @@ async function shrink(ops, inv) {
 }
 
 /** A stable signature for a violation: invariant + message with node
- * ids and numbers normalized (distinct-bug grouping + suppression). */
+ * ids and numbers normalized (groups the reports of one bug). */
 function violationSig(v) {
     const norm = v.msg.split('\n')[0]
         .replace(/node-\d+|stack-\d+/g, '<id>')
         .replace(/-?\d+(\.\d+)?/g, '<n>');
     return `${v.inv}: ${norm}`;
 }
-
-// Internals exported for the (non-CI) campaign driver; the tests below
-// self-register unless FUZZ_NO_TESTS is set.
-export { genOps, runOps, shrink, violationSig, checkInvariants, graphFacts };
 
 /* ------------------------------------------------------------------ */
 /* The tests                                                           */
@@ -637,10 +763,7 @@ console.log = () => {};
 console.warn = () => {};
 process.on('exit', () => { console.log = realLog; console.warn = realWarn; });
 
-const seeds = process.env.FUZZ_NO_TESTS ? []
-    : (ENV_SEED != null ? [ENV_SEED] : CI_SEEDS);
-
-for (const seed of seeds) {
+for (const seed of ENV_SEED != null ? [ENV_SEED] : CI_SEEDS) {
     test(`fuzz loop-region: seed ${seed} (${ITERS} iterations)`, async () => {
         const rng = makeLcg(seed);
         const failures = [];
@@ -649,7 +772,6 @@ for (const seed of seeds) {
             const res = await runOps(ops);
             if (!res) continue;
             const sig = violationSig(res.violation);
-            if (suppressed(sig)) continue;
             // Report: seed + full op log, then the shrunken minimum.
             const minOps = await shrink(ops.slice(0, res.at + 1), res.violation.inv);
             const minRes = await runOps(minOps);

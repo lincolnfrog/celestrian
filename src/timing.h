@@ -13,9 +13,11 @@
  * Pure timing math for the Celestrian engine.
  *
  * This is the C++ half of the "single source of truth" for timing semantics.
- * The JS mirror is `ui/js/timeline_model.js`; both are pinned to the same
- * golden vectors in `shared/timing_golden.json` (see
- * tests/timing_golden_tests.cc and ui/js/tests/timeline_model_golden.test.mjs).
+ * The JS mirror is `ui/js/timeline_model.js` — with the render equation
+ * and the stack fold (innerAt, stackFold) in `ui/js/time_map.js`; both
+ * sides are pinned to the same golden vectors in
+ * `shared/timing_golden.json` (see tests/timing_golden_tests.cc and
+ * ui/js/tests/timeline_model_golden.test.mjs).
  *
  * Everything here is a free function over sample counts — no JUCE types, no
  * graph access, no side effects — so it is trivially unit-testable and safe
@@ -29,9 +31,6 @@ constexpr double kHysteresisThreshold = 0.15;
 
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 constexpr int kSubdivisions[] = {2, 4, 8};
-
-// gcd/lcm live in qtime.h (the foundation layer), exposed in this
-// namespace via the include above.
 
 /**
  * THE RENDER EQUATION (composition.md §2, kernel.md §2), stated ONCE
@@ -52,8 +51,9 @@ constexpr int kSubdivisions[] = {2, 4, 8};
  * splitter every consumer uses.
  *
  * Consumers: ClipNode render + renderMidi (via forEachContentRun) and
- * their playhead writes, StackNode::childContext / inRest /
- * forEachSeamRun / innerOf, heard::ownInner (the message-thread twin).
+ * their playhead writes, StackNode::forEachSeamRun (one read per seam
+ * run, handed to both phase bodies), heard::ownInnerAt and
+ * heard::foldedClockAt (the message-thread twins).
  * JS twin: ui/js/time_map.js innerAt. Golden: `inner_at_cases`.
  */
 struct InnerAt {
@@ -87,6 +87,45 @@ inline InnerAt innerAt(int64_t t, int64_t origin, const TimeMap& map,
 }
 
 /**
+ * THE STACK FOLD: how a stack turns the clock it receives into the
+ * clock its children hear — the (map, fold) pair of the render equation
+ * for a stack, stated once for both threads (StackNode's scope facts on
+ * the audio thread; heard::foldedClockAt on the message thread).
+ *
+ *  - A MAPPED stack folds its map on the map period.
+ *  - A ONE-SHOT stack (period-from-context, in a cycle longer than its
+ *    own period) folds on the CONTEXT CYCLE: its shot is its map, else
+ *    [0, own period), fired once per cycle from the stack's origin.
+ *  - Any other stack is TRANSPARENT: the clock passes through and each
+ *    child folds on its own.
+ *
+ * `own_period` is the stack's own period by the period law
+ * (period_law.h — whose first rung is `map`, so under an active map it
+ * is the map's period). JS twin: ui/js/time_map.js stackFold. Golden:
+ * `stack_fold_cases`.
+ */
+struct StackFold {
+  TimeMap eff;            // the map innerAt reads; inactive = transparent
+  int64_t fold = 0;       // innerAt's modulus
+  bool one_shot = false;  // rests between firings
+  bool folds() const { return eff.active(); }
+};
+
+inline StackFold stackFold(const TimeMap& map, bool period_from_context,
+                           int64_t own_period, int64_t context_cycle) {
+  StackFold f;
+  const int64_t shot = map.active() ? map.period() : own_period;
+  f.one_shot = period_from_context && shot > 0 && context_cycle > shot;
+  if (map.active()) {
+    f.eff = map;
+  } else if (f.one_shot) {
+    f.eff = TimeMap::single(0, shot);
+  }
+  f.fold = f.one_shot ? context_cycle : f.eff.period();
+  return f;
+}
+
+/**
  * THE CONTENT RUN SPLITTER: walk the block [t, t + n) as contiguous
  * content reads under the render equation. `body(i, run, at)` is
  * called per run with the block offset `i`, the run length and the
@@ -114,15 +153,11 @@ inline void forEachContentRun(int64_t t, int n, int64_t origin,
   }
 }
 
-/**
- * One step of the composite-period fold shared by every LCM composition
- * site (StackNode::getIntrinsicDuration / getEffectivePeriod, their
- * snapshot twins in graph_snapshot.h, and the context-cycle fold):
- * 0 is the empty accumulator, non-positive contributions are skipped.
- * Centralized so the accumulate rule cannot drift between the node-side
- * and snapshot-side folds. (The Q5 one-shot EXCLUSION stays at each
- * call site — it is a property of the child, not of the fold.)
- */
+/** One step of the composite-period fold every LCM composition shares
+ * (the period law over either provider, and the intrinsic durations):
+ * 0 is the empty accumulator, and a non-positive contribution is
+ * skipped. Excluding a one-shot is the caller's job — it is a property
+ * of the child, not of the fold. */
 inline int64_t foldPeriod(int64_t composite, int64_t next) {
   if (next <= 0) return composite;
   return composite == 0 ? next : lcm(composite, next);
@@ -138,30 +173,19 @@ inline int64_t subdivisionSamples(int64_t quantum, int denominator) {
   return toSamples(qtime(1, denominator), quantum);
 }
 
-// === The physical/musical boundary (Q12) ===
-//
-// PHYSICAL facts stay in samples: the monotonic clock t, the zero (a
-// clock timestamp), pre-record ring indices, buffer lengths, the
-// calibration constant C, and the island exchange rate `q_samples`
-// (samples per 1Q) itself. MUSICAL facts are QTime rationals of Q — a
-// clip's origin as an OFFSET FROM THE ZERO, its period, its window
-// segments, arm targets, and Q subdivisions.
-//
-// The RT hot path stores the musical facts as sample atomics; the
-// helpers below project those atomics onto the musical frame for the
-// metadata/persistence boundary, so the UI and the save format are
-// device-independent. THE RULE: no engine code converts musical↔samples
-// except through toSamples / fromSamples / subdivisionSamples — never a
-// bare `x / quantum`, which silently floors.
+// === The physical/musical boundary (Q12; qtime.h states the split) ===
+// The RT hot path stores musical facts as sample atomics; the helpers
+// below project them onto the musical frame for the metadata and
+// persistence boundary, so the UI and the save format are
+// device-independent. No engine code converts musical ↔ samples except
+// through toSamples / fromSamples / subdivisionSamples: a bare
+// `x / quantum` silently floors.
 
-/**
- * A clip's origin as a musical offset from the island zero.
- * `origin_samples` is stored ABSOLUTE (performance-clock frame); the
- * musical fact is (origin − zero) / q_samples · Q. Exact by
- * construction (fromSamples never rounds). An unsnapped or
- * context-relative origin yields an ugly-but-exact rational — that is
- * correct, not a defect: QTime says where content BELONGS.
- */
+/** A node's origin as a musical offset from the island zero:
+ * (origin − zero) / q_samples · Q, where `origin_samples` is stored
+ * ABSOLUTE. Exact (fromSamples never rounds): an unsnapped origin
+ * yields an ugly rational, which is correct — QTime says where content
+ * BELONGS. */
 inline QTime originQ(int64_t origin_samples, int64_t zero_samples,
                      int64_t q_samples) {
   return fromSamples(origin_samples - zero_samples, q_samples);
@@ -214,9 +238,11 @@ inline int64_t nextStopBoundary(int64_t recorded_length, int64_t quantum) {
  * compensation is small.
  *
  * `rel` may be NEGATIVE — the heard clock behind the zero (a backward
- * seek moves the zero ahead of the clock; so did a session reloaded in
+ * seek moves the zero ahead of the clock; so does a session reloaded in
  * a later run). The grid extends back from the zero unchanged: the
- * answer is the next boundary AFTER `rel`, never the zero itself.
+ * answer is the next boundary at/after `rel` on that grid — a negative
+ * boundary when `rel` is a whole Q or more behind, the zero itself for
+ * −Q < rel < 0.
  */
 inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
   if (quantum <= 0) return rel < 0 ? 0 : rel;

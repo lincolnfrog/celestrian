@@ -61,12 +61,11 @@ export function buildLane(lane) {
     // the bottom line. Nothing ever competes with the name for width.
     const rail = el('div', 'lane-rail');
 
-    // GROUPING BY DRAG (owner-ruled): grouping is a
-    // post-hoc gesture, not an upfront decision — drag one track's rail
-    // onto another's. Clip target → the two combine into a new group
-    // (engine Combine edit, undoable); group target → the dragged track
-    // moves inside. Nested groups fall out (drop onto a track that
-    // lives in a group combines in place).
+    // GROUPING BY DRAG: grouping is a post-hoc gesture, not an upfront
+    // decision — drag one track's rail onto another's. Clip target →
+    // the two combine into a new group (undoable); group target → the
+    // dragged track moves inside. Nested groups fall out (a drop onto a
+    // track that lives in a group combines in place).
     rail.draggable = true;
     // Click = select (buttons, inputs, and the pan dial keep their own
     // verbs — a dial drag ends in a click on the rail, which would
@@ -149,19 +148,12 @@ export function buildLane(lane) {
     const del = el('button', 'rail-btn delete-btn', {
         textContent: '✕', title: 'Delete (⌘Z to undo)' });
     del.addEventListener('click', () => ctx.cb.onDelete && ctx.cb.onDelete(lane.id));
-    // Gain + pan dials — every lane, in the HEAD row (the flexing name
-    // yields the room; the foot's button row is already at the rail's
-    // width). Fractal like fx: a group's fader/pan scales the summed
-    // group at its output stage. The engine value streams while
-    // dragging; `_hot` keeps the 50ms tick from fighting the gesture
-    // (the fx-slider lesson).
-    // Period-source toggle (Q5) — clips AND groups, in the HEAD next
-    // to the dials (the foot button row is at the rail's full width; a
-    // foot chip overflowed): ↺ = loops at its own length; 1× =
-    // one-shot (sounds once per context cycle at its origin, then
-    // rests). A musical fact — undoable engine-side. Groups take it
-    // since Q18 (composition.md §0): a stack has an origin, so a drum
-    // group fires once per cycle from the moment it was performed.
+    // The HEAD row also carries the period-source toggle, the take chip
+    // and the gain + pan dials (the flexing name yields the room; the
+    // foot's button row is already at the rail's width).
+    // Period-source toggle (Q5), clips AND groups: ↺ = loops at its own
+    // length; 1× = one-shot (sounds once per context cycle at its
+    // origin, then rests). A musical fact — undoable engine-side.
     {
         const ps = el('button', 'rail-btn oneshot-btn mono');
         ps.addEventListener('click', () => {
@@ -170,10 +162,9 @@ export function buildLane(lane) {
         });
         head.appendChild(ps);
     }
-    // The TAKE chip (docs/takes.md) — clips only, in the HEAD beside
-    // the period-source toggle (the foot row is at the rail's width):
-    // `T<active>/<n>`, quiet with one take. Click opens the take list;
-    // in comp mode the click closes the editor (the chip is the exit).
+    // The TAKE chip (docs/takes.md), clips only: `T<active>/<n>`, quiet
+    // with one take. Click opens the take list; in comp mode the click
+    // closes the editor (the chip is the exit).
     if (lane.kind === 'clip') {
         const takeBtn = el('button', 'rail-btn take-btn mono quiet',
             { textContent: 'T1', title: 'Takes' });
@@ -193,13 +184,11 @@ export function buildLane(lane) {
     const foot = el('div', 'rail-foot');
     foot.appendChild(el('div', 'rail-sub mono'));
 
-    // Arm/record: on clips it starts/stops the take; on groups it arms
-    // every ARMABLE child (Q7 — arm targets emptiness). State is set in
-    // patchRail; the click hands the current lane back to app.js.
-    // Arm is a STATE TOGGLE, not a record button — the transport's red
-    // circle is the one record verb (three identical red dots would
-    // read as three mystery record buttons). The ring fills red when
-    // armed; the glyph stays empty at rest.
+    // Arm: on clips it starts/stops the take; on groups it arms every
+    // ARMABLE child (Q7 — arm targets emptiness). A STATE TOGGLE, not a
+    // record button — the transport's red circle is the one record
+    // verb. State is set in patchRail; the click hands the current lane
+    // back to the app.
     const arm = el('button', 'rail-btn arm-btn', {
         title: 'Record into this track' });
     arm.addEventListener('click', () => ctx.cb.onArm(row._lane));
@@ -240,11 +229,9 @@ export function buildLane(lane) {
         input.addEventListener('click', () => toggleInputMenu(row));
         foot.appendChild(input);
         // Software input monitoring (Q20): hear this track's input
-        // through its rack, gain and pan. Off by default — most
-        // interfaces monitor directly, so the engine never doubles the
-        // signal unasked. The tooltip carries the calibrated round
-        // trip (patchRail); a monitoring gesture like solo, not
-        // undoable.
+        // through its rack, gain and pan. Off by default (most
+        // interfaces monitor directly); like solo, not undoable. The
+        // tooltip carries the calibrated round trip (patchRail).
         const mon = el('button', 'rail-btn mon-btn mono', {
             textContent: 'mon', title: 'monitor input · not calibrated' });
         mon.addEventListener('click', () => {
@@ -290,15 +277,13 @@ export function buildLane(lane) {
         ctx.cb.onImportDrop(l.id, q, Array.from(e.dataTransfer.files || []));
     });
 
-    // HANDLES ON THE SELECTED TRACK ONLY (loop_selection.md §15, owner
-    // 2026-10-08): an unselected lane's loop section shows how the loop
-    // aligns with the song — its ↺ and splices draw as marks — and is
-    // not an edit surface. A press on it SELECTS the track and does
-    // nothing else (captured before any handle, band or cut sees it);
-    // the handles appear with the selection, and the edit bar below
-    // shows its panel — no lane moves. Its chip keeps its click (a
-    // readout and a switch, not a handle). The press's double-click
-    // never cuts: the lane was not selected when it began.
+    // HANDLES ON THE SELECTED TRACK ONLY (loop_selection.md §15): an
+    // unselected lane's loop section shows how the loop aligns with the
+    // song — its ↺ and splices draw as marks — and is NOT an edit
+    // surface. A press on it SELECTS the track and does nothing else
+    // (captured before any handle, band or cut sees it). Its chip keeps
+    // its click (a readout and a switch, not a handle). The press's
+    // double-click never cuts: the lane was not selected when it began.
     body.addEventListener('pointerdown', e => {
         const l = row._lane;
         if (e.button !== 0 || !l || selection.has(l.id)) return;
@@ -307,6 +292,11 @@ export function buildLane(lane) {
         if (e.target.closest('.win-chip.toggle')) return;
         e.preventDefault();
         e.stopPropagation();
+    }, true);
+    // …and its handles' right-click verbs (a cut's heal) never run.
+    body.addEventListener('contextmenu', e => {
+        const l = row._lane;
+        if (l && !selection.has(l.id)) e.stopPropagation();
     }, true);
     body.addEventListener('dblclick', e => {
         const at = row._selectPressAt;

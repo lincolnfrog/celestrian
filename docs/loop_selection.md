@@ -173,7 +173,7 @@ The panel shows in the **edit bar** at the foot of the session view (since 2026-
 |---|---|
 | The kept box | Drag = slide (whole Q; ⌥ free) |
 | Brackets | Drag = trim (the period snaps to whole Q); ⌥ = slide |
-| Cut chips / handles | Slide / resize a cut; heal |
+| Cut chips / handles | Slide / resize a cut; heal. A cut band's drag runs on the same runner as the panel's other drags: the band rides the hand, live commits are one undo step, Escape puts the map back |
 | Detail strip | Double-click = cell cut on the take's grid |
 | +/− | Zoom the panel one step about the playhead (owner, 2026-09-29). A playhead in view keeps its place; one outside it is brought to the middle. The song view zooms only with no panel shown (`zoomSelectedPanel`, `keyZoomView`). |
 | Ctrl/⌘+wheel, pinch | Zoom about the Q under the pointer. On the navigator, this applies inside the view box; elsewhere the view zooms about its middle. |
@@ -181,11 +181,11 @@ The panel shows in the **edit bar** at the foot of the session view (since 2026-
 | Navigator box | Drag = pan; its edges set the span; click elsewhere = centre; double-click = whole take. (Drag-vertically-to-zoom is gone: +/− zoom.) |
 | Label terms, Z / ⇧Z | Fit the loop / fit the whole take |
 | Box or bracket drag at an edge | Edge pan |
-| ← / → | Nudge the region 1Q (⇧ 4Q). Presses within 800 ms form one pinned gesture (`makeChainPin`). |
+| ← / → | Nudge the region 1Q (⇧ 4Q); a held key repeats. Presses within 800 ms form one pinned gesture (`makeChainPin`, `region_nudge.js`). While any gesture is live the keys wait: no commit, no new undo step. A press after an undo slides from the region as shown, not from the undone target. |
 
 The panel shows for the most recently selected lane with a take of 2Q or more. It does not show for the Q-definer (its trim sets Q), a pinned inspector, a child under a parent's map, or a recording lane. time_maps.md §6 has the full table, with the code behind each row.
 
-The view is per lane and lives in module state (`panel_view.js`). It opens fitted to the loop, with the loop filling about 55% of the strip. After that, only explicit input zooms; commits and nudges only pan to keep the region in view.
+The view is per lane and is remembered for the session (`region_nav.js`; the view arithmetic is `panel_view.js`). It opens fitted to the loop, with the loop filling about 55% of the strip. After that, only explicit input zooms; commits and nudges only pan to keep the region in view. A lane's view is kept when the lane is deleted, so the undo of the delete brings the track back at the zoom it had.
 
 ### 6.3 The recording gate
 
@@ -326,12 +326,12 @@ Seven workstreams, then one review pass. The fixes the review confirmed are appl
 | Step | State | Where |
 |---|---|---|
 | P2.1 edit hold + settle | built, then REMOVED 2026-09-29 (owner: realign at once) | frame.md §1; session_view.md law 17 |
-| P2.2 stored top + shift verb | built as ONE verb, `setTiming` | `src/time_map.h`, `clip_node.h`, `engine/map_edits.cc`, `edit_log.cc`, `session_io`; the mock twin; time_maps.md §7 |
-| P2.3 splice handles | built | `session_view/splice_handles.js`, the pluggable `runRawDrag`, `map_edit.js` `slideSeam`; time_maps.md §6 |
+| P2.2 stored top + shift verb | built as ONE verb, `setTiming` | `src/time_map.h`, `clip_node.h`, `engine/map_edits.cc` (the verb), `engine/edit_geometry.cc` (its applier), `session_io`; the mock twin; time_maps.md §7 |
+| P2.3 splice handles | built | `session_view/splice_handles.js`, `map_core.js` `runMapDrag` (the one map-drag runner; `runRawDrag` is it over the raw preview's `rawDragParts`), `map_edit.js` `slideSeam`; time_maps.md §6 |
 | P2.4 ⇧-length at a splice | built, except the frame-length tween on release | `lengthAtSeam`, `runRevealDrag` |
 | P2.5 retire the grips and chip | done (one-shots keep their grips; the Q-definer keeps its brackets) | time_maps.md §8 |
 | P2.6 presentation | built: lane ↺ and splice tabs, ghosts, the glide, the panel ↺ tab, the timing readout, "Timing as played"; the ↺ also on plain unwindowed loops | `splice_handles.js`, `region_panel.js` |
-| P2.7 seat on the first lane's bar lines | built: floor with a ¼Q pickup, from the top's moment | `view_model.js` `seatFrameZero`; frame.md §1 |
+| P2.7 seat on the first lane's bar lines | built: floor with a ¼Q pickup, from the top's moment | `ui/js/vm/frame.js` `seatFrameZero`; frame.md §1 |
 
 **Also decided or fixed on the way (2026-09-24):**
 - **A new take plays as performed** (owner) and resets the clip's `retime` (takes.md §4).
@@ -415,7 +415,7 @@ After the 2026-09-29 rulings — one loop places the frame, no edit hold, a slot
 
 | # | What you saw | Cause | Fix |
 |---|---|---|---|
-| 1 | After a splice drag on a loop that slots in ("clip 3+"), the lane sat on the drag's result for 1.5 s: a ⌘Z, a nudge or a panel edit made meanwhile did not show | The swap preview carries the top the engine will store. It was predicted from the ↺ **as shown** — since 09-29 the sample at the frame's top, which the engine does not publish — so the preview never matched the commit's answer and lived to the hold cap | The lane carries both: `topQ` (the ↺ as shown) and `storedTopQ` (the engine's). `topAfterSwap` and the start marker's cancel read the engine's. An undo or redo also drops any preview and queued verdict still up (`dropStaleEditFeedback`) |
+| 1 | After a splice drag on a loop that slots in ("clip 3+"), the lane sat on the drag's result for 1.5 s: a ⌘Z, a nudge or a panel edit made meanwhile did not show | The swap preview carries the top the engine will store. It was predicted from the ↺ **as shown** — since 09-29 the sample at the frame's top, which the engine does not publish — so the preview never matched the commit's answer and lived to the hold cap | The lane carries both: `topQ` (the ↺ as shown) and `storedTopQ` (the engine's). `topAfterSwap` and the start marker's cancel read the engine's. An undo or redo also drops any preview and queued verdict still up (`edit_verdict.js` `dropStale`) |
 | 2 | ⇧ on the main loop's splice could not shorten the loop: 1.2Q of hand took 3Q | ⇧ moves the end of the material **before** a splice. The placing loop's wrap rests on the lane's left edge always, and was drawn there only — so shortening meant dragging off the lane, where the reveal's edge pan ran away. It is the 2026-08-18 report again: "the right handle is gone" | A splice on the frame's left edge shows at the **right edge too** (`.lr-end`): the loop's END handle. Dragged inward it shortens, with the material in view; the left one lengthens the same way |
 | 3 | A whole-Q drag of a cut toward a 1Q neighbour left a 1/64 Q sliver playing at the splice; a drag into the take's edge re-gridded a free offset | `slideSeam` answers its clamp bound, which is fractional | `slideSeamWhole`: the largest whole number of Qs inside the bound; 0 when none fits. ⌥ still reaches the bound |
 | 4 | ⌥→ then ⌥← a moment later came back one sample late (and could flip a ↺ to the far end of its region) | ⅛Q is rarely a whole number of samples; each landing rounded separately | `nudgeStepQ`: the step is whole samples, rounded by magnitude |
@@ -428,7 +428,7 @@ Suites on the final tree: node 586 (573 before), mock e2e 139 (131 before, 5 of 
 
 ### 12.2 Proposed — and ruled (owner, 2026-10-01)
 
-Ordered by how much it is felt. **Rulings:** 1 → claim the track at the gesture's END (the dock stays an option, §13.1); 2 → yes, tween the re-seat; 3 → yes, bounce from the ↺ as shown; 4 → remove the glide, the tween of item 2 takes its place. All four are built (§14); §13 is the plan they were built from.
+Ordered by how much it is felt. **Rulings:** 1 → claim the track at the gesture's END — since replaced: the edit bar (§15) took away the jump it worked around, and a handle press now selects its track at once (owner, 2026-10-11; §15.2); 2 → yes, tween the re-seat; 3 → yes, bounce from the ↺ as shown; 4 → remove the glide, the tween of item 2 takes its place. Items 2–4 are built (§14); §13 is the plan they were built from.
 
 1. **Grabbing a handle on a lower track makes that track jump.** A press on a handle claims the track at once, the region panel moves under it, and when the panel that closes was *above* the grabbed lane the lane leaps up by the panel's height (74 px) out from under the pointer. The drag survives (pointer capture), but the hand is no longer on the lane, and a double-click (heal a cut) on an unselected lower lane misses: its second click lands on the panel. Options: (a) claim the track when the gesture **ends** — and, for a plain click, after the double-click window — so nothing moves under a hand; (b) give the panel a fixed dock (the foot of the session view) so selecting never re-flows the lanes. (a) is small; (b) removes the whole class.
 2. **Edits of the placing loop end in a jump.** By the 09-29 ruling the frame re-seats at once — but a drag pins the frame while the hand is down, so the re-seat lands as one jump at release: any swap that drops the ↺ (every rightward slide of an untouched loop) and every ↺ drag end with the dragged lane snapping back to the left edge and all the others shifting the other way. It is honest, and abrupt. Proposal: tween the re-seat for those two gestures only (~200 ms), every lane moving together. (The removed deselect settle was a *delayed* realign; this is the same realign, at the same moment, drawn so the eye can follow.)
@@ -446,39 +446,19 @@ Ordered by how much it is felt. **Rulings:** 1 → claim the track at the gestur
 
 ## 13. The work list (written 2026-10-01 — the plan; §14 is what was built)
 
-This section is the plan as it was written for a fresh session, kept for its reasoning and its measurements. It was then built in the same session: **§14 records the outcome, where it departs from the plan, and what is still open.** Read **§13.0** before working on any of it.
+This section is the plan as it was written for a fresh session, kept for its reasoning and its measurements. It was then built in the same session: **§14 records the outcome, where it departs from the plan, and what is still open.** Read **§13.0** before working on any of it. (There is no §13.1 or §14.1: they planned and recorded a claim of the track at the gesture's end, a mechanism that is gone — §15.2 has the law.) File names in §13.2–§13.4 are the plan's own; where the code has since moved, §14 and §15 name its present home.
 
 ### 13.0 How to work on this (what the audit learned the hard way)
 
-- **Three suites, all green** (counts as of §14): `cd ui && npm test` (node, 621) · `cd ui && npx playwright test` (mock e2e, 156; reuses or starts a server on :8080) · `cd ui && npm run test:engine` (real UI on the real engine, 32, ~3 min; needs `build/CelestrianHeadless_artefacts/Debug/CelestrianHeadless`, rebuilt 2026-10-01 with `cmake --build build --parallel 8 --target CelestrianHeadless`; times out when machine load exceeds the core count — check `uptime`).
+- **The suites** (test_harness.md has the commands and what each needs): `cd ui && npm test` (node) · `cd ui && npx playwright test` (mock e2e; reuses or starts a server on :8080) · `cd ui && npm run test:engine` (real UI on the real engine, ~3 min; needs `build/CelestrianHeadless_artefacts/Debug/CelestrianHeadless`, built with `cmake --build build --parallel 8 --target CelestrianHeadless`; times out when machine load exceeds the core count — check `uptime`) · `cd ui && npm run test:diff` (the mock against the engine; same binary).
 - **Every interactive change gets a REAL-mouse check** (Playwright `page.mouse`, or the browser pane's click/drag) — synthetic `dispatchEvent` bypasses hit-testing. ⇧/⌥ drags need Playwright (`keyboard.down('Shift')` before `mouse.down()`); the browser pane's drag tool does not hold modifiers.
 - **Two tops.** `lane.topQ` is the ↺ AS SHOWN (the placing loop: the engine's top; any other loop: the sample at the frame's top). `lane.storedTopQ` is the engine's own (`loopTop`). Anything that predicts or restores ENGINE state reads `storedTopQ`.
 - **Which loop places the frame:** `vm` does not publish it — `seatFrameZero` returns `placerId` and `deriveViewModel` keeps it in `ctx.placerId` only. Nothing below strictly needs it (13.3 reads `lane.topHeardQ`), but a test that asks "is this lane the placing loop" does: add `placerId` to the returned object then, rather than re-deriving it.
-- **The test topology for all of this** is `ui/e2e/slotted_loop.spec.js`'s `setup`: A a 1Q loop · B a 12Q take looped to [4, 8) — the placing loop · C a 16Q take from 14Q looped to [6, 10) — slotted in, selected. Its helpers (`handles`, `marks`, `tabPoint`, `drag` with `mods`, `panelTopQ`) are real-mouse and reusable.
-- **Spec races seen:** a handle position read right after a commit is read under the drag pin — poll `body._cycleQ` (or the handle's own place) before the next grab; never wait on a value that is the same before and after the edit (wait on the thing that MOVES); the in-app browser pane throttles `requestAnimationFrame`, so sample animations with a headless Playwright script, not there.
+- **The test topology for all of this** is `slottedTopology` in `ui/e2e/helpers.js`: A a 1Q loop · B a 12Q take looped to [4, 8) — the placing loop · C a 16Q take from 14Q looped to [6, 10) — slotted in, selected. The shared helpers there (`laneHandles`, `laneMarks`, `handleTab`, `dragBy` with `mods`, `panelTopQ`) are real-mouse.
+- **Spec races seen:** a handle position read right after a commit is read under the drag pin — wait for `settled(page)` (`ui/e2e/helpers.js`) before the next grab; never wait on a value that is the same before and after the edit (wait on the thing that MOVES); never sleep; the in-app browser pane throttles `requestAnimationFrame`, so sample animations with a headless Playwright script (`watchFrames`), not there.
 - **Baseline against untouched HEAD** when a spec fails: `git worktree add --detach <scratch>/head HEAD`, symlink `ui/node_modules` into it, run with a copy of the Playwright config on another port. Six specs were already red on HEAD before the audit; assume nothing.
 - **Engine truth for display questions:** spawn `CelestrianHeadless --port N --ui-dir <ui dir> --paused --input chirp --inputs 5`, open `/index.html?engine=true` in Playwright with that `baseURL`, and drive it with `ui/e2e_engine/engine_helpers.mjs` (`openEngine`, `rec`, `call`, `engine(page, 'advance', {samples})`, `state`, `advanceUntil`). (When this was written the mock and the engine did not publish a new take alike; since §14 they do — takes.md §6.)
 - Edit files with the editor tools, not shell redirects; match the comment style around you; do not commit.
-
-### 13.1 Claim the track when the gesture ENDS (ruling 1)
-
-**The problem, measured.** A press on any lane handle calls `selectOnly(lane.id)` at POINTERDOWN. The region panel is a row under the selected lane, so when the panel that closes is *above* the pressed lane, that lane moves up by the panel's height at the press: in the audit, lane body top 370 → 296 px between pointerdown and pointerup with the pointer still at y = 428. The drag survives (pointer capture) but the hand is off the lane, and a double-click (heal a cut) on an unselected lower lane misses — the second click lands on the panel.
-
-**Where the claim happens today** (`ui/js/session_view/`):
-- `gesture.js` `beginGesture(ev, { claim })` → `selectOnly(claim)` at the press (used by `window_edit.js` bracket drags and `map_bands.js` cut-band drags, `claim: lane.id`);
-- `splice_handles.js` `startSpliceDrag`, `startLengthDrag`, `startTopDrag` (press) and `onHeal` (double-click / right-click);
-- `map_bands.js` `wireBandCreate` (the body's double-click), the seam handle's and the trim grip's `startDrag` (one-shot lanes);
-- `region_panel.js` `startPanelDrag`, `startPanelTopDrag`, `resetTiming` — these are already on the selected lane (the panel only shows for it): leave them.
-
-**What to build.**
-1. One helper, e.g. `claimAtEnd(id)` in `gesture.js` (or `selection.js`): records the lane to claim; the gesture runner applies it in `end()` — after `onEnd`, for a commit AND for a cancel (an Escape still leaves the track claimed: the user touched it). Give `beginGesture`'s `claim` this meaning (today `gesture.js:180` selects at the press; `end()` is where it belongs, after `onEnd`) and route the direct `selectOnly` calls of the list above through it. `runRawDrag` (`map_core.js`) starts its gesture with `beginGesture(ev, { stop: true, … })` and takes no `claim` today, and `runRevealDrag` (`map_bands.js`: the length drag, the one-shot seam drag and trim grip) wraps `runRawDrag` — give both a `claim` option that passes through, and have the callers pass it instead of calling `selectOnly` themselves.
-2. **A press that never engaged a drag is a click, and may be the first click of a double-click:** defer its claim by a double-click window (~350 ms; cancel the timer if a second `pointerdown` arrives on the same lane — that press's own gesture end, or the double-click handler, claims instead) so both clicks land on the same geometry. The double-click handlers (`onHeal`, `wireBandCreate`) keep selecting at once — by then the second click has landed.
-3. The `[` `]` `{` `}` teleport and the nudge keys read `activeSelectedId()`; they act on the previous selection until the release. That is correct (nothing was claimed yet), but check `teleport.js`'s header comment ("grab a splice, swap it, hit the bracket key") still reads true after a release.
-4. `patchRegionPanel` already refuses to hide a panel whose strip is being dragged; with the claim deferred no panel changes at all under a lane gesture — verify nothing else keys on "selected during the drag" (`mapEditInFlight` reads the row's own strip; `selection.js ensureDefaultSelection` runs every patch and must not fight the deferred claim).
-
-**Honest limit.** The lane still moves when the panel swaps — now at the release, with no hand on it. If that still reads badly, two follow-ons, in order of cost: animate the panel row's height (~150 ms) so the move can be followed; or the **dock** — the panel stops being a row under the selected lane and becomes ONE fixed strip (the foot of the session view, the way a DAW's clip/detail view sits under the arrangement) that always shows the selected track's take. Lanes then never re-flow on selection, and the whole class of problem is gone. It is a layout redesign (`region_panel.js` `buildRegionPanel` per row → one panel; `pinToViewport` goes away; `playhead_mask.js` no longer needs to mask it; the specs' `.lane[data-id] .lane-region` locators change), so it was not chosen now.
-
-**Tests.** A real-mouse spec (add to `ui/e2e/slotted_loop.spec.js`, whose topology has the selected lane above or below at will): select the upper lane, press a handle on the lower one — the lower lane's body `top` is identical at `pointerdown`, mid-drag and just before `pointerup`; after the release it is selected and its panel shows. Double-click a cut's splice on an unselected lower lane: it heals on the first try. A drag cancelled with Escape still claims. Existing specs that assert "the panel appeared with the grab" (`region_panel.spec.js` same-scale reveal) assert after the release already; `release_chrome.spec.js` and `splice_handles.spec.js` select the lane first.
 
 ### 13.2 Tween the re-seat; remove the ↺ glide (rulings 2 and 4)
 
@@ -504,7 +484,7 @@ This section is the plan as it was written for a fresh session, kept for its rea
 **Why.** The owner ruled (2026-09-24, bounce.md) that a clip's bounce opens on its ↺. Since 2026-09-29 the ↺ of a loop that slots into the frame is the sample it plays at the frame's top — but the engine's default start is still its own stored top, which the UI no longer shows anywhere. So a bounce of "clip 3" opens at a spot nothing on screen marks, and stems of different tracks start at different musical moments. Bounced from the ↺ as shown, every stem opens at the song's top and lines up with "Bounce song…".
 
 **What to build.**
-1. `ui/js/app.js`, `buildProjectMenu`: "Bounce selected…" calls `bounceTo(sel.id)` (no start → the engine's default). For a lane that wears a ↺ pass the start: `lastFrame.zero + lane.topHeardQ × quantum` (absolute samples; `topHeardQ` is the ↺'s place on the lane, measured from the zero DRAWN — 0 on a slotted-in loop, the pickup offset on the placing loop). Use `lastFrame.zero`, the same zero "Bounce song…" passes (`app.js` ~line 1161), not `.seat`: `topHeardQ` is folded from the drawn zero, so only that sum is the ↺'s moment, and a stem then opens on the very sample the song bounce does. The lane fields are not kept between polls today: keep the last view model's lanes by id (the poll loop already builds `lanesById`) and read `topHeardQ` / `canRetime` / `retimeLocked` there. A one-shot, a lane with no ↺, and the root keep today's calls. `bounce(uuid, path, start)` already takes the start for any node (`src/engine/bounce.cc`, `ui/js/mock/bounce.js`).
+1. The project menu (`ui/js/project_menu.js`): "Bounce selected…" calls `bounceTo(sel.id)` (no start → the engine's default). For a lane that wears a ↺ pass the start: `lastFrame.zero + lane.topHeardQ × quantum` (absolute samples; `topHeardQ` is the ↺'s place on the lane, measured from the zero DRAWN — 0 on a slotted-in loop, the pickup offset on the placing loop). Use `lastFrame.zero`, the same zero "Bounce song…" passes, not `.seat`: `topHeardQ` is folded from the drawn zero, so only that sum is the ↺'s moment, and a stem then opens on the very sample the song bounce does. Read `topHeardQ` / `canRetime` / `retimeLocked` off the last view model's lanes. A one-shot, a lane with no ↺, and the root keep today's calls. `bounce(uuid, path, start)` already takes the start for any node (`src/engine/bounce.cc`, `ui/js/mock/bounce.js`).
 2. Check in `bounce.cc` that a named start earlier than the node's origin, or mid-period, renders one whole period from there for a looping clip, a windowed clip, a cut map and a group (it should: the render is the kernel equation at absolute time) — and add those cases to `tests/bounce_tests.cc` (the pattern is its test "A clip bounces from its ↺ top, not from the splice": the topped file is the plain one, rotated).
 3. Engine default, for parity: `bounce.cc` (~line 105–122) adds the top offset only for a `ClipNode` (`dynamic_cast`); groups have had a ↺ since 2026-09-29 and `effectiveTop()` lives on the base (`src/audio_node.h`, published as `loopTop`). Use the base method for any anchored non-root node, and fix the comment ("Phase 2 stores no stack top").
 4. `docs/bounce.md` "A clip starts at its ↺ top": rewrite to "…the ↺ as shown: the placing loop's own top; any other loop's — the frame's top", and note the app names the start.
@@ -514,8 +494,8 @@ This section is the plan as it was written for a fresh session, kept for its rea
 ### 13.4 Smaller, any order
 
 - **A bypassed window over a wrapped take tile** (`lane_body.js`, the bracket overlay branch; `window_edit.js`): brackets and the chip are placed at `anchorQ + startQ/endQ` unwrapped, so on a take tile that wraps the frame's edge the END bracket and the chip fall past the lane's right edge (seen: a 16Q take at 8Q of a 16Q frame, window [6, 10) → start bracket at 14Q, end at 18Q = off-lane, chip clipped to "window"). Wrap them with the tile (`posMod(anchorQ + q, cycleQ)`), as the seam handles do (`map_bands.js wrapQ`), and split the dim when the window straddles the edge.
-- **The transport readout's width** (`#position-readout` in `index.html` / `index_test.html`, `session.css`): "· loop NQ" appears while a drag pins the fold and widens the box, pushing the meters ~12 px. Give the readout a fixed width (tabular figures, ellipsis) — the state-metrics law, applied to the transport.
-- **A cancelled drag leaves an undo step and ends the redo branch** (the restore is a commit). Needs an engine verb that DROPS the open gesture's step and restores the redo branch — `AudioEngine` `openGesture` / `sameGesture` in `src/engine/edit_log.cc`, mock twin `ui/js/mock/undo.js` — then `runRawDrag`'s `unsend` calls it instead of committing the old map.
+- **The transport readout's width** (`#position-readout` in `index.html`, `session.css`): "· loop NQ" appears while a drag pins the fold and widens the box, pushing the meters ~12 px. Give the readout a fixed width (tabular figures, ellipsis) — the state-metrics law, applied to the transport.
+- **A cancelled drag leaves an undo step and ends the redo branch** (the restore is a commit). Needs an engine verb that DROPS the open gesture's step and restores the redo branch — the open gesture is the engine's (`AudioEngine::openGesture`, `src/engine/edit_log.cc`), mock twin `ui/js/mock/undo.js` — then the drag's cancel calls it instead of committing the old map.
 - **The mock's new-take publication ≠ the engine's** (takes.md §6): make the mock publish pending as `isPendingStart` only, the live captured length as `duration`, and `periodQ` — so the mock suite can see what only the engine probe found. (A task chip with the full brief was left in the 2026-10-01 session; the brief is: `ui/js/mock/recording.js` `armRetake` / `growRecordingClips` / `commitRetake`, `ui/js/mock/publish.js`, then the takes specs.)
 - **A group lane while its members take a new take** still reads the members as published (its own period can collapse for the take): thread `settledForFrame`'s view of the members into `pushGroupLane`'s period math, keeping the real nodes for the arm state (`groupArmState`) and the recording lanes.
 - **Still the owner's to rule:** the ⌥ ⅛Q nudge vs. "no sub-Q grid" (§4.4); whether a slotted-in loop that starts a hair late should read its ↺ at the END of its region in the panel (§12.2 item 5), or get a pickup tolerance like the placing loop's ¼Q; and whether the right-edge splice handle (§12.1 #2) should also appear on a loop SHORTER than the frame as a tabbed handle at the take tile's own end (today that spot is a ghost line with its tab on hover).
@@ -524,19 +504,11 @@ This section is the plan as it was written for a fresh session, kept for its rea
 
 ## 14. Built, 2026-10-01 (the §13 work list)
 
-All of it is UNCOMMITTED on top of `f7e4627`, beside the audit's fixes (§12.1) — the owner commits.
-
-### 14.1 The claim lands when the gesture ends (§13.1, ruling 1)
-
-Built as planned. `gesture.js` `beginGesture`'s `claim` selects the lane in `end()` — after `onEnd`, for a release and for a cancel; `runRawDrag` and `runRevealDrag` pass it through, so the splice, ↺, length, seam and grip drags no longer call `selectOnly` at the press. A press that was only a click (under `CLICK_SLOP_PX` of travel, inside `CLAIM_CLICK_MS` = 350 ms) claims after that window (`selection.js` `claimSoon`); a new press, or any explicit selection, drops a claim still waiting (`cancelClaim`); the double-click handlers still claim at once.
-
-Measured again with a real mouse on the §13.0 topology: the lower lane's body stays at 370 px from the press to the release (it was 296 px by the first frame of the press), then moves when the panel swaps. Pinned by `gesture_latches.test.mjs` (3 tests) and `slotted_loop.spec.js` "A handle on an unselected track" (5 tests, 4 of them red on the press-time claim; the fifth red when a rail click does not cancel a waiting claim).
-
-**Open, the owner's:** unselected lanes wear their handles (at 55 %, full on hover — `session.css` `.lane:not(.sel) .lr-layer`). If handles should show on the SELECTED track only — one click on the rail before editing another track — that is a small change on top of this (hide `.lr-layer` and the lane overlay's handles on `.lane:not(.sel)`, or gate `patchSpliceHandles`), and nothing can then be grabbed on a lane whose panel is not already open. Not done: it removes one-gesture editing of another track, which the ruling kept.
+Committed 2026-10-08 with the audit's fixes (§12.1).
 
 ### 14.2 The re-seat tween; the ↺ glide retired (§13.2, rulings 2 and 4)
 
-`session_view/reseat_tween.js` (new) + `view_model.js` `resolveFrameZero` (`pin ?? tween ?? seat ?? root`; `reseatZero`, `reseatLanding`, `easeInOut`) + `app.js` `deriveFrame` / `patchFrame`. frame.md §1 is the write-up. Where it departs from §13.2:
+`session_view/reseat_tween.js` + `ui/js/vm/frame.js` `resolveFrameZero` (`pin ?? tween ?? seat ?? root`; `reseatZero`, `reseatLanding`, `easeInOut`) + `app.js` `deriveFrame` / `patchFrame`. frame.md §1 is the write-up. Where it departs from §13.2:
 
 - **Every re-seat at rest, not two gestures.** The proposal said "for those two gestures only"; the rule built is the general one — a render at rest whose seat sits elsewhere in the SAME frame moves there — so an undo, a nudge chain's end, a double-click cut over the ↺ and a delete of the placing loop all move the same way. A re-layout (the frame's length or Q changed in the same step), a take live or armed, the trim view, another island, reduced motion and a hidden page jump as before. If only the two gestures should move, gate `noteReseat`'s start on "a pin was just released".
 - **Two derives on the frame that would have jumped.** The seat is only known after a derive, so `noteReseat` answers "derive again" when a move starts (or its seat moves again mid-move — it carries on from the zero on screen) and `deriveFrame` derives once more from the move's first step. No frame of the jump is ever patched.
@@ -549,7 +521,7 @@ Pinned by `reseat_tween.test.mjs` (19) and `reseat_tween.spec.js` (7, real mouse
 
 ### 14.3 "Bounce selected…" starts at the ↺ as shown (§13.3, ruling 3)
 
-`view_model.js` `bounceStartOf(vm, laneId)` — the zero drawn plus the ↺'s place on the lane; `app.js` passes it (`lastVm`). `bounce.cc`'s default now reads the top off any anchored non-root node (a group's ↺ too), and `tests/bounce_tests.cc` adds "A group bounces from its ↺ top too" and "A named start: one pass from any moment is the loop's pass, rotated" (a window, a cut map, a group; starts later in the pass, whole passes later, before the take began, before the clock's zero). bounce.md is rewritten. UI: `top_fields.test.mjs` (4), `bounce.spec.js` (the stem of a slotted-in loop and the song open on the same sample).
+`bounceStartOf(vm, laneId)` (`ui/js/vm/lane_common.js`) — the zero drawn plus the ↺'s place on the lane; the project menu passes it (`ui/js/project_menu.js`). `bounce.cc`'s default now reads the top off any anchored non-root node (a group's ↺ too), and `tests/bounce_tests.cc` adds "A group bounces from its ↺ top too" and "A named start: one pass from any moment is the loop's pass, rotated" (a window, a cut map, a group; starts later in the pass, whole passes later, before the take began, before the clock's zero). bounce.md is rewritten. UI: `top_fields.test.mjs` (4), `bounce.spec.js` (the stem of a slotted-in loop and the song open on the same sample).
 
 ### 14.4 The smaller items (§13.4)
 
@@ -563,21 +535,21 @@ Pinned by `reseat_tween.test.mjs` (19) and `reseat_tween.spec.js` (7, real mouse
 
 ### 14.5 Still open
 
-- The owner's rulings listed at the end of §13.4; the handles question of §14.1 — now leaning one way, §14.6; and whether the re-seat tween should move every re-seat (as built) or only the two gestures the proposal named (§14.2). Nothing else from §13 is open. *(All ruled 2026-10-08 except the late slotted-in loop's ↺ — §15.)*
+- The owner's rulings listed at the end of §13.4; whether unselected lanes should wear handles at all — now leaning one way, §14.6; and whether the re-seat tween should move every re-seat (as built) or only the two gestures the proposal named (§14.2). Nothing else from §13 is open. *(All ruled 2026-10-08 except the late slotted-in loop's ↺ — §15.)*
 
 ### 14.6 Handles on the selected track only (owner's note, 2026-10-08 — reading 1 BUILT the same day, §15)
 
-The owner, shown that unselected tracks wear their handles (§14.1): *"handles on selected tracks only seems like the only UX that makes sense to me. I don't see how handles on the looping section work — that section is visualizing how the loop aligns with the song."* Not sure yet, but that is the direction. Two readings, in order of size:
+The owner, shown that unselected tracks wear their handles: *"handles on selected tracks only seems like the only UX that makes sense to me. I don't see how handles on the looping section work — that section is visualizing how the loop aligns with the song."* Not sure yet, but that is the direction. Two readings, in order of size:
 
-1. **Handles on the selected track only** (the small step — the one §14.1 priced). A lane's loop chrome is an affordance of the SELECTED track, as the region panel already is: the splices and the ↺ (`splice_handles.js`), the latent and bypassed brackets (`window_edit.js`), the cut bands, a one-shot's seams and grips (`map_bands.js`). An unselected lane shows its loop section as what it is — how the loop aligns with the song — and takes no presses there; click its rail (or its body, if that is made a select) to edit it. The lane then NEVER moves under a hand: the claim-at-end machinery of §14.1 stays (harmless: a claim of the selected track is a no-op), and the tween of §14.2 is unaffected.
+1. **Handles on the selected track only** (the small step). A lane's loop chrome is an affordance of the SELECTED track, as the region panel already is: the splices and the ↺ (`splice_handles.js`), the latent and bypassed brackets (`window_edit.js`), the cut bands, a one-shot's seams and grips (`map_bands.js`). An unselected lane shows its loop section as what it is — how the loop aligns with the song — and takes no presses there; click its rail (or its body, if that is made a select) to edit it. The lane then NEVER moves under a hand, and the tween of §14.2 is unaffected.
 2. **No handles on the loop section at all; the panel edits.** The stronger reading of the note. The lane keeps only what reads the alignment (the ↺ mark, the splice marks as marks), and every edit — swap, shift, length, cuts — happens on the region panel of the selected track. A bigger redesign (the ⇧ length reveal, the whole-Q swap preview and the ↺ drag all live on the lane today); not for a session with little context.
 
 **How to build reading 1** (one session, mostly gating + the five tests):
 - `lane_body.js patchLaneBody`: the overlay's bracket/band/grip branches and `patchSpliceHandles` draw only when the lane is selected (`selection.has(lane.id)` from `selection.js`; the row carries `.sel`). Dims, chips (read-only), the arm marker and the heard cursor stay on every lane; the chip's bypass toggle can stay a click on any lane or follow the rule — decide.
 - Or CSS-only first: `.lane:not(.sel) .lr-layer, .lane:not(.sel) .overlay-layer > :is(.win-bracket, .cut-band, .cut-handle, .seam-handle) { display: none; }` — same picture, chrome still built; cheaper, and `[` `]` (`teleport.js`) already walk the selected track only. Remove `.lane:not(.sel) .lr-layer { opacity: 0.55 }` and its hover rule either way.
 - Selection has to be CHEAP then: a click on an unselected lane's body selects it (`lane_build.js` only selects on the rail today) — otherwise every edit of another track is rail-click + handle.
-- Tests to flip: `slotted_loop.spec.js` "A handle on an unselected track" (5) become "an unselected track shows no handles; its body click selects it; the handles appear" (the measured no-move-under-the-hand assertion can stay as a selected-lane case); `splice_handles.spec.js` and `release_chrome.spec.js` already select first; `gesture_latches.test.mjs` claim tests stand.
-- Docs: time_maps.md §6 "A handle's gesture claims its track" (rewrite to the selected-track rule), design.md's teleport line, session_view.md §2 brackets, frame.md unaffected.
+- Tests to flip: `slotted_loop.spec.js` "A handle on an unselected track" (5) become "an unselected track shows no handles; its body click selects it; the handles appear" (the measured no-move-under-the-hand assertion can stay as a selected-lane case); `splice_handles.spec.js` and `release_chrome.spec.js` already select first.
+- Docs: time_maps.md §6 (the selected-track rule), design.md's teleport line, session_view.md §2 brackets, frame.md unaffected.
 
 ### 14.7 The suites
 
@@ -587,7 +559,7 @@ Node 621 · mock e2e 156 · engine e2e 32 · C++ all passing (`CelestrianTests`,
 
 ## 15. The edit bar; handles on the selected track only (2026-10-08)
 
-The §12–§14 batch was committed on 2026-10-08 (suites green: node 621, mock e2e 156, engine e2e 32, C++). The owner then ruled on what §14.5 left open and asked for the dock §13.1 had priced.
+The §12–§14 batch was committed on 2026-10-08 (suites green: node 621, mock e2e 156, engine e2e 32, C++). The owner then ruled on what §14.5 left open and asked for the dock: the panel as ONE fixed strip at the foot of the session view instead of a row under the selected lane.
 
 ### 15.1 Rulings (owner, 2026-10-08)
 
@@ -599,7 +571,7 @@ The §12–§14 batch was committed on 2026-10-08 (suites green: node 621, mock 
 
 ### 15.2 What was built
 
-**The edit bar** (`#region-dock` in `index.html` / `index_test.html`, a row of `#app` between the session and the status strip). Every lane still builds its own panel (`region_panel.js` `buildRegionPanel`, `row._regionNav`, `.lane-region[data-lane-id]`), but mounts it in the bar instead of its row; one shows at a time. So:
+**The edit bar** (`#region-dock` in `index.html`, a row of `#app` between the session and the status strip; `region_dock.js`). Every lane still builds its own panel (`region_panel.js` `buildRegionPanel`, `row._region.nav`, `.lane-region[data-lane-id]`), but mounts it in the bar instead of its row; one shows at a time. So:
 - selecting a track swaps what the bar shows and **no lane ever moves** — the panel was a row under the selected lane, and every lane below it moved by its height (74 px) on a selection;
 - the bar has a **fixed height** (132 px) while there are lanes, so a selection never resizes the session either; when the selected track has no panel the bar says why (`noPanelReason`: "A 1Q take — no loop region to edit", "This track sets Q — drag its brackets on the lane", a member under its group's map, "Recording…", "Nothing recorded yet"; "Select a track to edit its loop" when nothing is);
 - the label names the track (the bar is not next to its lane) and is a rail wide, so the detail strip starts where a top-level lane's body does;
@@ -608,11 +580,17 @@ The §12–§14 batch was committed on 2026-10-08 (suites green: node 621, mock 
 
 **Handles on the selected track only** (`session.css` `.lane:not(.sel)`, `lane_build.js`). An unselected lane draws its ↺ and splices as quiet lines — no tabs, badges or tints, no grab — and its brackets, grips and cut handles and chips not at all; dims, cut bands, a one-shot's seam marks, the chip's readout, the arm marker and the cursors stay (they are what the loop IS). A press anywhere on it SELECTS the track and does nothing else — a capture-phase listener on the lane body, ahead of every handle, band and cut; ⌘/⇧ add to the selection as on the rail. A double-click whose first press selected never cuts (it owns exactly one double-click). The chip keeps its click — a readout and a switch, not a handle — and selects too. Handing Q to a track (its Q lamp) selects it, since the trim view's brackets set Q.
 
-The claim-at-end machinery of §14.1 stays and is a no-op: every handle is on the selected track now.
+**A handle press selects its track, alone, at the press** (owner, 2026-10-11). Every handle is on a selected track, so a press can only matter when several tracks are selected: the selection then becomes the one being edited, and the edit bar shows it from the first frame of the drag. The gesture runner makes the call once it has accepted the press (`map_core.js` `runMapDrag`; the lane bracket in `window_edit.js`; the heal and the body's double-click select the same way) — a press the runner refuses selects nothing. Nothing is deferred to the release.
+
+**An additive click never empties the selection**: ⌘/⇧-click on the only selected rail keeps it (`selection.js` `toggleSelect`).
+
+**One-shots keep their edit chrome** (owner, 2026-10-11): a selected one-shot lane's trim grips and seam handles are live. A one-shot sounds its shot once per firing and rests between, so its seam handles and ticks repeat at the FIRING cadence (the lane's `shotEveryQ`), not at the loop period, and a double-click in the rest cuts nothing — there is no content there (`map_bands.js`, `splice_spots.js`). On an unselected one-shot lane the seam is a mark that takes no pointer, the grips are not drawn, and a right-click heals nothing.
+
+**The panel's view is remembered per lane, for the session** (§6.2): it is not dropped when the lane is deleted, so undoing the delete brings the track back at its zoom.
 
 **The ⌥ ⅛Q nudge** is gone (`init.js`; `nudgeStepQ` deleted — whole-Q steps are whole samples already).
 
-Pinned by `region_panel_keys.test.mjs` (c) (the bar's hint) and `slotted_loop.spec.js` "An unselected track" (marks, not handles; a press selects and nothing else, no lane moves at the press or after; its double-click never cuts; its chip still toggles) — each checked against a mutation (the capture listener off; the double-click guard off). The specs reach the panel through `panelOf(page, id)` (`region_panel_helpers.js`), not the lane's row.
+Pinned by `region_panel_keys.test.mjs` (c) (the bar's hint) and `slotted_loop.spec.js` "An unselected track" (marks, not handles; a press selects and nothing else, no lane moves at the press or after; its double-click never cuts; its chip still toggles) — each checked against a mutation (the capture listener off; the double-click guard off). The specs reach the panel through `panelOf(page, id)` (`ui/e2e/helpers.js`), not the lane's row. The press-selects rule is pinned by `lane_chrome.spec.js` ("selects that track alone from the press on; the edit bar shows it") and `release_lifecycle.test.mjs`; the one-shot chrome by `lane_chrome.spec.js` "A one-shot's loop region (edge grips and seam handles)".
 
 ### 15.3 Open
 

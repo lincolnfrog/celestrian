@@ -1,9 +1,9 @@
 // AudioEngine — BOUNCE (Q19, docs/bounce.md): the live render, offline.
 // One effective cycle of the island root (or one effective period of
 // any node) rendered through AudioNode::process with the same context
-// the callback builds (engine_internal.h renderContext), then the
-// effect tail, written as a stereo float WAV at the device rate.
-// Message thread only; the device callback is detached for the render.
+// the callback builds (engine_internal::renderContext), then the effect
+// tail, written as a stereo float WAV at the device rate. Message thread
+// only; the device callback is detached for the render.
 
 #include "../audio_engine.h"
 
@@ -15,6 +15,7 @@
 
 #include "../clip_node.h"
 #include "../graph_snapshot.h"
+#include "../heard_index.h"
 #include "../stack_node.h"
 #include "../timing.h"
 #include "engine_internal.h"
@@ -64,83 +65,50 @@ bool writeStereoWav(const juce::File& file, double sample_rate,
 bool AudioEngine::bounce(const juce::String& uuid,
                          const juce::String& wav_path,
                          std::optional<int64_t> start) {
-  // Refused mid-take: the render advances every leaf's control phase
-  // on its own clock, which would corrupt a take's placement.
-  if (root_node == nullptr) return false;
+  const auto refuse = [](const juce::String& why) {
+    juce::Logger::writeToLog("AudioEngine: bounce refused - " + why);
+    return false;
+  };
+  // Refused mid-take: the render advances every leaf's control phase on
+  // its own clock, which would corrupt a take's placement.
   if (root_node->hasActiveTake() || root_node->isArmedOrRecording()) {
-    juce::Logger::writeToLog("AudioEngine: bounce refused - a take is live");
-    return false;
+    return refuse("a take is live");
   }
-  celestrian::AudioNode* target = findNodeByUuid(root_node.get(), uuid);
-  if (target == nullptr) {
-    juce::Logger::writeToLog("AudioEngine: bounce refused - no node " + uuid);
-    return false;
-  }
+  celestrian::AudioNode* target = findNodeByUuid(uuid);
+  if (target == nullptr) return refuse("no node " + uuid);
 
-  // THE SPAN (docs/bounce.md): one pass from the render's START. By
-  // default that is the node's FRAME TOP, origin + a0 (a0 = its active
-  // map's first segment start) — ONE law for every node (audit D15-1).
-  // A clip is anchored by construction (Q18); an unanchored stack's
-  // frame is the received island frame — the root's too, unless a song
-  // anchors it at the zero the song was authored on (docs/frame.md §4)
-  // — so the root's top is its frame top (+ a0 under a root map: the
-  // moment its window starts, not the moment the island cycle wraps).
-  // The caller may name the start outright (absolute samples): the app
-  // bounces the root from the frame zero the view has SEATED, so the
-  // file starts where the picture starts (docs/frame.md) — the engine
-  // reads no frame of its own. The root spans one EFFECTIVE island
-  // cycle (Q19 — the cycle the transport wraps on; a root window
-  // shorter than Q repeats within it); any other node spans its own
-  // period by THE PERIOD LAW (map ▸ sequence ▸ content: a windowed
-  // one-shot bounces its window, a one-shot song its song), judged
-  // against the island Q (a drifting member extends nothing, Q22).
+  // THE SPAN (docs/bounce.md): the root spans one EFFECTIVE island cycle
+  // (Q19 — the cycle the transport wraps on); any other node its own
+  // period by the period law, judged against the island Q (a drifting
+  // member extends nothing).
   const bool is_root = target == root_node.get();
   const int64_t span =
       is_root ? (islandCommittedClipCount() > 0 ? calculateEffectiveCycleLength()
                                                 : 0)
               : celestrian::period_law::ownPeriodOf(*target, nullptr,
                                                     root_node->getQuantum());
+  if (span <= 0) return refuse(uuid + " has no committed content");
+  // The render buffer is sized from the span: a saturated or merely huge
+  // period would overflow an int or exhaust memory on the message thread.
+  if (span > celestrian::ClipNode::kMaxTakeSamples) {
+    return refuse(uuid + " spans " + juce::String(span) +
+                  " samples, past the take ceiling");
+  }
+
+  // THE START (docs/bounce.md): the caller's, when it names one — the
+  // app passes the start the view shows. Else the node's FRAME TOP, its
+  // frame origin + a0 (the island zero under an unanchored stack), plus,
+  // for a clip or an anchored group, its ↺ top's heard offset: a loop
+  // reads as starting at its top, not at the splice where the recording
+  // wraps. The root wears no ↺.
   const celestrian::timing::TimeMap map = target->activeTimeMap();
-  const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
-  // A LOOP starts at its ↺ TOP (loop_selection.md §9; owner, 2026-09-24):
-  // the loop reads as starting there, so its bounce opens on the loop's
-  // one — the top's moment, origin + a0 + heardOffset(T) — not on the
-  // splice where the recording wraps (the two part after a swap). A
-  // group's top is a clip's (fractal, owner 2026-09-29: the top lives
-  // on AudioNode). Unset, the top IS the region start and the offset is
-  // 0: the frame top, as before tops existed. The root wears no ↺, and
-  // an unanchored stack has no top: their frame top stands.
-  //
-  // This is the engine's DEFAULT. The app names the start for a lane
-  // (docs/bounce.md, owner 2026-10-01): the ↺ AS SHOWN — this top on
-  // the loop that places the frame, the frame's top on every other.
-  int64_t top_offset = 0;
+  int64_t top = celestrian::heard::frameOriginOf(*target, rootScope()) +
+                (map.active() ? map.mapOffset(0) : 0);
   if (!is_root && target->isAnchored()) {
     const int64_t t = target->effectiveTop();
-    const int64_t h = map.active() ? map.heardOffsetOf(t) : t;
-    if (h > 0) top_offset = h;
+    top += std::max<int64_t>(0, map.active() ? map.heardOffsetOf(t) : t);
   }
-  const int64_t top =
-      start.has_value()
-          ? *start
-          : (target->isAnchored() ? target->origin_samples.load()
-                                  : islandZero()) +
-                a0 + top_offset;
-  if (span <= 0) {
-    juce::Logger::writeToLog("AudioEngine: bounce refused - " + uuid +
-                             " has no committed content");
-    return false;
-  }
-  // THE SPAN CAP: the render buffer is sized from the span, and a
-  // saturated (lcm-capped) or merely huge effective period would be an
-  // int overflow or a bad_alloc on the message thread. The arm path
-  // caps the same quantity at the take ceiling (take_service.cc).
-  if (span > celestrian::ClipNode::kMaxTakeSamples) {
-    juce::Logger::writeToLog("AudioEngine: bounce refused - " + uuid +
-                             " spans " + juce::String(span) +
-                             " samples, past the take ceiling");
-    return false;
-  }
+  if (start.has_value()) top = *start;
 
   // The device falls silent for the render: removeAudioCallback returns
   // only once no callback is in flight, so the graph's DSP scratch
@@ -148,9 +116,8 @@ bool AudioEngine::bounce(const juce::String& uuid,
   // time. Live effect tails are perturbed by the render (accepted).
   if (device_callback_registered_) device_manager.removeAudioCallback(this);
 
-  // A FRESH snapshot for the render (the published one stays as it is;
-  // it is immutable, so either would do — a private one keeps the
-  // bounce's structure load independent of any concurrent republish).
+  // A private snapshot keeps the render's structure independent of any
+  // republish while it runs.
   std::unique_ptr<celestrian::GraphSnapshot> snap(
       celestrian::buildGraphSnapshot(*root_node));
   const int self = entryOf(*snap, *target);
@@ -163,8 +130,8 @@ bool AudioEngine::bounce(const juce::String& uuid,
   juce::AudioBuffer<float> audio(2, (int)(span + tail_cap));
   audio.clear();
 
-  // The render's own clock starts at the frame top: the monotonic
-  // transport is untouched, so musical time never advances for the UI.
+  // The render's own clock starts at the start: the monotonic transport
+  // is untouched, so musical time never advances for the UI.
   int64_t clock = top;
   int64_t written = 0;
   auto renderBlock = [&](int n, bool content_silent) {
@@ -188,10 +155,10 @@ bool AudioEngine::bounce(const juce::String& uuid,
   }
 
   // THE TAIL: content silent, racks ringing. Rendering continues until
-  // the peak has stayed under the floor for half a second (or the cap);
-  // the file keeps the tail through its FIRST block under the floor, so
-  // a ringing tail ends below −90 dBFS and a node with nothing ringing
-  // ends exactly at its span.
+  // the peak has stayed under the floor for kTailQuietSeconds (or the
+  // cap); the file keeps the tail through its FIRST block under the
+  // floor, so a ringing tail ends below the floor and a node with
+  // nothing ringing ends exactly at its span.
   int64_t kept = span;
   int64_t quiet_run = 0;
   bool close_pending = false;

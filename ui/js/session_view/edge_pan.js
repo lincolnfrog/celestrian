@@ -1,22 +1,14 @@
 /**
- * EDGE PAN — the ONE autoscroll rule for raw-frame drags (loop-region
- * phase 1, 2026-09-23): the lane's same-scale reveal (map_bands.js
- * runRevealDrag) and every region-panel drag (region_panel.js) pan
- * their raw view under a hand held near a visible edge, and they share
- * this module so the two surfaces can never disagree about when a
- * drag pans.
+ * EDGE PAN — the ONE autoscroll rule for raw-frame drags: the lane's
+ * same-scale reveal (map_bands.js runRevealDrag) and every region-panel
+ * drag pan their raw view under a hand held near a visible edge.
  *
- * DIRECTION-AWARE (diagnosis release-jump F5): the reveal used to pan
- * whenever the pointer sat inside the 36 px edge zone. A loop resting
- * at the frame's left edge puts its grips ~4 px inside the lane edges,
- * so a grip grabbed THERE started inside the zone: a few px of INWARD
- * travel for a fine edit and the loop ran OUTWARD (a plain drag grew
- * the loop by whole Qs, a ⌥ drag slid it against the hand). Now a drag
- * pans toward an edge only once the pointer is outward of where it
- * GRABBED — by more than the slop — and inside that edge's zone; the
- * speed ramps with the distance past whichever comes first, the zone's
- * inner line or the grab point. A grab far from the edges behaves
- * exactly as before.
+ * DIRECTION-AWARE: a drag pans toward an edge only once the pointer is
+ * OUTWARD of where it grabbed — by more than the slop — and inside that
+ * edge's zone; the speed ramps with the distance past whichever comes
+ * first, the zone's inner line or the grab point. (A handle resting near
+ * a lane edge is grabbed inside the zone: a few px of inward travel must
+ * never run the view outward.)
  */
 
 /* The edge zone (px inside the visible edge) and the top pan speed at
@@ -63,12 +55,10 @@ export const canPanView = (dir, q0, spanQ, totalQ) =>
 /**
  * Move a raw view's q0 by `dq`, clamped ONLY in the direction of travel.
  * The same-scale reveal anchors its view so the grabbed bound sits under
- * the hand, wherever that puts the view — past the take's end for a loop
- * at the take's end, before its start for a take shorter than the frame.
- * Clamping into [0, totalQ − spanQ] on every pan frame snapped such a
- * view into range on the FIRST frame (an ~9Q leap, and the bound — read
- * through q0 — leapt with it: review 2026-09-23). A view outside the
- * range glides from where it is and stops at the take's edge.
+ * the hand, wherever that puts the view — past the take's end, before
+ * its start. Such a view glides from where it is and stops at the take's
+ * edge; clamped into [0, totalQ − spanQ] it would leap on its first pan
+ * frame, and the bound — read through q0 — with it.
  */
 export function panViewQ0(q0, dq, spanQ, totalQ) {
     return dq < 0
@@ -89,6 +79,7 @@ export function panViewQ0(q0, dq, spanQ, totalQ) {
  *   });
  *   pan.update(clientX)  per pointermove (after engage)
  *   pan.stop()           on release / cancel
+ *   pan.active()         is it panning now? (tests only)
  *
  * `raf`, `caf` and `now` are injectable for tests.
  */
@@ -130,4 +121,19 @@ export function makeEdgePanner({ rect, grabX, canPan, pxPerQ, onPan,
         }
     };
     return { update, stop, active: () => dir !== 0 };
+}
+
+/**
+ * The panner of a raw VIEW over a `totalQ` take — the builder every
+ * raw-frame drag uses: makeEdgePanner that pans while the view
+ * (`view()` → {q0, spanQ}, read live) can still move that way.
+ */
+export function makeViewPanner({ view, totalQ, ...rest }) {
+    return makeEdgePanner({
+        canPan: dir => {
+            const v = view();
+            return canPanView(dir, v.q0, v.spanQ, totalQ);
+        },
+        ...rest,
+    });
 }

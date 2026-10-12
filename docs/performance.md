@@ -29,14 +29,14 @@
 ## 1. The audio-thread contract
 
 Everything reachable from `AudioEngine::audioDeviceIOCallbackWithContext`
-(`StackNode::process`, `ClipNode::process`, `commitRecording` when it fires
-from `process`, the snapshot-space cycle math in `graph_snapshot.h`) must
-obey:
+(`StackNode::process`, `ClipNode::process`, `commitRecording` — it always
+fires from `process` — and the snapshot-space cycle math in
+`graph_snapshot.h`) must obey:
 
 | Rule | Why | Enforced by (today) |
 |---|---|---|
 | No locks (mutex, recursive_mutex) | Priority inversion with the message thread → dropouts | The audio thread traverses ONE immutable whole-graph snapshot per callback (`ProcessContext.snap`, published by atomic swap in `AudioEngine::publishGraph` — Tier 3 Step 3); the old per-stack snapshots and `children_mutex` are deleted |
-| No heap allocation/free | malloc can take a lock or syscall | `ProcessContext` is POD; `mix_buffer` preallocated (8192 frames); snapshot math is free functions over index spans; deferred frees go through `AudioEngine::retire()` |
+| No heap allocation/free | malloc can take a lock or syscall | `ProcessContext` is POD; every block-sized buffer is sized ONCE, at construction, for the one block ceiling (below); snapshot math is free functions over index spans; deferred frees go through `AudioEngine::retire()` |
 | No file I/O / logging | `juce::Logger` writes files | `src/rt_log.h` fixed-slot ring; drained on the message thread in `getGraphState()` |
 | No buffer copies proportional to clip length | A 30 s clip copy is milliseconds of stall | No rotation exists at all — content is stored in the origin frame and playback offsets reads by the clip's origin (kernel.md; plus a `content_base_` storage offset after a Q13 lock-collapse); samples never move |
 | No unbounded waits | — | The one remaining lock-ish thing is the RtLog `SpinLock`, held for a ≤160-byte memcpy, with try-lock (drops the message on contention) |
@@ -62,13 +62,55 @@ whole graph (decisions + capture: arm, boundaries, commit — the only
 place musical state changes), then RENDER (`const` — the kernel
 equation; mutables are DSP scratch + playhead telemetry only).
 `AudioNode::process` is the non-virtual sequencer; never interleave a
-decision into a render path.
+decision into a render path. A request another thread posts is taken
+up in CONTROL and latched for render — the device-stop sound-off
+(vst3.md §8.3) is consumed there, never by a render pass.
+
+**One block ceiling: `kMaxBlockSamples`** (8192, `src/dsp/fx_chain.h`).
+Every buffer the audio thread fills per block is sized for it at
+construction, so no block within it allocates:
+
+- a clip's scratch pair (`fx_scratch_`, `fx_scratch2_`) and a stack's
+  mix and fx-accumulator buffers;
+- the chain's mono → stereo promotion scratch, and the block size a
+  hosted plugin is prepared for (`Vst3Slot::kMaxBlockSize`);
+- **the MIDI reserves**, each the formula for its worst case, not a
+  round number: the engine's live buffer holds the most one drain of
+  the input queue can deliver (`engine_internal::kLiveMidiDrainBytes`
+  = queue capacity × the bytes a `MidiBuffer` spends per event), a
+  stack's per-run slice of it the same, and a clip's render buffer
+  holds a full block of content and live events plus a note-off for
+  every note the content had sounding and a sound-off pair per channel
+  (`ClipNode::kMaxRenderMidiEvents`). A denser block drops the rest; it
+  never grows the buffer.
+
+One stage sums a node into its parent — `sumOutputStage`
+(`src/audio_node.h`, beside `outputStageGains`), shared by clips and
+stacks.
 
 **Take content storage (D4, 2026-07-19i):** a clip's content buffer is
 reached through ONE atomic pointer. Arm makes it a huge VIRTUAL
-reservation (message thread, clip idle — pages commit as capture
-writes; deliberately never cleared, and nothing reads past
-write_position). Post-commit compaction swaps an exact-size copy in on
+reservation (message thread, clip idle — address space only,
+`src/take_storage.h`; deliberately never cleared, and nothing reads
+past write_position). **The take's REACH is the one committed edge**
+(`ClipNode::takeReach(Q)`): the furthest sample the live take may touch
+before the grower next runs — the dense spans it owns whole from its
+arm (a through-map take's cycle; a new take's slot and the old extent
+of a collapsed slot), and, ahead of the linear write head, the run a
+stop still needs (`stopRun(Q)`: on to the next Q boundary, plus slack)
+plus the grower's headroom (`kArmCommitSamples`). The storage is
+committed out to the reach at the arm — BEFORE any clear — and by the
+engine's grower on every poll; every write, the arm's clears included,
+is cut at the writable edge; and the wall guard trips only when the
+grower has starved for a whole headroom, finishing the take at the last
+boundary that fits. Where pages are lazily backed (macOS, Linux)
+committing is bookkeeping; on Windows it is the real commit, so a take
+past the edge would be an access violation — the suite pins the law on
+every platform through the seam `TakeStorage::commit_on_demand`
+(`tests/take_lifecycle_tests.cc`, `take_capacity_tests.cc`), but it has
+not yet run on Windows itself (tasks.md Tier G). **A take with no input
+runs by the clock** over silence, so it always reaches its boundary.
+Post-commit compaction swaps an exact-size copy in on
 the message thread and retires the old buffer via the reclaimer — legal
 under an actively rendering clip because render loads the pointer once
 per block. Never resize or swap a buffer the audio thread might be
@@ -111,8 +153,11 @@ heard length).
 (`getIntrinsicDuration`, `getEffectivePeriod`, `findNodeByUuid`,
 metadata/waveform) are MESSAGE THREAD ONLY; their audio-side twins are the
 snapshot-space free functions in `graph_snapshot.h`
-(`snapIntrinsicDuration`, `snapEffectivePeriod`, `snapEffectiveCycle`,
-`snapIsUnderSolo`). Parent-pointer walks (`getParent`/`rootNode`/
+(`snapEffectivePeriod`, `snapEffectiveCycle`, `snapIsUnderSolo`,
+`snapAnySolo`). A stack reads its scope's facts — the active song, the
+map over that same read, the frame origin, its own period, the fold and
+the cycle its children receive — ONCE per phase
+(`StackNode::scopeFacts`) and hands them to every seam run. Parent-pointer walks (`getParent`/`rootNode`/
 `getEffectiveQuantum`) survive only as message-thread helpers; the
 audio thread has no fallback path — `process`/`control`/`render` assert
 the snapshot and island facts, and node-level tests build a real
@@ -132,11 +177,34 @@ callback uses.
 - [ ] Cross-thread fields are `std::atomic`.
 - [ ] Destruction of graph objects goes through `retire()`.
 
-Known residuals: none on the audio thread. `getWaveform` reads content
-only while a clip is Idle (the state machine's commit store is the
-publication point); traversal is cast-free over the snapshot; the
-message-thread `getIntrinsicDuration()` on stacks walks children per
-call — cache if the perf meters ever care.
+**Every commit is the audio thread's.** A stop is a request taken up at
+a block top (`ClipNode::consumeStopRequest`); an island's first take,
+with no boundary to run to, commits at that very top, at its write
+head. `AudioEngine::blocksRunElsewhere` says whether another thread
+runs the blocks (a device callback is registered, or the last block ran
+on another thread — the headless server's clock thread); a host that
+runs the blocks on the calling thread has no block in flight, and
+`stopRecordingInNode` runs the block top itself. **A device block past
+the ceiling reaches the graph in slices** of at most `kMaxBlockSamples`
+(`AudioEngine::renderBlock`); the grow-if-bigger guards in the clip and
+the stack remain for node-level hosts that render long blocks directly.
+**The arm displaces, never reallocates**: `prepareRecording` /
+`prepareRetake` return what they displaced and the engine retires it.
+
+**Known residual** (tasks.md Tier G): **the cancel of an ARMED take is
+check-then-store on both threads.** `ClipNode::stopRecording` on an
+Armed clip stores `Idle` and counts the cancel while the audio thread,
+having read `Armed`, may store `Capturing` — an uncounted live take.
+Window: the one block in which an arm's target is reached. The cure is
+a compare-exchange on both sides (the cancel `Armed → Idle`, on failure
+a stop request; the capture `Armed → Capturing`, on failure nothing).
+A race: no deterministic test shows it.
+
+Not residuals, checked: `getWaveform` reads content only while a clip is Idle (the state
+machine's commit store is the publication point); traversal is
+cast-free over the snapshot; the message-thread
+`getIntrinsicDuration()` on stacks walks children per call — cache if
+the perf meters ever care.
 
 ---
 
@@ -510,8 +578,10 @@ measurement, sharper onset than re-recording a clip):
    `ClipNode`'s `compensated_pos = master_pos − (input + output)` math is
    unchanged — it just gets a number that is now *true by construction*.
 
-**How to run it:** the 🎯 *Calibrate Latency* button in the debug panel
-(`ui/index.html`, wired in `app.js`). Route output to input first — a
+**How to run it:** the *Calibrate* button in the preferences panel
+(`ui/index.html`, wired in `ui/js/preferences.js`). A run that fails
+keeps the calibration stored for the device, and a second start while
+one is capturing is refused. Route output to input first — a
 patch cable is ideal; speakers→mic works too (add ~1 ms per 34 cm of air
 between speaker and mic). Keep the room quiet for the 2 s window.
 

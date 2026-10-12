@@ -1,13 +1,12 @@
-/* THE DEFINER PASSES EVERY GATE (audit 2026-08-31 U4).
+/* THE DEFINER PASSES EVERY GATE.
  *
  * A definer stack must be ONE TAKE LOOPING AS ONE PART. A one-shot
  * member (periodSource === 'context') breaks that: the engine's
  * definerStack refuses it, and — because a published definerId can
  * outlive the state that earned it by a poll — the VM re-checks its
- * own gates (oneTakeDuration > 0) before opening the trim view.
- * Pre-fix, the published id was trusted verbatim and the trim view
- * framed the commensurate LCM instead of the raw take: brackets and
- * selection in the wrong coordinate system. */
+ * own gates (oneTakeDuration > 0) before opening the trim view. A
+ * published id trusted verbatim would frame the commensurate LCM, not
+ * the raw take: brackets and selection in the wrong coordinate system. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveViewModel } from '../view_model.js';

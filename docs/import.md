@@ -3,7 +3,11 @@
 A WAV/AIFF/FLAC becomes a **committed take** — nothing else is new. The
 file decodes on the message thread (`src/engine/import.cc`) to an exact-
 size buffer at the device rate and commits through the take path, so
-every take fact (docs/takes.md) holds for imported material.
+every take fact (docs/takes.md) holds for imported material. It SETTLES
+through the same function as a recorded take
+(`engine_internal::settleCommittedTake`): the undo entry, and for a
+first take the pre-Q scrub, the anchors and the group window, in one
+order for both.
 
 ## The verbs
 
@@ -13,7 +17,10 @@ every take fact (docs/takes.md) holds for imported material.
 | `importAudioWithDialog(uuid, originSamples)` | picks the file natively, then the same; `false` when cancelled |
 
 Refused (`false`) while any take is live or armed, on a MIDI track, on a
-full take list, or for an unreadable file.
+full take list, for an unreadable file, or for a file past the take
+ceiling — judged from the file's header, BEFORE decoding, on its length
+as stored and as it will be at the device's rate (a short file at a low
+rate can resample past the ceiling).
 
 ## Placement and length
 
@@ -29,16 +36,24 @@ full take list, or for an unreadable file.
   otherwise the take keeps its free length with its loop end at the
   floor multiple. The record path's law, unchanged.
 - **Pre-Q import defines Q.** On an island with no quantum the file's
-  length *is* Q and the clock is the origin — the first-take rule.
-- **A stack target** gains a fresh clip child named after the file.
+  length *is* Q and the clock is the origin — the first-take rule,
+  whole: geometry authored before Q that does not fit the new grid is
+  scrubbed as a first take scrubs it, and comes back with the undo.
+- **A stack target** (the root included) gains a fresh clip child named
+  after the file.
 - **A committed slot** takes a **new take** cut or zero-padded to the
   slot's period, active on arrival — the slot's origin and period stand.
 - **Resampling.** A mismatched file rate resamples every channel
   (Lagrange); channels beyond two fold onto the stereo pair.
-- **Undo.** Each import rides the take entry (Take/Untake): ⌘Z removes
-  the take, or the whole clip when the import created it.
+- **Undo: ONE step, always.** Each import rides the take entry
+  (Take/Untake). An import onto a stack makes a clip AND gives it a
+  take; the two are one composed log entry (`Edit::then`: an edit and
+  the edit that follows it apply together and invert together), so one
+  ⌘Z removes the take and the clip, and one redo brings both back.
+  Undoing an import that established Q keeps every song authored
+  before it (composition.md §5).
 
-## The UI half (`ui/js/app.js`, `import_drop.js`, `lane_build.js`)
+## The UI half (`ui/js/project_menu.js`, `import_drop.js`, `lane_build.js`)
 
 - **Drop onto a lane body**: the first file, at the pointer's Q.
 - **"Import audio…"** in every + menu (into that group) and in the

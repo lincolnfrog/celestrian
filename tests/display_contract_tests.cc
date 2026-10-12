@@ -1,14 +1,11 @@
 /**
  * DISPLAY CONTRACT CAPTURE — "the grid you see is the grid you hear"
- * (owner ruling 2026-09-09; docs/scenarios.md S30/S31).
+ * (docs/scenarios.md S30/S31).
  *
- * The field bug behind this file: a 4-section root song sounded the
- * full band over the guitar-only section. The engine gated from one
- * frame (the root's origin), the UI drew the sections from another
- * (the zero), and NO test layer could see the split — the mock has no
- * audio, and the engine tests never asked what the lanes draw.
- *
- * This is the seam that closes it. Drive the REAL engine through the
+ * The engine gates a song's sections in one frame and the UI draws them
+ * from the published state; the mock has no audio and the engine tests
+ * do not ask what the lanes draw, so this is the seam that holds the
+ * two to one frame. Drive the REAL engine through the
  * scenario harness, and for every gated clip measure — by SOLOING it
  * and listening — which Q cells of the island cycle it actually sounds
  * in (the AUDIBLE TRUTH, in the island frame the ruler draws). Dump the
@@ -18,8 +15,7 @@
  * every lane is DIMMED exactly where the engine is silent.
  *
  * Scenario: 1Q, 4Q, then an 8Q take armed at phase 2Q after a full
- * cycle (the case that once parted the root's origin from the island
- * zero); a root song 4Q + 4Q
+ * cycle (a take off the island zero's phase); a root song 4Q + 4Q
  * gating the 1Q clip off in step 2; a group anchored at phase 2Q with
  * a 4Q member and its own 4Q + 4Q song gating that member off in step
  * 2 (a nested song folds from the GROUP's origin — Q18).
@@ -45,6 +41,9 @@ using scenario::posmod;
 namespace {
 constexpr int64_t Q = 20000;
 
+/** A two-step song gating `off_uuid` off in step 2. The steps carry no
+ * name (scenario::seqPayload names its steps, and the capture publishes
+ * step names). */
 juce::var song(int64_t a, int64_t b, const juce::String& off_uuid) {
   auto* payload = new juce::DynamicObject();
   juce::Array<juce::var> arr;
@@ -146,19 +145,10 @@ class DisplayContractTests : public juce::UnitTest {
     }
     doc->setProperty("truth", juce::var(tv));
     const juce::var v(doc);
-    auto outFile = repoFile("shared/display_contract_capture.json");
+    auto outFile =
+        test_utils::sharedCaptureFile("display_contract_capture.json");
     outFile.replaceWithText(juce::JSON::toString(v));
     logMessage("capture: " + outFile.getFullPathName());
-  }
-
- private:
-  juce::File repoFile(const juce::String& rel) {
-    auto dir = juce::File::getCurrentWorkingDirectory();
-    for (int i = 0; i < 6; ++i) {
-      if (dir.getChildFile("shared").isDirectory()) return dir.getChildFile(rel);
-      dir = dir.getParentDirectory();
-    }
-    return juce::File(__FILE__).getParentDirectory().getParentDirectory().getChildFile(rel);
   }
 };
 

@@ -17,13 +17,15 @@
  * and a throwing onEnd; the held preview (committed landing, .drag-held,
  * teardown only at the flush after settle); a cancel's held restore;
  * a newer gesture taking an older one's held preview; the HEARD drags'
- * pluggable preview and commit under the same lifecycle (2026-09-24);
+ * pluggable preview and commit under the same lifecycle;
  * and, through the real deriveViewModel, that no poll inside the window
  * seats the frame from pre-final geometry.
  */
 
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
+
+import { SCENE_Q as SQ, clipAt, windowed, island as scene } from './helpers.mjs';
 
 /* ---------- a minimal DOM: enough for the runner and the preview ---------- */
 class FakeEl {
@@ -82,9 +84,12 @@ const { beginGesture, isOverlayFrozen, flushTeardowns, isGestureLive,
         COMMIT_HOLD_MAX_MS } = await import('../session_view/gesture.js');
 const { noteFrame, mapDragPinQ, mapDragPinZero, mapDragPinFoldQ } =
     await import('../session_view/drag_pin.js');
-const { runRawDrag, slideMoveFn, commitTiming } =
+const { runRawDrag, runMapDrag, commitTiming } =
     await import('../session_view/map_core.js');
+const { slideMoveFn } = await import('../session_view/map_moves.js');
 const { deriveViewModel } = await import('../view_model.js');
+const { nudgeRegion } = await import('../session_view/region_nudge.js');
+const { selectOnly } = await import('../session_view/selection.js');
 
 /** A promise the test settles by hand — the bridge's answer. */
 function deferred() {
@@ -300,6 +305,59 @@ test('a newer gesture on the same overlay takes the older one\'s held preview', 
     assert.equal(mapDragPinZero(), null, 'every pin released');
 });
 
+/* ---------- one undo step per gesture ----------
+ * A gesture's first commit opens its undo step and the rest coalesce
+ * into it. Only the live gesture may start a new step: a press the
+ * runner refuses, or a nudge key, must leave it alone. */
+
+test('a second pointer on another handle leaves the live gesture\'s undo step alone', async () => {
+    const calls = fakeBridge();
+    noteFrame(5, 5, 55 * Q);
+    const g = slideGesture();
+    assert.deepEqual(calls.map(c => c.live), [false], 'the first commit opens the step');
+    // A rival press on another handle: the runner is a singleton.
+    const s2 = st();
+    const rival = runRawDrag({ clientX: 80, altKey: false, target: new FakeEl(),
+                               pointerId: 2, preventDefault() {}, stopPropagation() {} },
+        new FakeEl(), s2, {
+            rawQAt: x => x / pxPerQ, view: () => ({ q0: 0, spanQ: 12 }),
+            onMove: slideMoveFn(s2, s2.segs, 8), engage: false });
+    assert.equal(rival.live, false, 'refused');
+    g.up();
+    assert.deepEqual(calls.map(c => c.live), [false, true],
+        'the release coalesces into the gesture\'s own step');
+    calls.forEach(c => c.answer(true));
+    await flushMicrotasks();
+    flushTeardowns();
+});
+
+test('← / → wait for a live gesture: no commit, no new undo step', async () => {
+    const calls = fakeBridge();
+    noteFrame(5, 5, 55 * Q);
+    // The selected track's panel, as nudgeRegion reads it.
+    const strip = new FakeEl();
+    strip._bandState = st();
+    const nav = new FakeEl();
+    nav.style.display = '';
+    selectOnly('c');
+    ctx.laneEls.set('c', { _region: { strip, nav } });
+    try {
+        const g = slideGesture();   // a LANE's drag: the strip is not frozen
+        assert.equal(calls.length, 1);
+        assert.equal(nudgeRegion(1), true, 'the key is consumed');
+        assert.equal(calls.length, 1, 'and sends nothing');
+        g.up();
+        assert.deepEqual(calls.map(c => c.live), [false, true],
+            'the drag\'s release still coalesces into its own step');
+        calls.forEach(c => c.answer(true));
+        await flushMicrotasks();
+        flushTeardowns();
+        assert.equal(mapDragPinZero(), null);
+    } finally {
+        ctx.laneEls.delete('c');
+    }
+});
+
 /* ---------- the heard drags: a pluggable preview and commit ----------
  * (loop-region phase 2, 2026-09-24: the lane's splice swap and ↺ shift,
  * the panel's start marker.) The same lifecycle — engage gate, throttled
@@ -319,25 +377,26 @@ function shiftGesture({ engage = false } = {}) {
     let lastP;
     const ev = { clientX: 0, altKey: false, target, pointerId: 1,
                  preventDefault() {}, stopPropagation() {} };
-    const run = runRawDrag(ev, o, s, {
-        rawQAt: x => x / pxPerQ,
-        clamp: false,
+    const run = runMapDrag(ev, o, s, {
+        posAt: x => x / pxPerQ,
         onMove: dx => ({ shift: dx === null ? 0 : Math.round(dx) * Q }),
-        preview: res => log.push(['preview', res.shift / Q]),
-        commit: res => {
-            const d = res.shift - sent;
-            if (!d) return lastP;
-            sent = res.shift;
-            return (lastP = commitTiming(s, d, null, true));
+        parts: {
+            preview: res => log.push(['preview', res.shift / Q]),
+            commit: res => {
+                const d = res.shift - sent;
+                if (!d) return lastP;
+                sent = res.shift;
+                return (lastP = commitTiming(s, d, null, true));
+            },
+            restore: () => {
+                if (!lastP) return undefined;
+                const d = -sent;
+                sent = 0;
+                return commitTiming(s, d, null, true);
+            },
+            held: res => log.push(['held', res ? res.shift / Q : null]),
+            teardown: () => log.push(['down']),
         },
-        restore: () => {
-            if (!lastP) return undefined;
-            const d = -sent;
-            sent = 0;
-            return commitTiming(s, d, null, true);
-        },
-        held: res => log.push(['held', res ? res.shift / Q : null]),
-        teardown: () => log.push(['down']),
         freeze: [host],
         engage,
         onTeardown: () => log.push(['teardown']),
@@ -417,26 +476,12 @@ test('a heard drag that sent nothing tears down at once — no pin, no hold', ()
 
 /* ---------- the pin, read by the real view model ---------- */
 
-const SQ = 48000;
-const clip = (id, originQ, durationQ, extra = {}) => ({
-    id, name: id, type: 'clip', origin: Math.round(originQ * SQ),
-    duration: Math.round(durationQ * SQ), effectiveQuantum: SQ,
-    loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-    isMuted: false, isRecording: false, isPendingStart: false, ...extra,
-});
 /** The field topology (frame_seat.test.mjs) with B's window slid. */
-const island = slideQ => ({
-    id: 'root', type: 'stack', quantum: SQ, islandZero: 0, definerId: '',
-    isPlaying: true, masterPos: 0, islandPos: Math.round(55.3 * SQ),
-    perf: { sampleRate: SQ },
-    nodes: [
-        clip('A', 0, 1),
-        clip('B', 11, 56, { loopStart: Math.round((44 + slideQ) * SQ),
-                            loopEnd: Math.round((49 + slideQ) * SQ),
-                            windowActive: true }),
-        clip('C', 58, 5),
-    ],
-});
+const island = slideQ => scene([
+    clipAt('A', 0, 1),
+    windowed('B', 11, 56, [44 + slideQ, 49 + slideQ]),
+    clipAt('C', 58, 5),
+], { clockQ: 55.3, perf: { sampleRate: SQ } });
 const pollOpts = () => ({ pinFrameQ: mapDragPinQ(), pinFoldQ: mapDragPinFoldQ(),
                           pinZero: mapDragPinZero() });
 
@@ -466,4 +511,30 @@ test('no poll between release and settle seats the frame from the last LIVE geom
     assert.equal(mapDragPinZero(), null, 'unpinned');
     assert.equal(settled.frameZero, 55 * SQ, 'the committed picture: still no jump');
     flushTeardowns();
+});
+
+/* ---------- the press selects the gesture's track ---------- */
+
+test('a handle press selects its track alone, at the press; a refused press selects nothing', async () => {
+    const { selection, toggleSelect, activeSelectedId } =
+        await import('../session_view/selection.js');
+    const calls = fakeBridge();
+    // Two tracks selected, 'other' last.
+    selectOnly('c');
+    toggleSelect({ _lane: { id: 'other' } }, true);
+    assert.deepEqual([...selection], ['c', 'other']);
+    // The press alone — before any move, before the engage gate.
+    const g = slideGesture({ toQ: null, engage: true });
+    assert.deepEqual([...selection], ['c'], 'collapsed to the pressed track');
+    // A second pointer on another track's handle while it runs is
+    // refused: it selects nothing.
+    const s2 = { ...st(), laneId: 'other' };
+    runRawDrag({ clientX: 80, altKey: false, target: new FakeEl(), pointerId: 2,
+                 preventDefault() {}, stopPropagation() {} }, new FakeEl(), s2, {
+        rawQAt: x => x / pxPerQ, view: () => ({ q0: 0, spanQ: 12 }),
+        onMove: slideMoveFn(s2, s2.segs, 8) });
+    assert.equal(activeSelectedId(), 'c', 'the live gesture\'s track stays the selection');
+    g.up();
+    assert.equal(calls.length, 0, 'a click: nothing sent');
+    assert.deepEqual([...selection], ['c']);
 });

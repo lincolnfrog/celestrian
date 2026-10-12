@@ -12,12 +12,11 @@ import assert from 'node:assert/strict';
 import { assessBlowup, assessDrift, snapOffer, lcmAll, kBlowupRatio,
          cycleMinutes, fmtDuration } from '../frame_health.js';
 import { deriveViewModel } from '../view_model.js';
-import { callNative, getState, loadScenario } from '../mock_backend.js';
+import { advanceBy, callNative, getState } from '../mock_backend.js';
 import { loadSharedJson, recordTake } from './helpers.mjs';
+import { published, recordIsland } from './mock_scene.mjs';
 
 const golden = loadSharedJson('timing_golden.json').frame_health_cases;
-const opts = { fxOpen: new Set(),
-               pinFrameQ: null, pinFoldQ: null };
 
 test('golden: blowup face (attribution + offers)', () => {
     assert.equal(kBlowupRatio, 4);
@@ -60,8 +59,7 @@ test('helpers: snapOffer ties go shorter; lcmAll; minutes text', () => {
 });
 
 test('VM: the blowup lands on the responsible lane; rows learn parent facts', async () => {
-    loadScenario('empty');
-    const a = await recordTake('', 1000, { stopEarly: 0, settle: 0 });   // 1Q
+    await recordIsland(1000);                                           // 1Q
     const g = await callNative('createNode', 'stack', '');
     const Q = getState().quantum;
     // A sequenced group of 7Q beside a 5Q loop → lcm 35 = 5× the
@@ -69,14 +67,13 @@ test('VM: the blowup lands on the responsible lane; rows learn parent facts', as
     const b = await recordTake('', 5 * Q);                              // 5Q
     const k = await callNative('createNode', 'clip', g);
     await callNative('startRecordingInNode', k);
-    const { advanceBy } = await import('../mock_backend.js');
     advanceBy(2 * Q);
     await callNative('stopRecordingInNode', k);
     advanceBy(2 * Q);
     await callNative('setSequence', g, {
         steps: [{ name: 'a', len: 7 * Q }], gates: {},
     });
-    let vm = deriveViewModel(getState(), { ...opts, seqOpen: new Set([g]) });
+    let vm = deriveViewModel(getState(), { seqOpen: new Set([g]) });
     const gl = vm.lanes.find(l => l.id === g);
     assert.ok(gl.health, 'the 7Q sequenced group is responsible (it has the knob)');
     assert.equal(gl.health.cycleQ, 35);
@@ -85,12 +82,15 @@ test('VM: the blowup lands on the responsible lane; rows learn parent facts', as
     const row = vm.lanes.find(l => l.kind === 'seq' && l.ownerId === g);
     assert.ok(row.health && row.health.blowup, 'the grid row carries the offer');
     assert.equal(row.health.blowup.offerQ, 5);
-    assert.equal(row.parentOthersQ, 5, 'parent-scope lcm excluding self');
-    assert.equal(row.parentLargestQ, 5);
+    // The parent scope's members ride the row (the grip's live warning
+    // is judged over them, seqHealthAt): itself, and the others.
+    assert.equal(row.parentMembers.find(m => m.id === g).periodQ, 7);
+    const others = row.parentMembers.filter(m => m.id !== g).map(m => m.periodQ);
+    assert.equal(lcmAll(others, 1), 5, 'parent-scope lcm excluding self');
+    assert.equal(Math.max(...others), 5);
     // The group's own DRIFT: 7Q over the kick's inner cycle (the
     // padded take length — 2Q or 3Q depending on the arm boundary).
-    const { nodeById } = await import('./helpers.mjs');
-    const kickQ = nodeById(k, getState().nodes).duration / Q;
+    const kickQ = published(k).duration / Q;
     assert.ok(7 % kickQ !== 0, 'test premise: 7Q does not divide by the kick');
     assert.ok(row.health.drift, 'drifting: 7 mod kick != 0');
     assert.deepEqual(row.health.drift.offers,
@@ -102,25 +102,22 @@ test('VM: the blowup lands on the responsible lane; rows learn parent facts', as
     await callNative('setSequence', g, {
         steps: [{ name: 'a', len: goodQ * Q }], gates: {},
     });
-    vm = deriveViewModel(getState(), { ...opts, seqOpen: new Set([g]) });
+    vm = deriveViewModel(getState(), { seqOpen: new Set([g]) });
     assert.equal(vm.lanes.find(l => l.id === g).health, undefined, 'healthy');
     const row2 = vm.lanes.find(l => l.kind === 'seq' && l.ownerId === g);
     assert.equal(row2.health, undefined, 'no drift either');
-    void a;
 });
 
 test('VM: root drift shows on the transport chip fact (rootSeq.drift)', async () => {
-    loadScenario('empty');
-    await recordTake('', 1000, { stopEarly: 0, settle: 0 });
+    await recordIsland(1000, 2000);
     const Q = getState().quantum;
-    await recordTake('', 2 * Q);
     await callNative('setSequence', 'mock-root', {
         steps: [{ name: 'a', len: 3 * Q }], gates: {},   // 3Q over a 2Q cycle
     });
-    const vm = deriveViewModel(getState(), { ...opts, seqOpen: new Set([getState().id]) });
+    const vm = deriveViewModel(getState(), { seqOpen: new Set([getState().id]) });
     assert.ok(vm.rootSeq.drift, 'root song drifts against its 2Q loops');
     assert.deepEqual(vm.rootSeq.drift.offers, [2, 4]);
     const row = vm.lanes.find(l => l.kind === 'seq');
     assert.ok(row.health.drift, 'the root grid row too');
-    assert.equal(row.parentOthersQ, undefined, 'the root has no parent scope');
+    assert.equal(row.parentMembers, undefined, 'the root has no parent scope');
 });

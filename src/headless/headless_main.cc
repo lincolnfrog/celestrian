@@ -2,46 +2,34 @@
  * THE HEADLESS ENGINE SERVER — the real engine, no window, no device
  * (docs/test_harness.md "Engine e2e").
  *
- * What it is: AudioEngine + ProjectManager + PluginHostService driven
- * by a SYNTHETIC audio clock (a thread pacing device-sized blocks of a
- * generated input — sine, ramp or silence — through the one callback
- * the real device would call), with the WebView bridge table
- * (src/bridge_dispatch.cc — the same entries the app registers) served
- * over HTTP, and ui/ served as static files from the same origin. Load
- * `http://localhost:PORT/index.html?engine=true` in any browser and the
- * REAL UI runs against the REAL engine; Playwright does exactly that
+ * AudioEngine + ProjectManager + PluginHostService driven by a
+ * SYNTHETIC audio clock (a thread pacing device-sized blocks of a
+ * generated input through the one callback a device would call), with
+ * the bridge table (src/bridge_dispatch.h) served over HTTP and ui/
+ * served as static files from the same origin. Load
+ * `http://localhost:PORT/index.html?engine=true` and the real UI runs
+ * against the real engine; Playwright does exactly that
  * (ui/playwright.engine.config.js, specs in ui/e2e_engine).
  *
- * Why: the mock has no audio and the WebView cannot be driven headless,
- * so "what I see is not what I hear" bugs had no test layer. This is
- * that layer. The `/control` surface makes it deterministic: pause the
- * clock, advance it by exact sample counts, choose the input, and ask
- * for the AUDIBLE TRUTH — which clips actually sound in which Q cell
- * (the engine solos each one and listens).
- *
  *   POST /call     {name, args[]}   → {result}        (the bridge table)
- *   POST /control  {op, ...}        → op-specific JSON (below)
+ *   POST /control  {op, ...}        → op-specific JSON
  *   GET  /<path>                    → ui/<path>       (index.html default)
  *
- * Control ops: status · pause · resume · advance{samples} · input{kind,
- * freq, gain} · truth · listen{samples, hop} · reset · quit.
+ * The control ops make a run deterministic: status · pause · resume ·
+ * advance{samples} · input{kind, freq, gain} · truth · listen{samples,
+ * hop} · reset · quit. `truth` and `listen` both answer what SOUNDS:
+ * truth solos each clip and listens for level; listen decodes the mix
+ * itself, from the chirp input (chirp_codec.h).
  *
- * `listen` is the spectral listener: with the CHIRP input (`--input
- * chirp`) every recorded sample carries its capture clock as a
- * frequency, so a spectrum of the island's OUTPUT says which clip, at
- * which content index, is sounding at every frame — the mix decoded,
- * level-blind, no soloing. The specs compare that against the render
- * law (the JS twin of timing::innerAt) AND against what the lanes draw.
- *
- * Threads, exactly as in the app: bridge handlers run on the MESSAGE
- * thread (the HTTP thread marshals each call there and waits); the
- * clock thread is THE audio thread; `advance` and `truth` run blocks
- * from the HTTP thread while the clock thread is paused (one mutex
- * serialises every callback).
+ * Threads, as in the app: bridge handlers run on the MESSAGE thread (an
+ * HTTP thread marshals each call there and waits); the clock thread is
+ * THE audio thread; `advance`, `truth` and `listen` run blocks from an
+ * HTTP thread. One mutex serialises every callback and guards the
+ * clocks and the input choice.
  *
  *   CelestrianHeadless [--port 8091] [--ui-dir DIR] [--projects-dir DIR]
  *                      [--input sine|ramp|chirp|silence] [--freq 220]
- *                      [--inputs N] [--block 512] [--paused]
+ *                      [--gain 0.5] [--inputs N] [--block 512] [--paused]
  */
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -51,7 +39,6 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <complex>
 #include <csignal>
 #include <iostream>
 #include <map>
@@ -66,6 +53,8 @@
 #include "../plugin_host_service.h"
 #include "../plugin_scan_worker.h"
 #include "../project_manager.h"
+#include "chirp_codec.h"
+#include "http_server.h"
 
 namespace {
 
@@ -89,9 +78,23 @@ class StdoutLogger : public juce::Logger {
 
 inline int64_t posmod(int64_t a, int64_t m) { return m > 0 ? ((a % m) + m) % m : 0; }
 
+/** A sample-valued fact of a getGraphState record (0 when absent). */
+int64_t samplesOf(const juce::var& record, const char* key) {
+  return (int64_t)(double)record.getProperty(key, 0);
+}
+
+/** THE ROOT'S FRAME TOP, from the island zero: the root's origin while
+ * a song anchors it (docs/frame.md §4), else the zero itself (0). The
+ * frame the view seats a root song on and its gates fold on. */
+int64_t rootTopFromZero(const juce::var& state) {
+  return (bool)state.getProperty("anchored", false)
+             ? samplesOf(state, "origin") - samplesOf(state, "islandZero")
+             : 0;
+}
+
 std::atomic<bool> g_quit{false};
 
-/** Run `fn` on the message thread and wait for it (the HTTP thread's
+/** Run `fn` on the message thread and wait for it (an HTTP thread's
  * one way into the engine — every bridge verb is message-thread-only). */
 void onMessageThread(std::function<void()> fn) {
   if (juce::MessageManager::getInstance()->isThisTheMessageThread()) {
@@ -117,11 +120,12 @@ class Host {
         plugins_(o.projects_dir.getChildFile("plugin-host")),
         rate_(engine_.currentSampleRateOrFallback()) {
     projects_.setRootForTest(o.projects_dir);
-    for (auto& m : celestrian::bridge::engineMethods(
-             {engine_, projects_, plugins_})) {
+    const celestrian::bridge::Services services{engine_, projects_, plugins_};
+    for (auto& m : celestrian::bridge::engineMethods(services)) {
       handlers_[m.name] = m.handler;
     }
-    // Window-bound verbs, stood in: no chooser, no editor, no pointer.
+    // Window-bound verbs, stood in: no chooser, no editor, no pointer —
+    // each answers what the app shell answers when it refuses.
     auto refuse = [](juce::var v) {
       return [v](const juce::Array<juce::var>&, celestrian::bridge::Completion done) {
         done(v);
@@ -131,11 +135,14 @@ class Host {
     handlers_["importAudioWithDialog"] = refuse(false);
     handlers_["chooseProjectsRoot"] = refuse(juce::String());
     handlers_["warpPointer"] = refuse(false);
-    handlers_["openPluginEditor"] = refuse(true);
+    handlers_["openPluginEditor"] = refuse(false);
+    engine_.setOnSessionLoaded(
+        [services] { celestrian::bridge::revivePlaceholders(services); });
     paused_.store(o.paused);
     in_.resize((size_t)std::max(1, o.inputs), std::vector<float>((size_t)o.block));
     out_l_.resize((size_t)o.block);
     out_r_.resize((size_t)o.block);
+    recordBoot();
   }
 
   AudioEngine& engine() { return engine_; }
@@ -147,17 +154,32 @@ class Host {
 
   bool has(const juce::String& name) const { return handlers_.count(name) > 0; }
 
-  /** The bridge call, marshalled to the message thread. */
+  /** The bridge call, marshalled to the message thread from an HTTP
+   * thread, which waits here for its completion — a handler may complete
+   * later, from another message-thread callback (a plugin still
+   * instantiating). The answer is shared with the completion, so one
+   * that arrives after the wait gave up lands nowhere. */
   juce::var call(const juce::String& name, const juce::Array<juce::var>& args,
                  bool& found) {
     auto it = handlers_.find(name);
     found = it != handlers_.end();
     if (!found) return {};
-    juce::var result;
+    struct Pending {
+      juce::WaitableEvent completed;
+      juce::var result;
+    };
+    const auto pending = std::make_shared<Pending>();
     onMessageThread([&] {
-      it->second(args, [&](juce::var r) { result = r; });
+      it->second(args, [pending](juce::var r) {
+        pending->result = std::move(r);
+        pending->completed.signal();
+      });
     });
-    return result;
+    if (!pending->completed.wait(kCompletionTimeoutMs)) {
+      juce::Logger::writeToLog("headless: " + name + " was never completed");
+      return {};
+    }
+    return pending->result;
   }
 
   /** Render `total` samples through the device callback (the audio
@@ -172,12 +194,8 @@ class Host {
     int64_t remaining = total;
     while (remaining > 0) {
       const int n = (int)std::min<int64_t>(remaining, block);
-      // The sweep is spent only while a take is live (armed or
-      // capturing — the island's take counter): see the sweep notes.
-      // A GUARD second at every arm keeps consecutive takes' capture
-      // ranges apart on the sweep — abutting ranges let a frame that
-      // straddles one take's loop seam decode its tail a hair into
-      // the next take's range (a phantom "sounds" for a gated clip).
+      // THE SWEEP CLOCK (see sweep_clock_): spent only while a take is
+      // live, a guard second ahead of every arm.
       const bool live = engine_.hasActiveTake();
       if (live && !sweep_live_) sweep_clock_ += (int64_t)rate_;
       sweep_live_ = live;
@@ -199,37 +217,45 @@ class Host {
     if (gain >= 0) gain_ = gain;
   }
 
-  int64_t inputClock() const { return input_clock_; }
+  int64_t inputClock() const {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    return input_clock_;
+  }
 
-  /** Facts the specs steer by (message thread). `islandPos` is the raw
-   * clock zero-relative and unwrapped (the engine's contract), so the
-   * island phase is `islandPos mod cycle`. */
+  /** Facts the specs steer by. `islandPos` is the raw clock
+   * zero-relative and unwrapped (the engine's contract), so the island
+   * phase is `islandPos mod cycle`. */
   juce::var status() {
     auto* o = new juce::DynamicObject();
     onMessageThread([&] {
       const juce::var st = engine_.getGraphState();
-      const int64_t q = (int64_t)(double)st.getProperty("quantum", 0);
-      o->setProperty("quantum", (double)q);
-      o->setProperty("zero", (double)(int64_t)(double)st.getProperty("islandZero", 0));
-      o->setProperty("islandPos", (double)(int64_t)(double)st.getProperty("islandPos", 0));
-      o->setProperty("masterPos", (double)(int64_t)(double)st.getProperty("masterPos", 0));
+      o->setProperty("quantum", (double)samplesOf(st, "quantum"));
+      o->setProperty("zero", (double)samplesOf(st, "islandZero"));
+      o->setProperty("islandPos", (double)samplesOf(st, "islandPos"));
+      o->setProperty("masterPos", (double)samplesOf(st, "masterPos"));
       o->setProperty("cycle", (double)islandCycle(st));
       o->setProperty("isPlaying", (bool)st.getProperty("isPlaying", false));
       o->setProperty("rootId", st.getProperty("id", ""));
     });
     o->setProperty("paused", paused_.load());
-    o->setProperty("clock", (double)input_clock_);
-    o->setProperty("sweepClock", (double)sweep_clock_);
     o->setProperty("rate", rate_);
     o->setProperty("block", opts_.block);
-    o->setProperty("input", input_kind_);
+    {
+      // The clocks and the input choice are the callback's: read
+      // between two blocks, never mid-render.
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      o->setProperty("clock", (double)input_clock_);
+      o->setProperty("sweepClock", (double)sweep_clock_);
+      o->setProperty("input", input_kind_);
+    }
     return juce::var(o);
   }
 
   /** THE AUDIBLE TRUTH: for every clip, which Q cells of the island
    * cycle it sounds in — the engine solos it and listens to one cycle.
-   * Cells are in the ISLAND frame (the ruler). Runs with the clock
-   * paused; the transport advances by (clips × (cycle + block)). */
+   * Cells are laid out from the root's frame top (the ruler). Runs
+   * with the clock paused; the transport advances by
+   * (clips × (cycle + 3 blocks)). */
   juce::var truth() {
     const bool was_paused = paused_.exchange(true);
     juce::var st;
@@ -237,7 +263,7 @@ class Host {
       if (!engine_.isPlaying()) engine_.togglePlayback();
       st = engine_.getGraphState();
     });
-    const int64_t q = (int64_t)(double)st.getProperty("quantum", 0);
+    const int64_t q = samplesOf(st, "quantum");
     const int64_t cycle = islandCycleOnMessageThread(st);
     auto* doc = new juce::DynamicObject();
     doc->setProperty("quantum", (double)q);
@@ -249,24 +275,16 @@ class Host {
       std::vector<juce::String> clips;
       collectClips(st, clips);
       for (const auto& id : clips) {
-        juce::Array<juce::var> dummy;
-        dummy.add(id);
+        juce::Array<juce::var> solo_args;
+        solo_args.add(id);
         bool found = false;
-        call("toggleSolo", dummy, found);
-        // The published islandPos is the raw clock ZERO-RELATIVE and
-        // unwrapped (AudioEngine::getGraphState). The cells are laid
-        // out from the ROOT'S FRAME TOP — its origin while a song
-        // anchors it (docs/frame.md §4), else the island zero — the
-        // frame the view seats the song on; the phase of the first
-        // rendered sample is its fold on the cycle from there.
+        call("toggleSolo", solo_args, found);
+        // The phase of the first rendered sample: the published
+        // islandPos folded from the root's frame top.
         int64_t pos0 = 0;
         onMessageThread([&] {
           const juce::var s = engine_.getGraphState();
-          const int64_t zero = (int64_t)(double)s.getProperty("islandZero", 0);
-          const int64_t top = (bool)s.getProperty("anchored", false)
-                                  ? (int64_t)(double)s.getProperty("origin", 0)
-                                  : zero;
-          pos0 = (int64_t)(double)s.getProperty("islandPos", 0) + zero - top;
+          pos0 = samplesOf(s, "islandPos") - rootTopFromZero(s);
         });
         std::vector<float> out;
         // The solo lands as a mute RAMP on every other lane (≤ one
@@ -278,19 +296,20 @@ class Host {
         render(cycle + settle + opts_.block, &out);
         juce::Array<juce::var> row;
         for (int c = 0; c < cells; ++c) {
-          // The cell's centre in the island frame, ±128 samples: the
-          // clip's own signal or exact silence (gates are 10 ms ramps,
+          // The cell's centre in the island frame, ± kCellCentreReach:
+          // the clip's own signal or exact silence (a gate's ramp is
           // far from a cell centre).
           const int64_t want = c * q + q / 2;
           float peak = 0.0f;
           for (int64_t k = settle; k < (int64_t)out.size(); ++k) {
             const int64_t ph = posmod(pos0 + k, cycle);
-            if (std::llabs(ph - want) <= 128) peak = std::max(peak, std::abs(out[(size_t)k]));
+            if (std::llabs(ph - want) <= kCellCentreReach)
+              peak = std::max(peak, std::abs(out[(size_t)k]));
           }
-          row.add(peak > 1.0e-6f);
+          row.add(peak > kSoundsAbove);
         }
         rows->setProperty(id, row);
-        call("toggleSolo", dummy, found);
+        call("toggleSolo", solo_args, found);
       }
     } else {
       doc->setProperty("cycleQ", 0);
@@ -300,81 +319,7 @@ class Host {
     return juce::var(doc);
   }
 
-  // --- THE SPECTRAL LISTENER (chirp input) ---
-
-  /** In-place iterative radix-2 FFT (N a power of two). */
-  static void fft(std::vector<std::complex<double>>& a) {
-    const size_t n = a.size();
-    for (size_t i = 1, j = 0; i < n; ++i) {
-      size_t bit = n >> 1;
-      for (; j & bit; bit >>= 1) j ^= bit;
-      j ^= bit;
-      if (i < j) std::swap(a[i], a[j]);
-    }
-    for (size_t len = 2; len <= n; len <<= 1) {
-      const double ang = -2.0 * juce::MathConstants<double>::pi / (double)len;
-      const std::complex<double> wl(std::cos(ang), std::sin(ang));
-      for (size_t i = 0; i < n; i += len) {
-        std::complex<double> w(1.0, 0.0);
-        for (size_t k = 0; k < len / 2; ++k) {
-          const std::complex<double> u = a[i + k], v = a[i + k + len / 2] * w;
-          a[i + k] = u + v;
-          a[i + k + len / 2] = u - v;
-          w *= wl;
-        }
-      }
-    }
-  }
-
-  struct Peak {
-    double capture_clock;  // samples into the sweep, at the FRAME CENTRE
-    double level;          // ≈ the sine's amplitude
-  };
-
-  /** The capture clocks sounding in one kFrame window: DECHIRP (the
-   * frame times a reference chirp of the sweep's rate, anchored at the
-   * frame centre — a clip captured at sweep clock c becomes a pure tone
-   * at kF0 + kSweepHzPerSec·c), Hann, FFT, local maxima above the
-   * floors, parabolic interpolation, then the tone read back as a
-   * clock. The sum-frequency image lands at negative frequencies, so
-   * the positive half of the complex spectrum is clean. */
-  std::vector<Peak> decode(const float* x) const {
-    const int N = kFrame;
-    std::vector<std::complex<double>> a((size_t)N);
-    for (int i = 0; i < N; ++i) {
-      const double w = 0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * i / N);
-      const double tl = (double)(i - N / 2) / rate_;  // frame-local seconds
-      const double ref = -juce::MathConstants<double>::pi * kSweepHzPerSec * tl * tl;
-      a[(size_t)i] = std::complex<double>((double)x[i] * w, 0.0) *
-                     std::complex<double>(std::cos(ref), std::sin(ref));
-    }
-    fft(a);
-    std::vector<double> mag((size_t)N / 2);
-    for (int i = 0; i < N / 2; ++i) mag[(size_t)i] = std::abs(a[(size_t)i]);
-    // A Hann-windowed sine of amplitude A peaks at ≈ A·N/4. Two floors:
-    // an absolute one (silence), and a relative one — leakage around a
-    // loop seam inside the window throws sidelobes a decade down that
-    // would otherwise read as phantom capture moments.
-    double top = 0.0;
-    for (int i = 2; i < N / 2 - 2; ++i) top = std::max(top, mag[(size_t)i]);
-    const double floor_mag = std::max(0.01 * N / 4.0, 0.15 * top);
-    std::vector<Peak> peaks;
-    for (int i = 2; i < N / 2 - 2; ++i) {
-      const double m = mag[(size_t)i];
-      if (m < floor_mag || m < mag[(size_t)i - 1] || m <= mag[(size_t)i + 1]) continue;
-      // Parabolic interpolation on log magnitude.
-      const double l0 = std::log(mag[(size_t)i - 1] + 1e-12),
-                   l1 = std::log(m + 1e-12), l2 = std::log(mag[(size_t)i + 1] + 1e-12);
-      const double den = l0 - 2.0 * l1 + l2;
-      const double d = std::abs(den) > 1e-12 ? 0.5 * (l0 - l2) / den : 0.0;
-      const double bin = i + d;
-      const double f = bin * rate_ / N;
-      const double tau = (f - kF0) / kSweepHzPerSec;  // seconds into the sweep
-      if (tau < 0) continue;
-      peaks.push_back({tau * rate_, m / (N / 4.0)});
-    }
-    return peaks;
-  }
+  // --- THE SPECTRAL LISTENER (chirp input, chirp_codec.h) ---
 
   struct TakeMap {
     juce::String id;
@@ -392,8 +337,8 @@ class Host {
     for (const auto& id : ids) {
       auto* clip = dynamic_cast<celestrian::ClipNode*>(engine_.findNodeByUuidForTest(id));
       if (clip == nullptr) continue;
-      const juce::var node = findVar(st, id);
-      const int active = (int)node.getProperty("activeTake", 0);
+      const int active = (int)celestrian::bridge::findNodeVar(st, id).getProperty(
+          "activeTake", 0);
       for (int k = 0; k < clip->takeCount(); ++k) {
         // The ACTIVE take is what renders: its live content buffer (a
         // Q13 lock-collapse splices it; the take store may still hold
@@ -401,10 +346,10 @@ class Host {
         const juce::AudioBuffer<float>* buf =
             k == active ? &clip->getAudioBuffer() : clip->takeBuffer(k);
         if (buf == nullptr || buf->getNumSamples() < kFrame) continue;
-        const auto peaks = decode(buf->getReadPointer(0));
+        const auto peaks = celestrian::chirp::decode(buf->getReadPointer(0), rate_);
         if (peaks.empty()) continue;
         // The strongest peak at the first frame's centre → buffer[0].
-        const Peak* best = &peaks[0];
+        const celestrian::chirp::Peak* best = &peaks[0];
         for (const auto& p : peaks)
           if (p.level > best->level) best = &p;
         // CONTENT vs BUFFER (Q13 lock-collapse, ClipNode::content_base_):
@@ -414,45 +359,29 @@ class Host {
         const int64_t base = k == active ? clip->getContentBase() : 0;
         const int64_t duration = k == active ? clip->getIntrinsicDuration()
                                              : (int64_t)buf->getNumSamples();
-        out.push_back({id, k, best->capture_clock - kFrame / 2.0 + (double)base,
+        out.push_back({id, k,
+                       best->capture_clock - kFrame / 2.0 + (double)base,
                        duration > 0 ? duration : (int64_t)buf->getNumSamples()});
       }
     }
     return out;
   }
 
-  static juce::var findVar(const juce::var& node, const juce::String& id) {
-    if (node.getProperty("id", "").toString() == id) return node;
-    if (auto* kids = node.getProperty("nodes", juce::var()).getArray())
-      for (const auto& k : *kids) {
-        const juce::var hit = findVar(k, id);
-        if (!hit.isVoid()) return hit;
-      }
-    return {};
-  }
-
   /** LISTEN: render `samples` (default one island cycle) and report, per
    * frame, which clip/take sounds at which content index — the mix
    * decoded, no soloing. Frames are `hop` apart; `pos` is the frame
-   * centre, zero-relative (islandPos), `phase` its fold on the cycle. */
+   * centre, zero-relative (islandPos — the specs recover the absolute
+   * clock as zero + pos); `phase` is its fold on the cycle from the
+   * root's frame top. */
   juce::var listen(int64_t samples, int64_t hop) {
     const bool was_paused = paused_.exchange(true);
     juce::var st;
-    int64_t pos0 = 0;
-    // `pos` stays ZERO-relative (the specs recover the absolute clock
-    // as zero + pos); `phase` folds from the ROOT'S FRAME TOP — its
-    // origin while a song anchors it (docs/frame.md §4), else the
-    // island zero — the frame a root song's gates fold on.
-    int64_t top_from_zero = 0;
     onMessageThread([&] {
       if (!engine_.isPlaying()) engine_.togglePlayback();
       st = engine_.getGraphState();
-      pos0 = (int64_t)(double)st.getProperty("islandPos", 0);
-      if ((bool)st.getProperty("anchored", false)) {
-        top_from_zero = (int64_t)(double)st.getProperty("origin", 0) -
-                         (int64_t)(double)st.getProperty("islandZero", 0);
-      }
     });
+    const int64_t pos0 = samplesOf(st, "islandPos");
+    const int64_t top_from_zero = rootTopFromZero(st);
     const int64_t cycle = islandCycleOnMessageThread(st);
     if (samples <= 0) samples = cycle > 0 ? cycle : (int64_t)rate_;
     if (hop <= 0) hop = kFrame;
@@ -464,38 +393,33 @@ class Host {
 
     auto* doc = new juce::DynamicObject();
     doc->setProperty("rate", rate_);
-    doc->setProperty("quantum", (double)(int64_t)(double)st.getProperty("quantum", 0));
+    doc->setProperty("quantum", (double)samplesOf(st, "quantum"));
     doc->setProperty("cycle", (double)cycle);
-    doc->setProperty("zero", (double)(int64_t)(double)st.getProperty("islandZero", 0));
+    doc->setProperty("zero", (double)samplesOf(st, "islandZero"));
     doc->setProperty("frame", kFrame);
     doc->setProperty("hop", (double)hop);
     juce::Array<juce::var> frames;
-    for (int64_t s = 0; s + kFrame <= (int64_t)out.size() && s < samples; s += hop) {
+    const double half_frame = kFrame / 2.0;
+    for (int64_t s = 0; s + kFrame <= (int64_t)out.size() && s < samples;
+         s += hop) {
       auto* f = new juce::DynamicObject();
       const int64_t centre = pos0 + s + kFrame / 2;
       f->setProperty("pos", (double)centre);
       f->setProperty("phase",
                      (double)posmod(centre - top_from_zero, cycle > 0 ? cycle : 1));
       juce::Array<juce::var> heard, unknown;
-      for (const auto& p : decode(out.data() + s)) {
+      for (const auto& p : celestrian::chirp::decode(out.data() + s, rate_)) {
         // Attribution: the take whose capture range holds the clock.
         // Takes recorded back to back have ADJACENT ranges, so an exact
         // hit wins; only when nothing holds it exactly does a half-frame
         // tolerance (the decode's own blur at a range edge) apply.
         const TakeMap* hit = nullptr;
-        for (const auto& m : map) {
-          const double inner = p.capture_clock - m.capture_clock;
-          if (inner >= 0 && inner < (double)m.duration) {
-            hit = &m;
-            break;
-          }
-        }
-        if (hit == nullptr) {
+        for (const double reach : {0.0, half_frame}) {
           for (const auto& m : map) {
             const double inner = p.capture_clock - m.capture_clock;
-            if (inner >= -kFrame / 2.0 && inner < (double)m.duration + kFrame / 2.0) {
+            if (hit == nullptr && inner >= -reach &&
+                inner < (double)m.duration + reach) {
               hit = &m;
-              break;
             }
           }
         }
@@ -533,78 +457,122 @@ class Host {
     return juce::var(doc);
   }
 
-  /** Back to an empty project: every top-level node deleted, the root
-   * song cleared, the history dropped. */
-  void reset() {
+  /** Back to the session a fresh boot serves, whatever the last spec
+   * left behind:
+   *  - a live take ends first (settleTakes) — nothing loads under one;
+   *  - THE PROJECT IS CLOSED as the spec left it, before anything below
+   *    changes the session its folder mirrors: the next spec starts
+   *    unborn, and nothing it does reaches that folder;
+   *  - the root lets go of what no session carries: its solo, its MIDI
+   *    arm, its scope, a new name;
+   *  - THE BOOT BUNDLE loads over the rest: every node gone, the master
+   *    rack and fader as built, no song, no Q, no hand-off — and, a load
+   *    being the engine's one way to start a history afresh, nothing to
+   *    undo;
+   *  - track templates saved since boot are removed.
+   * The transport is left RUNNING, as every spec expects, and the input
+   * choice stands. Not reset: the clock (kernel.md: never), and what
+   * earlier specs left on disk (project folders, session templates).
+   * False when the boot bundle would not load. */
+  bool reset() {
+    settleTakes();
+    bool loaded = false;
     onMessageThread([&] {
+      engine_.tick();  // a take the audio thread just settled is logged
+      projects_.closeProject();
       const juce::var st = engine_.getGraphState();
       const juce::String root = st.getProperty("id", "").toString();
-      if (auto* nodes = st.getProperty("nodes", juce::var()).getArray()) {
-        for (const auto& n : *nodes)
-          engine_.deleteNode(n.getProperty("id", "").toString());
+      if ((bool)st.getProperty("isSoloed", false)) engine_.toggleSolo(root);
+      engine_.setMidiArmed(root, false);
+      engine_.setEffectScope(root, false);
+      engine_.renameNode(root, boot_root_name_);
+      loaded = engine_.loadSession(bootBundle().getFullPathName());
+      if (!loaded) {
+        juce::Logger::writeToLog(
+            "headless: reset could not load the boot bundle - the session "
+            "stands");
       }
-      engine_.setSequence(root, juce::var());
+      for (const auto& file : templateFiles()) {
+        if (!boot_templates_.contains(file.getFileName())) file.deleteFile();
+      }
       if (!engine_.isPlaying()) engine_.togglePlayback();
       engine_.tick();
     });
-    // A fresh sweep for the next spec (see kSweepSeconds).
+    // A fresh sweep for the next spec.
     std::lock_guard<std::mutex> lock(callback_mutex_);
     input_clock_ = 0;
     sweep_clock_ = 0;
     sweep_live_ = false;
+    return loaded;
   }
 
  private:
-  // THE TIME-CODED INPUT ("chirp"): a slow linear frequency sweep,
-  // kF0 + kSweepHzPerSec × (seconds into the sweep), wrapping every
-  // kSweepSeconds. Every recorded sample then CARRIES ITS OWN CAPTURE
-  // CLOCK as a frequency, so a spectrum of the island's output at any
-  // moment says which capture moments are sounding — and hence which
-  // clip, at which content index — with no soloing and no dependence
-  // on level (gain, pan, fades). The amplitude harness (ramp) is the
-  // scenario suite's; this is the mix's. 4096-sample frames resolve
-  // ~10 Hz ≈ 0.09 s of capture clock, far finer than a Q.
-  // THE SWEEP CLOCK advances only while a take is LIVE (armed or
-  // capturing): the sweep is spent on recordings alone, never on
-  // playback or listens, so a spec's whole session fits one 240 s
-  // sweep however long it plays. Channels are spread evenly over the
-  // sweep (kSweepSeconds / inputs apart) — every mic of a group take
-  // records its own clock range, and a session may record up to that
-  // many seconds per channel before a channel-0 take shares
-  // frequencies with a channel-1 one (the workflow journey found that
-  // collision at 30 s offsets with the clock running through
-  // listens). The fast rate keeps takes recorded one second apart
-  // 61 Hz = 5.7 bins apart in a 4096 frame. Frames are DECHIRPED
-  // (decode below): multiplied by a reference chirp of the known
-  // rate, every clip becomes a pure tone whose frequency is its
-  // capture clock, and a stationary tone interpolates to ~0.01 bin.
-  // `reset` restarts the sweep per spec.
-  static constexpr double kF0 = 300.0;
-  static constexpr double kSweepHzPerSec = 61.25;
-  static constexpr double kSweepSeconds = 240.0;  // 300 → 15000 Hz
-  static constexpr int kFrame = 4096;
-
-  double chirpAt(int64_t t) const {
-    const int64_t P = (int64_t)(kSweepSeconds * rate_);
-    const double tau = (double)posmod(t, P) / rate_;
-    const double phase = 2.0 * juce::MathConstants<double>::pi *
-                         (kF0 * tau + 0.5 * kSweepHzPerSec * tau * tau);
-    return gain_ * std::sin(phase);
+  /** Every live take ends, through the engine's own stop: one on the
+   * root reaches them all — a pending arm is cancelled there and then; a
+   * capturing take is ended by the audio thread, a first take at its
+   * next block and any other at its next boundary, at most
+   * ClipNode::stopRun(Q) of clock away, which is run here. (The engine
+   * has no verb that abandons a capturing take.) */
+  void settleTakes() {
+    int64_t budget = 0;
+    onMessageThread([&] {
+      if (!engine_.hasActiveTake()) return;
+      const juce::var st = engine_.getGraphState();
+      engine_.stopRecordingInNode(st.getProperty("id", "").toString());
+      budget = celestrian::ClipNode::stopRun(samplesOf(st, "quantum")) +
+               kSettleSlackBlocks * (int64_t)opts_.block;
+    });
+    for (int64_t run = 0; run < budget && engine_.hasActiveTake();
+         run += opts_.block) {
+      render(opts_.block);
+    }
   }
 
-  // MULTI-CHANNEL: every input channel carries its OWN sweep, offset by
-  // kSweepSeconds / channels, so a group take of N mics (one
-  // performance, N inputs) records N distinguishable signals — the
-  // listener tells the mics apart by their sweep clocks. Sine and ramp
-  // are identical across channels.
-  int64_t channelShift(size_t ch) const {
-    return (int64_t)(kSweepSeconds * rate_ / (double)in_.size()) * (int64_t)ch;
+  juce::File bootBundle() const {
+    return opts_.projects_dir.getChildFile(kBootBundleName);
   }
+  juce::Array<juce::File> templateFiles() const {
+    return projects_.trackTemplatesRoot().findChildFiles(
+        juce::File::findFiles, false, "*.json");
+  }
+  /** What reset() goes back to, taken from the engine as constructed:
+   * its session as a bundle, the root's name, and the template files
+   * already in the library (a scratch projects directory has none). */
+  void recordBoot() {
+    if (!engine_.saveSession(bootBundle().getFullPathName())) {
+      juce::Logger::writeToLog(
+          "headless: the boot bundle could not be written - reset will fail");
+    }
+    boot_root_name_ =
+        engine_.getGraphState().getProperty("name", "").toString();
+    for (const auto& file : templateFiles()) {
+      boot_templates_.add(file.getFileName());
+    }
+  }
+
+  static constexpr int kFrame = celestrian::chirp::kFrame;
+  // truth(): a cell is judged within this many samples of its centre,
+  // and sounds when the peak there is above this level.
+  static constexpr int64_t kCellCentreReach = 128;
+  static constexpr float kSoundsAbove = 1.0e-6f;
+  // The ramp input's period: the scenario harness's sawtooth
+  // (tests/scenario_utils.h), every sample encoding its own clock.
+  static constexpr int64_t kRampPeriod = int64_t{1} << 20;
+  // The boot bundle (recordBoot), beside Projects/ — never listed as one.
+  static constexpr const char* kBootBundleName = "headless-reset";
+  // settleTakes: blocks of clock past a take's stop run — the one that
+  // takes the stop up, the one that crosses the boundary, and two spare.
+  static constexpr int kSettleSlackBlocks = 4;
+  // call(): how long an HTTP thread waits for a handler's completion.
+  static constexpr int kCompletionTimeoutMs = 30000;
 
   void fillInput(int n) {
-    for (size_t ch = 0; ch < in_.size(); ++ch) {
-      const int64_t shift = channelShift(ch);
-      float* dst = in_[ch].data();
+    const int channels = (int)in_.size();
+    for (int ch = 0; ch < channels; ++ch) {
+      // Sine and ramp are the same on every channel; the chirp gives
+      // each its own stretch of the sweep.
+      const int64_t shift = celestrian::chirp::channelShift(ch, channels, rate_);
+      float* dst = in_[(size_t)ch].data();
       for (int i = 0; i < n; ++i) {
         const int64_t t = input_clock_ + i;
         float v = 0.0f;
@@ -612,12 +580,9 @@ class Host {
           v = (float)(gain_ * std::sin(2.0 * juce::MathConstants<double>::pi *
                                        freq_ * (double)t / rate_));
         } else if (input_kind_ == "chirp") {
-          v = (float)chirpAt(sweep_clock_ + i + shift);
+          v = (float)(gain_ * celestrian::chirp::chirpAt(sweep_clock_ + i + shift, rate_));
         } else if (input_kind_ == "ramp") {
-          // The scenario harness's sawtooth (tests/scenario_utils.h):
-          // every sample encodes its own clock.
-          const int64_t P = int64_t{1} << 20;
-          v = 0.5f * (float)((double)posmod(t, P) / (double)P);
+          v = 0.5f * (float)((double)posmod(t, kRampPeriod) / (double)kRampPeriod);
         }
         dst[i] = v;
       }
@@ -640,7 +605,7 @@ class Host {
   int64_t islandCycle(const juce::var& st) {
     auto* root = engine_.findNodeByUuidForTest(st.getProperty("id", "").toString());
     if (root == nullptr) return 0;
-    const int64_t q = (int64_t)(double)st.getProperty("quantum", 0);
+    const int64_t q = samplesOf(st, "quantum");
     return celestrian::period_law::islandCycle(
         celestrian::period_law::TreeProvider{q}, root, q, (int64_t)rate_);
   }
@@ -657,12 +622,24 @@ class Host {
   std::map<juce::String, celestrian::bridge::Handler> handlers_;
   double rate_;
   std::atomic<bool> paused_{false};
-  std::mutex callback_mutex_;
+  // Message thread: what reset() goes back to (recordBoot).
+  juce::String boot_root_name_;
+  juce::StringArray boot_templates_;
+
+  // Everything below is the callback's, under callback_mutex_.
+  mutable std::mutex callback_mutex_;
   std::vector<std::vector<float>> in_;  // one buffer per input channel
   std::vector<float> out_l_, out_r_;
   int64_t input_clock_ = 0;
-  int64_t sweep_clock_ = 0;  // advances only while a take is live
-  bool sweep_live_ = false;  // the previous block's live state (arm edge)
+  // THE SWEEP CLOCK: where on the chirp's sweep the input reads. It
+  // advances only while a take is LIVE (armed or capturing — the sweep
+  // is spent on recordings, never on playback or a listen, so a spec's
+  // whole session fits one sweep) and jumps a GUARD second at every arm
+  // (abutting capture ranges would let a frame that straddles one
+  // take's loop seam decode a hair into the next take's range).
+  // `reset` restarts it.
+  int64_t sweep_clock_ = 0;
+  bool sweep_live_ = false;  // the previous block's live state (the arm edge)
   juce::String input_kind_ = "sine";
   double freq_ = 220.0, gain_ = 0.5;
 };
@@ -710,241 +687,83 @@ class Heartbeat : public juce::Timer {
 };
 
 // ---------------------------------------------------------------------------
-// A minimal HTTP/1.1 server (one connection at a time, Connection: close).
+// The routes (called from the HTTP server's connection threads; the
+// host's methods serialise themselves).
 // ---------------------------------------------------------------------------
-class HttpThread : public juce::Thread {
- public:
-  HttpThread(Host& h, const Options& o)
-      : juce::Thread("engine http"), host_(h), opts_(o) {}
-
-  bool listen() {
-    if (!listener_.createListener(opts_.port, "127.0.0.1")) {
-      juce::Logger::writeToLog("headless: cannot listen on port " +
-                               juce::String(opts_.port));
-      return false;
-    }
-    return true;
-  }
-
-  void run() override {
-    while (!threadShouldExit()) {
-      std::unique_ptr<juce::StreamingSocket> conn(listener_.waitForNextConnection());
-      if (conn == nullptr) continue;
-      // ONE THREAD PER CONNECTION: the UI polls every 50 ms while a
-      // spec's `listen` renders whole cycles, and Chromium opens
-      // speculative connections it never writes to — a serial server
-      // stalled behind either. Host methods are internally serialised
-      // (message-thread marshalling; the render mutex).
-      std::shared_ptr<juce::StreamingSocket> shared(std::move(conn));
-      juce::Thread::launch([this, shared] {
-        handle(*shared);
-        shared->close();
-      });
-    }
-  }
-
-  void stopListening() { listener_.close(); }
-
- private:
-  struct Request {
-    juce::String method, path;
-    std::map<juce::String, juce::String> headers;
-    juce::String body;
+juce::var control(Host& host, const juce::var& body) {
+  const juce::String op = body.getProperty("op", "").toString();
+  auto ok = [](bool v = true) {
+    auto* o = new juce::DynamicObject();
+    o->setProperty("ok", v);
+    return juce::var(o);
   };
-
-  bool readRequest(juce::StreamingSocket& s, Request& req) {
-    std::vector<char> data;
-    size_t header_end = std::string::npos;
-    int64_t content_length = 0;
-    char buf[8192];
-    while (true) {
-      if (header_end != std::string::npos &&
-          (int64_t)(data.size() - header_end - 4) >= content_length)
-        break;
-      const int ready = s.waitUntilReady(true, 5000);
-      if (ready <= 0) return false;
-      const int n = s.read(buf, (int)sizeof(buf), false);
-      if (n <= 0) return false;
-      data.insert(data.end(), buf, buf + n);
-      if (header_end == std::string::npos) {
-        const std::string sv(data.data(), data.size());
-        header_end = sv.find("\r\n\r\n");
-        if (header_end != std::string::npos) {
-          const juce::String head(sv.substr(0, header_end));
-          juce::StringArray lines;
-          lines.addLines(head);
-          if (lines.isEmpty()) return false;
-          juce::StringArray parts;
-          parts.addTokens(lines[0], " ", "");
-          if (parts.size() < 2) return false;
-          req.method = parts[0];
-          req.path = parts[1].upToFirstOccurrenceOf("?", false, false);
-          for (int i = 1; i < lines.size(); ++i) {
-            const juce::String k = lines[i].upToFirstOccurrenceOf(":", false, false)
-                                       .trim().toLowerCase();
-            const juce::String v = lines[i].fromFirstOccurrenceOf(":", false, false).trim();
-            req.headers[k] = v;
-          }
-          content_length = req.headers.count("content-length")
-                               ? req.headers["content-length"].getLargeIntValue()
-                               : 0;
-        }
-      }
-    }
-    req.body = juce::String::fromUTF8(data.data() + header_end + 4,
-                                      (int)content_length);
-    return true;
+  if (op == "status") return host.status();
+  if (op == "pause") {
+    host.setPaused(true);
+    return ok();
   }
-
-  void respond(juce::StreamingSocket& s, int status, const juce::String& mime,
-               const juce::MemoryBlock& body) {
-    const char* text = status == 200 ? "OK" : status == 204 ? "No Content"
-                       : status == 404 ? "Not Found" : "Bad Request";
-    juce::String head;
-    head << "HTTP/1.1 " << status << " " << text << "\r\n"
-         << "Content-Type: " << mime << "\r\n"
-         << "Content-Length: " << (int64_t)body.getSize() << "\r\n"
-         << "Cache-Control: no-store\r\n"
-         << "Access-Control-Allow-Origin: *\r\n"
-         << "Access-Control-Allow-Headers: Content-Type\r\n"
-         << "Connection: close\r\n\r\n";
-    const auto h = head.toStdString();
-    writeAll(s, h.data(), h.size());
-    if (body.getSize() > 0) writeAll(s, body.getData(), body.getSize());
+  if (op == "resume") {
+    host.setPaused(false);
+    return ok();
   }
-
-  /** send() is partial for large bodies (a 60Q listen is ~350 KB): loop
-   * until every byte is out — a truncated body reads as "Failed to
-   * fetch" in the browser. */
-  static bool writeAll(juce::StreamingSocket& s, const void* data, size_t size) {
-    const char* p = static_cast<const char*>(data);
-    size_t done = 0;
-    while (done < size) {
-      if (s.waitUntilReady(false, 5000) <= 0) return false;
-      const int n = s.write(p + done, (int)std::min<size_t>(size - done, 1 << 16));
-      if (n < 0) return false;
-      done += (size_t)n;
-    }
-    return true;
+  if (op == "advance") {
+    const int64_t n = samplesOf(body, "samples");
+    if (n > 0) host.render(n);
+    auto* o = new juce::DynamicObject();
+    o->setProperty("ok", true);
+    o->setProperty("clock", (double)host.inputClock());
+    return juce::var(o);
   }
-
-  void respondJson(juce::StreamingSocket& s, const juce::var& v) {
-    const auto text = juce::JSON::toString(v, true).toStdString();
-    respond(s, 200, "application/json", juce::MemoryBlock(text.data(), text.size()));
+  if (op == "input") {
+    host.setInput(body.getProperty("kind", "sine").toString(),
+                  (double)body.getProperty("freq", 0.0),
+                  body.hasProperty("gain") ? (double)body.getProperty("gain", 0.5) : -1.0);
+    return ok();
   }
-
-  static juce::String mimeFor(const juce::File& f) {
-    const auto ext = f.getFileExtension().toLowerCase();
-    if (ext == ".html") return "text/html";
-    if (ext == ".css") return "text/css";
-    if (ext == ".js" || ext == ".mjs") return "application/javascript";
-    if (ext == ".png") return "image/png";
-    if (ext == ".svg") return "image/svg+xml";
-    if (ext == ".ico") return "image/x-icon";
-    if (ext == ".json") return "application/json";
-    if (ext == ".wav") return "audio/wav";
-    return "text/plain";
+  if (op == "truth") return host.truth();
+  if (op == "listen")
+    return host.listen(samplesOf(body, "samples"), samplesOf(body, "hop"));
+  if (op == "reset") return ok(host.reset());
+  if (op == "quit") {
+    g_quit.store(true);
+    return ok();
   }
+  juce::Logger::writeToLog("headless: unknown control op " + op);
+  return ok(false);
+}
 
-  void handle(juce::StreamingSocket& s) {
-    Request req;
-    if (!readRequest(s, req)) return;
-    if (req.method == "OPTIONS") {
-      respond(s, 204, "text/plain", {});
-      return;
+celestrian::http::Response route(Host& host, const juce::File& ui_dir,
+                     const celestrian::http::Request& request) {
+  if (request.method == "POST" && request.path == "/call") {
+    const juce::var body = juce::JSON::parse(request.body);
+    const juce::String name = body.getProperty("name", "").toString();
+    juce::Array<juce::var> args;
+    if (auto* a = body.getProperty("args", juce::var()).getArray()) args = *a;
+    bool found = false;
+    const juce::var result = host.call(name, args, found);
+    if (!found) {
+      juce::Logger::writeToLog("headless: unknown bridge method " + name);
+      return celestrian::http::statusOnly(404);
     }
-    if (req.method == "POST" && req.path == "/call") {
-      const juce::var body = juce::JSON::parse(req.body);
-      const juce::String name = body.getProperty("name", "").toString();
-      juce::Array<juce::var> args;
-      if (auto* a = body.getProperty("args", juce::var()).getArray()) args = *a;
-      bool found = false;
-      const juce::var result = host_.call(name, args, found);
-      if (!found) {
-        juce::Logger::writeToLog("headless: unknown bridge method " + name);
-        respond(s, 404, "text/plain", {});
-        return;
-      }
-      auto* o = new juce::DynamicObject();
-      o->setProperty("result", result);
-      respondJson(s, juce::var(o));
-      return;
-    }
-    if (req.method == "POST" && req.path == "/control") {
-      respondJson(s, control(juce::JSON::parse(req.body)));
-      return;
-    }
-    if (req.method == "GET") {
-      juce::String rel = req.path;
-      if (rel.startsWith("/")) rel = rel.substring(1);
-      if (rel.isEmpty()) rel = "index.html";
-      if (rel.contains("..")) {
-        respond(s, 404, "text/plain", {});
-        return;
-      }
-      const juce::File f = opts_.ui_dir.getChildFile(rel);
-      juce::MemoryBlock mb;
-      if (!f.existsAsFile() || !f.loadFileAsData(mb)) {
-        respond(s, 404, "text/plain", {});
-        return;
-      }
-      respond(s, 200, mimeFor(f), mb);
-      return;
-    }
-    respond(s, 400, "text/plain", {});
+    auto* o = new juce::DynamicObject();
+    o->setProperty("result", result);
+    return celestrian::http::json(juce::var(o));
   }
-
-  juce::var control(const juce::var& body) {
-    const juce::String op = body.getProperty("op", "").toString();
-    auto ok = [](bool v = true) {
-      auto* o = new juce::DynamicObject();
-      o->setProperty("ok", v);
-      return juce::var(o);
-    };
-    if (op == "status") return host_.status();
-    if (op == "pause") {
-      host_.setPaused(true);
-      return ok();
-    }
-    if (op == "resume") {
-      host_.setPaused(false);
-      return ok();
-    }
-    if (op == "advance") {
-      const int64_t n = (int64_t)(double)body.getProperty("samples", 0);
-      if (n > 0) host_.render(n);
-      auto* o = new juce::DynamicObject();
-      o->setProperty("ok", true);
-      o->setProperty("clock", (double)host_.inputClock());
-      return juce::var(o);
-    }
-    if (op == "input") {
-      host_.setInput(body.getProperty("kind", "sine").toString(),
-                     (double)body.getProperty("freq", 0.0),
-                     body.hasProperty("gain") ? (double)body.getProperty("gain", 0.5) : -1.0);
-      return ok();
-    }
-    if (op == "truth") return host_.truth();
-    if (op == "listen") {
-      return host_.listen((int64_t)(double)body.getProperty("samples", 0),
-                          (int64_t)(double)body.getProperty("hop", 0));
-    }
-    if (op == "reset") {
-      host_.reset();
-      return ok();
-    }
-    if (op == "quit") {
-      g_quit.store(true);
-      return ok();
-    }
-    juce::Logger::writeToLog("headless: unknown control op " + op);
-    return ok(false);
+  if (request.method == "POST" && request.path == "/control")
+    return celestrian::http::json(control(host, juce::JSON::parse(request.body)));
+  if (request.method == "GET") {
+    juce::String rel = request.path;
+    if (rel.startsWith("/")) rel = rel.substring(1);
+    if (rel.isEmpty()) rel = "index.html";
+    if (rel.contains("..")) return celestrian::http::statusOnly(404);
+    const juce::File file = ui_dir.getChildFile(rel);
+    celestrian::http::Response response{200, celestrian::bridge::mimeFor(file), {}};
+    if (!file.existsAsFile() || !file.loadFileAsData(response.body))
+      return celestrian::http::statusOnly(404);
+    return response;
   }
-
-  Host& host_;
-  Options opts_;
-  juce::StreamingSocket listener_;
-};
+  return celestrian::http::statusOnly(400);
+}
 
 Options parseArgs(const juce::StringArray& args) {
   Options o;
@@ -1012,11 +831,17 @@ int main(int argc, char* argv[]) {
   host.setInput(opts.input, opts.freq, opts.gain);
   Heartbeat heartbeat(host);
   ClockThread clock(host);
-  HttpThread http(host, opts);
-  if (!http.listen()) return 1;
+  celestrian::http::Server server(opts.port, [&host, &opts](const celestrian::http::Request& request) {
+    return route(host, opts.ui_dir, request);
+  });
+  if (!server.listen()) {
+    juce::Logger::writeToLog("headless: cannot listen on port " +
+                             juce::String(opts.port));
+    return 1;
+  }
   checkProtocol(opts, host);
   clock.startThread();
-  http.startThread();
+  server.startThread();
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
 
@@ -1032,8 +857,8 @@ int main(int argc, char* argv[]) {
   // callAsync and the timers deliver) with no app object needed.
   while (!g_quit.load()) juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
 
-  http.stopListening();
-  http.stopThread(2000);
+  server.stopListening();
+  server.stopThread(2000);
   clock.stopThread(2000);
   juce::Logger::setCurrentLogger(nullptr);
   return 0;

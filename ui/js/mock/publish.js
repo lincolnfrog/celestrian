@@ -1,338 +1,196 @@
 /**
- * mock/publish.js — the state publication boundary: getState() (the
- * mock's getGraphState mirror, polled by the UI), node enrichment to the
- * engine's metadata shape, the synthesized master VU, and the two test
- * hooks that poke the underlying clock (setMasterPos / setIsPlaying).
+ * mock/publish.js — getState(): the mock's getGraphState. Every node,
+ * the root included, is published through ONE explicit field list
+ * (engine AudioNode / ClipNode / StackNode::getMetadata), so nothing
+ * private leaves and nothing published is stored twice. Also the
+ * synthesized meters and the two test hooks that poke the clock.
  */
 
-import { posMod } from '../math_utils.js';
 import { fromSamples } from '../qtime.js';
-import { mapPeriod, mapActive, mapOffset, effectiveTop, regionStart } from '../time_map.js';
-import { state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
-         windowSuspendedOf, islandDefiner, frameOriginOf, intrinsicOfNode }
-    from './state.js';
+import { mapPeriod, effectiveTop } from '../time_map.js';
+import { sequenceProgram } from '../sequence_program.js';
+import {
+    state, ROOT_ID, storedMap, activeMapOf, windowSuspendedOf, islandDefiner,
+    intrinsicOfNode, takeLength, takesOf, isCommittedClip, someNode,
+} from './state.js';
+import { auditionMapOf } from './seq_query.js';
+import { receivedAt, ownInnerAt, effectiveMap } from './heard.js';
 import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
 import { ensureEffects } from './effects.js';
 import { getCalibrationSamples } from './devices.js';
 import { getSampleRate, toSeconds } from './rate.js';
-import { publishTakes } from './takes.js';
-import { programOf } from '../sequence_program.js';
 
-/**
- * A stored sequence as the engine publishes it (StackNode::getMetadata):
- * steps (with cue and any successors), gates, the seed, the derived
- * PROGRAM (step index per visit) and the radio flag (sequencer.md §14).
- */
-function publishedSequence(seq, bypassed, auditionStep) {
-    const prog = programOf(seq.steps, seq.seed || 0);
+function publishedSequence(holder) {
+    const seq = holder.sequence;
+    const program = sequenceProgram(seq);
     return {
-        bypassed,
-        steps: seq.steps.map(s => ({
-            ...s, ...(s.next ? { next: s.next.map(n => ({ ...n })) } : {}) })),
-        gates: Object.fromEntries(Object.entries(seq.gates || {})
-            .map(([k, v]) => [k, [...v]])),
+        bypassed: !!holder.sequenceBypassed,
+        steps: seq.steps.map(s => ({ ...s, ...(s.next ? { next: s.next.map(n => ({ ...n })) } : {}) })),
         seed: (seq.seed || 0) >>> 0,
-        program: prog.visits.slice(),
-        radio: prog.radio,
-        auditionStep,
+        program: program.visits.slice(),
+        radio: program.radio,
+        gates: Object.fromEntries(Object.entries(seq.gates || {}).map(([k, v]) => [k, [...v]])),
+        auditionStep: auditionMapOf(holder) ? holder.auditionStep : -1,
     };
 }
 
-/**
- * Recursively project raw graph nodes into the ENGINE's published
- * metadata shape: normalized mixer/period facts, effect racks on every
- * node, loop-window state (windowActive + playhead phase), flat
- * multi-segment publication, and scope telemetry while a panel watches.
- * Returns NEW objects — the raw state tree is never handed out.
- */
-export function enrichNodes(nodes) {
-    return nodes.map(node => {
-        // NO synthetic `waveform` on stacks: the ENGINE's state metadata
-        // carries no waveform field, so the UI composites stacks from
-        // child peaks (composite_waveform.js). A mock-only waveform
-        // would short-circuit that path (mock/engine drift —
-        // test_harness.md gotcha 10).
-        const updatedNode = node.type === 'stack'
-            ? { ...node, nodes: node.nodes ? enrichNodes(node.nodes) : [] }
-            : { ...node };
+/** The rack as published: the chain, and — while a panel watches — a
+ * synthesized scope (a spectrum that breathes with the transport, a
+ * peak, the compressor's theoretical gain reduction). */
+function publishedEffects(node) {
+    const chain = ensureEffects(node).chain.map(slot => ({ ...slot }));
+    if (!node._scopeOn) return { chain };
+    const t = toSeconds(state.masterPos);
+    const live = state.isPlaying ? 1 : 0;
+    const peak = live * (0.35 + 0.3 * Math.abs(Math.sin(t * 2.1 + 0.4)));
+    const comp = chain.find(s => s.type === 'compressor');
+    const peakDb = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+    const gr = comp && comp.enabled && peakDb > comp.threshold
+        ? (peakDb - comp.threshold) * (1 - 1 / comp.ratio) : 0;
+    const spectrum = Array.from({ length: 24 }, (_, i) =>
+        Math.max(0, Math.min(1, 0.72 - i * 0.022 + 0.2 * Math.sin(t * 3 + i * 0.7))) * live);
+    return { chain, scope: { spectrum, peak, gr } };
+}
 
-        // Loop window state — FRACTAL, engine parity (AudioNode base):
-        // active iff valid and not bypassed, published for clips and
-        // stacks alike; `playhead` carries the window phase while
-        // active: (masterPos − zero) mod len.
-        // A stack's STEP AUDITION (§11.2) publishes its DERIVED window
-        // over the base fields (engine parity: StackNode::getMetadata).
-        const audition = node.type === 'stack' ? auditionMapOf(node) : null;
-        const auditionOn = !!audition;
-        const bypassed = auditionOn ? false : !!node.loopBypassed;
-        const windowActive = auditionOn ||
-            (!bypassed && mapActive(nodeMap(node)) && !windowSuspendedOf(node));
-        if (auditionOn) {
-            updatedNode.loopStart = audition.segs[0][0];
-            updatedNode.loopEnd = audition.segs[0][1];
-            delete updatedNode.segments;
-        }
-        // Multi-segment map publish (engine parity: flat samples array,
-        // present only with an override) — and under it the single-window
-        // fields read 0, as the engine publishes them (AudioNode::
-        // getMetadata: loopStart / loopEnd only for a ONE-segment stored
-        // map). The window an override superseded stays in storage, as
-        // the engine's loop atomics do, but it is no fact about what
-        // plays: published, a spec reading the "loop" of a cut map got
-        // the stale window back (audit 2026-10-01).
-        if (!auditionOn && node.segments && node.segments.length >= 2) {
-            updatedNode.segments = node.segments.flat();
-            updatedNode.loopStart = 0;
-            updatedNode.loopEnd = 0;
-        }
-        updatedNode.loopBypassed = bypassed;
-        updatedNode.windowActive = windowActive;
-        // THE TOP (loop_selection.md §9; engine parity AudioNode::
-        // getMetadata): every loop node — clip or group, fractal since
-        // 2026-09-29 — publishes its EFFECTIVE top (the stored one,
-        // `storedTop`, raw samples, null = unset, while its map plays
-        // it, else the region start) and its re-time (the cumulative
-        // user shift, 0 = as played). A step audition's derived window
-        // reads from its own start (the stored top belongs to the
-        // authored region). The stored field stays private, as in the
-        // engine.
-        const regionMap = auditionOn ? audition : nodeMap(node);
-        updatedNode.loopTop = auditionOn
-            ? regionStart(regionMap, windowActive)
-            : effectiveTop(regionMap, windowActive, intrinsicOfNode(node),
-                           node.storedTop ?? null);
-        updatedNode.retime = node.retime || 0;
-        delete updatedNode.storedTop;
-        if (node.type === 'stack') {
-            updatedNode.windowDomain = node.windowDomain === 'sequence' ? 'sequence' : 'intrinsic';
-            updatedNode.windowSuspended = windowSuspendedOf(node);
-            // Q18 (composition.md §1, engine parity AudioNode::
-            // getMetadata): a stack's origin is a STORED fact once
-            // anchored — the UI draws an anchored group's take mark
-            // like a clip's. Published on every stack.
-            updatedNode.anchored = !!node.anchored;
-            updatedNode.origin = node.origin || 0;
-        }
-        // Effect chain state publishes on EVERY node (engine parity:
-        // AudioNode::getMetadata always carries `effects` = {chain,
-        // scope?}). ensureEffects INSTALLS the default chain on the
-        // node — slot uuids must be STABLE across polls (a fresh chain
-        // per publish would orphan every slot-keyed edit in flight).
-        updatedNode.effects = ensureEffects(node);
-        // The SEQUENCE (docs/sequencer.md), engine parity with
-        // StackNode::getMetadata: published RAW (bypassed geometry
-        // survives — I9; the VM derives active).
-        if (node.type === 'stack' && node.sequence) {
-            updatedNode.sequence = publishedSequence(
-                node.sequence, !!node.sequenceBypassed,
-                auditionMapOf(node) ? node.auditionStep : -1);
-        }
-        // Mixer + period-source facts publish on EVERY node (engine
-        // parity: metadata always carries them; hand-written scenario
-        // fixtures may omit them, so normalize at the boundary).
-        updatedNode.midiArmed = !!node.midiArmed;
-        // Content kind (phase 5, engine parity ClipNode::isMidiClip): a
-        // MIDI take, or an empty clip whose chain carries an instrument
-        // slot (its next take records notes) — the rail shows a MIDI
-        // chip instead of the audio-input picker.
-        if (node.type !== 'stack') {
-            const chain = updatedNode.effects.chain || [];
-            const instrument = chain.some(s => s.isInstrument);
-            updatedNode.contentKind = node.contentKind === 'midi' ||
-                (instrument && !((node.duration || 0) > 0) && !node.isRecording)
-                ? 'midi' : 'audio';
-            updatedNode.midiEvents = node.midiEvents || 0;
-            // Software input monitoring (Q20, engine parity: clip
-            // metadata `monitor`) — off unless toggled on.
-            updatedNode.monitor = !!node.monitor;
-            // The take list (docs/takes.md): takes / activeTake / comp.
-            publishTakes(node, updatedNode);
-            // A TAKE'S STATE, as the engine publishes it (AudioNode /
-            // ClipNode::getMetadata; docs/takes.md §6):
-            //  - ARMED — waiting for its boundary — is `isPendingStart`
-            //    alone; `isRecording` means CAPTURING (through an
-            //    awaited stop). The mock's own state keeps isRecording
-            //    from the arm (its recorders ask "is a take up here"),
-            //    so the flag is narrowed here, at the boundary;
-            //  - `duration` is the LIVE captured length while capturing
-            //    — a NEW TAKE's too (0 at the slot's top, growing to its
-            //    period), though the slot keeps its own length;
-            //  - `periodQ` ({num, den} of Q) is the COMMITTED length,
-            //    always: a new take's slot; 0 for a first take.
-            // Until 2026-10-01 the mock published isRecording from the
-            // arm, the slot's duration all through a new take, and no
-            // periodQ — and three view bugs only the engine showed were
-            // invisible here (loop_selection.md §12.1 #5, #6).
-            const capturing = !!node.isRecording && !node.isPendingStart;
-            const retake = node.isRecording ? node._retake : null;
-            updatedNode.isRecording = capturing;
-            if (capturing && retake) updatedNode.duration = retake.captured;
-            updatedNode.periodQ = fromSamples(
-                retake ? retake.period : node.isRecording ? 0 : (node.duration || 0),
-                state.islandQ || 0);
-            delete updatedNode._retake;  // the mock's own bookkeeping
-        }
-        if (typeof updatedNode.gain !== 'number') updatedNode.gain = 1;
-        if (typeof updatedNode.pan !== 'number') updatedNode.pan = 0;
-        if (!updatedNode.periodSource) updatedNode.periodSource = 'own';
-        // Scope telemetry (engine parity: published only while a panel
-        // WATCHES — setEffectScope). Synthesized: a pink-ish spectrum
-        // that breathes with the transport, a peak, and the
-        // compressor's theoretical GR.
-        const fxs = updatedNode.effects;
-        const comp = (fxs.chain || []).find(s => s.type === 'compressor');
-        if (node._scopeOn) {
-            const t = toSeconds(state.masterPos);
-            const peak = state.isPlaying
-                ? 0.35 + 0.3 * Math.abs(Math.sin(t * 2.1 + 0.4)) : 0;
-            let gr = 0;
-            if (comp && comp.enabled && peak > 0) {
-                const peakDb = 20 * Math.log10(peak);
-                if (peakDb > comp.threshold) {
-                    gr = (peakDb - comp.threshold) * (1 - 1 / comp.ratio);
-                }
-            }
-            // Engine parity: a stopped transport is SILENCE — bins near
-            // zero (this is what the durable line's slow fall exists for)
-            const live = state.isPlaying ? 1 : 0;
-            updatedNode.effects = {
-                ...fxs,
-                scope: {
-                    spectrum: Array.from({ length: 24 }, (_, i) =>
-                        Math.max(0, Math.min(1,
-                            0.72 - i * 0.022 + 0.2 * Math.sin(t * 3 + i * 0.7))) * live),
-                    peak,
-                    gr,
-                },
-            };
-        }
-        if (windowActive) {
-            const m = activeMapOf(node);
-            const loopLen = mapPeriod(m);
-            // ONE ANCHORING LAW (Q18, composition.md §2; engine parity
-            // StackNode::renderChildren telemetry / clip_node.cc): every
-            // node's map anchors at its OWN origin + mapOffset(0) — a
-            // clip's, or an anchored stack's (an unanchored stack
-            // measures from its received cycle top — the empty case).
-            const anchor = frameOriginOf(node) + mapOffset(m, 0);
-            const rel = state.masterPos - anchor;
-            updatedNode.playhead = posMod(rel, loopLen) / loopLen;
-        }
-
-        return updatedNode;
+/** One node as the engine publishes it. A take's state is narrowed
+ * here: armed is `isPendingStart` alone, `isRecording` means capturing,
+ * and `duration` is then the live captured length (a new take's too). */
+function publishNode(node) {
+    const isStack = node.type === 'stack';
+    const Q = state.islandQ;
+    const stored = storedMap(node);
+    const audition = isStack ? auditionMapOf(node) : null;
+    const windowActive = !!activeMapOf(node);
+    const window = audition ? audition.segs[0]
+        : (stored.segs.length === 1 ? stored.segs[0] : [0, 0]);
+    // The phase of the pass that sounds: 0 while a one-shot rests, and
+    // for a stack that plays no map.
+    const received = receivedAt(node, state.masterPos);
+    const at = ownInnerAt(node, received.clock, received.scope);
+    const pass = mapPeriod(effectiveMap(node, received.scope));
+    const sounding = pass > 0 && !at.rest && (!isStack || windowActive);
+    const capturing = !!node.isRecording && !node.isPendingStart;
+    const committed = isStack ? 0 : takeLength(node);
+    const out = {
+        id: node.id,
+        name: node.name || '',
+        type: node.type,
+        currentPeak: node.currentPeak || 0,
+        duration: capturing && node._retake ? node._retake.captured : (node.duration || 0),
+        loopStart: window[0],
+        loopEnd: window[1],
+        loopBypassed: audition ? false : !!node.loopBypassed,
+        windowActive,
+        periodSource: node.periodSource || 'own',
+        ...(stored.segs.length >= 2 && !audition ? { segments: stored.segs.flat() } : {}),
+        loopTop: audition ? window[0]
+            : effectiveTop(stored, windowActive, intrinsicOfNode(node), node.storedTop ?? null),
+        retime: node.retime || 0,
+        effects: publishedEffects(node),
+        effectiveQuantum: Q,
+        playhead: sounding ? at.h / pass : 0,
+        isRecording: capturing,
+        isMuted: !!node.isMuted,
+        midiArmed: !!node.midiArmed,
+        isSoloed: !!node.isSoloed,
+        pan: typeof node.pan === 'number' ? node.pan : 0,
+        gain: typeof node.gain === 'number' ? node.gain : 1,
+        origin: node.origin || 0,
+        anchored: isStack ? !!node.anchored : true,
+        qSamples: Q,
+        originQ: fromSamples((node.origin || 0) - (state.islandZero || 0), Q),
+        periodQ: fromSamples(committed, Q),
+        windowStartQ: fromSamples(node.loopStart || 0, Q),
+        windowEndQ: fromSamples(node.loopEnd || 0, Q),
+    };
+    if (isStack) {
+        const isRoot = node === state.root;
+        return Object.assign(out, {
+            childCount: (node.nodes || []).length,
+            quantum: isRoot ? Q : 0,
+            zero: isRoot ? (state.islandZero || 0) : 0,
+            windowDomain: node.windowDomain === 'sequence' ? 'sequence' : 'intrinsic',
+            windowSuspended: windowSuspendedOf(node),
+            ...(node.sequence ? { sequence: publishedSequence(node) } : {}),
+            nodes: (node.nodes || []).map(publishNode),
+        });
+    }
+    const instrument = out.effects.chain.some(s => s.isInstrument);
+    return Object.assign(out, {
+        sampleRate: getSampleRate(),
+        inputChannel: node.inputChannel ?? 0,
+        inputChannelR: node.inputChannelR ?? -1,
+        monitor: !!node.monitor,
+        channels: node.channels || 1,
+        isPendingStart: !!node.isPendingStart,
+        isAwaitingStop: !!node.isAwaitingStop,
+        contextCycle: node.contextCycle || 0,
+        isPlaying: isCommittedClip(node) && !node.isRecording,
+        // A MIDI take — or an empty clip whose chain carries an instrument.
+        contentKind: node.contentKind === 'midi' ||
+            (instrument && !(committed > 0) && !node.isRecording) ? 'midi' : 'audio',
+        midiEvents: node.midiEvents || 0,
+        takes: takesOf(node).length,
+        activeTake: node.activeTake || 0,
+        comp: Array.isArray(node.comp) ? [...node.comp] : [],
+        compCellLen: node.compCellLen || 0,
+        compOffset: node.compOffset || 0,
     });
 }
 
-/** Synthesized master level for mock mode (see getState). Derived from
- * masterPos (not wall-clock) so deterministic advanceBy() tests get
- * deterministic levels, and silence when transport is stopped. */
+/** A synthesized master level, from the clock (deterministic under
+ * advanceBy): silent when stopped or empty, after the master fader. */
 function mockMasterVu(phase) {
     if (!state.isPlaying) return 0;
-    const anyAudio = someNode(n => n.duration > 0 || n.isRecording);
-    if (!anyAudio) return 0;
+    if (!someNode(n => n.duration > 0 || n.isRecording)) return 0;
     const t = toSeconds(state.masterPos);
     const lv = 0.30 + 0.16 * Math.sin(t * 2.1 + phase) +
         0.10 * Math.sin(t * 5.3 + phase * 2) +
         0.05 * Math.sin(t * 11.7 + phase);
-    // The master fader attenuates what reaches the meters (engine
-    // parity: the VU taps the summed output AFTER the root's gain).
-    return Math.max(0, Math.min(1, lv)) * state.masterGain;
+    return Math.max(0, Math.min(1, lv)) * state.root.gain;
 }
 
-function publishedDefinerId() {
-    // Published through the same gates the edits use (engine parity:
-    // engine_internal::definer in attachTransportState) — state.js
-    // islandDefiner carries the ancestor-warp walk.
-    const d = islandDefiner();
-    return d ? d.id : '';
-}
-
+/** The poll: the mock's audio callback runs (transport.js
+ * advanceTransport), then the state is read. */
 export function getState() {
-    // Auto-advance transport if running (simulates real-time playback/recording)
     advanceTransport();
+    return readState();
+}
 
-    const calibrationSamples = getCalibrationSamples();
+/** The published state — the root's node record with the island's facts
+ * beside it — read without letting time pass. */
+export function readState() {
+    const definer = islandDefiner();
+    const calibration = getCalibrationSamples();
     return {
-        // Root identity (engine parity: the focused root's uuid) — the
-        // move-to-top target for drag-out.
-        id: 'mock-root',
+        ...publishNode(state.root),
+        focusedId: ROOT_ID,
         isPlaying: state.isPlaying,
         masterPos: viewMasterPos(),
-        // Master monitor (engine parity: smoothed output RMS, linear
-        // 0..1). Synthesized from the transport so the VU needles sweep
-        // believably in mock mode: silent when stopped, a slow musical
-        // undulation with slight L/R decorrelation while playing.
         masterVuL: mockMasterVu(0),
         masterVuR: mockMasterVu(1.3),
-        // Root output-stage gain (engine parity: the root stack
-        // publishes `gain` like every node) — the master fader's value.
-        gain: state.masterGain,
-        // The root's rack (engine parity: `effects` on every node's
-        // metadata, the root included) — the master fx panel's model.
-        effects: ensureEffects(state.root),
-        // The raw island clock (engine parity): zero-relative,
-        // unwrapped — the UI folds it on its own pinned frame during
-        // map gestures for a continuous cursor.
         islandPos: state.masterPos - state.islandZero,
-        // The island zero (mirrors getGraphState): the first take's
-        // origin, the Q grid's phase; no commit moves it (frame.md).
         islandZero: state.islandZero,
-        // THE ROOT'S ANCHOR (frame.md §4; engine parity: the root
-        // StackNode publishes `anchored` + `origin` like every node):
-        // anchored while it carries a song, at the zero the song was
-        // authored on — the view seats the root there and folds its
-        // song from there.
-        anchored: !!state.rootAnchored,
-        origin: state.rootAnchored ? (state.rootOrigin || 0) : 0,
-        // The definer (engine parity): the sole committed clip or the
-        // definer stack; '' when none.
-        definerId: publishedDefinerId(),
-        // The STORED island quantum (mirrors the root stack's `quantum`
-        // metadata). 0 for scenario fixtures that omit it — the VM then
-        // falls back to its min-over-nodes derivation.
-        quantum: state.islandQ,
+        definerId: definer ? definer.id : '',
         canUndo: canUndo(),
         canRedo: canRedo(),
-        // The ROOT's sequence (docs/sequencer.md) — engine parity: the
-        // root StackNode's metadata carries it top-level.
-        ...(state.rootSequence ? {
-            sequence: publishedSequence(
-                state.rootSequence, !!state.rootSequenceBypassed,
-                rootActiveMap() ? state.rootAuditionStep : -1),
-        } : {}),
-        // The root's DERIVED audition window (§11.2) — engine parity:
-        // the root StackNode publishes windowActive/loopStart/loopEnd
-        // top-level like any node.
-        ...(() => {
-            const m = rootActiveMap();
-            return m ? { windowActive: true, loopBypassed: false,
-                         loopStart: m.segs[0][0], loopEnd: m.segs[0][1] }
-                     : { windowActive: false };
-        })(),
-        nodes: enrichNodes(state.nodes),
-        // Mirrors AudioEngine::makePerfState so calibration-aware UI
-        // (e.g. the calibrate button label) behaves in mock mode.
         perf: {
             maxBlockUs: 0,
             avgLoadPct: 0,
             xruns: 0,
-            latencyCompensationSamples:
-                calibrationSamples >= 0 ? calibrationSamples : 0,
-            calibrated: calibrationSamples >= 0,
-            // The DEVICE rate (engine parity: makePerfState publishes
-            // the rate the callback is running at) — mock/rate.js.
+            latencyCompensationSamples: calibration >= 0 ? calibration : 0,
+            calibrated: calibration >= 0,
             sampleRate: getSampleRate(),
         },
     };
 }
 
-// Allow tests to set master position on underlying state
+/** Test hooks: poke the raw clock and the transport flag. */
 export function setMasterPos(pos) {
     state.masterPos = pos;
 }
 
-// Allow tests to set isPlaying on underlying state
 export function setIsPlaying(playing) {
     state.isPlaying = playing;
 }

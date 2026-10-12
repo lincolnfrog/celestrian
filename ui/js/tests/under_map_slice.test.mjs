@@ -2,26 +2,24 @@
  * MEMBERS UNDER A GROUP'S WINDOW draw the slice the map selects of
  * THEIR take, in the frame the group's tiles use.
  *
- * Three laws, all found by the engine e2e harness (2026-09-09, the
- * groups journeys — the mock never showed them because its fixtures
- * put every group's origin at the zero):
+ * Three laws, none visible to a fixture that puts every group's origin
+ * at the zero:
  *  1. the slice is measured from the GROUP'S origin (Q18), not the
  *     zero: a group anchored 1Q past the zero with a [1Q, 3Q) window
  *     plays its member's content [1Q, 3Q) (engine: t' = O + inner,
- *     content = t' − origin) — the lane drew [2Q, 4Q);
+ *     content = t' − origin), not [2Q, 4Q);
  *  2. the members carry the GROUP'S ROTATION (srcTopFrac = the group's
- *     heard top over the map period), as the group lane does — a group
- *     whose heard top sits off the frame top drew every member a whole
- *     heard-top early;
+ *     heard top over the map period), as the group lane does;
  *  3. a member with a window of ITS OWN inside a windowed group shows
  *     the COMPOSED slice: the group's inner positions folded through
- *     the member's map (the lane used to ignore the group's map).
+ *     the member's map.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { deriveViewModel } from '../view_model.js';
+import { laneOf } from './helpers.mjs';
 
 const Q = 1000;
 const clip = (id, origin, duration, extra = {}) => ({
@@ -47,25 +45,22 @@ function island(groupOrigin, { loop = [Q, 3 * Q], member = {} } = {}) {
     };
 }
 
-const opts = { fxOpen: new Set() };
-const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
-
 test('1. the slice is measured from the GROUP origin', () => {
     // Group (and its sole member) anchored 1Q past the zero: the map's
     // [1Q, 3Q) selects the member's OWN [1Q, 3Q) — origins coincide.
-    const m = laneOf(deriveViewModel(island(3 * Q), opts), 'm');
+    const m = laneOf(deriveViewModel(island(3 * Q)), 'm');
     assert.equal(m.underMap, true);
     assert.deepEqual(m.reps[0].srcSegs, [[0.25, 0.75]],
         'the member shows content [1Q, 3Q) of its 4Q take');
-    // At the zero the answer is the same (the old code agreed only here).
-    assert.deepEqual(laneOf(deriveViewModel(island(2 * Q), opts), 'm').reps[0].srcSegs,
+    // At the zero the answer is the same.
+    assert.deepEqual(laneOf(deriveViewModel(island(2 * Q)), 'm').reps[0].srcSegs,
         [[0.25, 0.75]]);
 });
 
 test('1b. a member whose origin trails the group by 1Q shows the slice shifted by 1Q', () => {
     const st = island(3 * Q);
     st.nodes[1].nodes[0].origin = 4 * Q;   // member recorded 1Q after the group's zero
-    const m = laneOf(deriveViewModel(st, opts), 'm');
+    const m = laneOf(deriveViewModel(st), 'm');
     // Map inner [1Q, 3Q) → member content [0, 2Q).
     assert.deepEqual(m.reps[0].srcSegs, [[0, 0.5]]);
 });
@@ -78,7 +73,7 @@ test('2. members carry the group\'s rotation (its heard top over the map period)
     // group lane AND on its member.
     const st = island(0);
     st.nodes[0].duration = 4 * Q;
-    const vm = deriveViewModel(st, opts);
+    const vm = deriveViewModel(st);
     const g = laneOf(vm, 'g'), m = laneOf(vm, 'm');
     assert.equal(g.reps[0].srcTopFrac, 0.5, 'the group lane rotates by its heard top');
     assert.equal(m.reps[0].srcTopFrac, 0.5, 'the member rotates with it');
@@ -88,12 +83,12 @@ test('2. members carry the group\'s rotation (its heard top over the map period)
     // rotation anywhere.
     const st0 = island(3 * Q);
     st0.nodes[0].duration = 4 * Q;
-    const vm0 = deriveViewModel(st0, opts);
+    const vm0 = deriveViewModel(st0);
     assert.equal(laneOf(vm0, 'g').reps[0].srcTopFrac, 0);
     assert.equal(laneOf(vm0, 'm').reps[0].srcTopFrac, 0);
     // Only a 1Q first lane: it constrains nothing, so the windowed group
     // seats at the left edge itself — the loop you shaped starts at 0.
-    const vm1 = deriveViewModel(island(0), opts);
+    const vm1 = deriveViewModel(island(0));
     assert.equal(laneOf(vm1, 'g').reps[0].srcTopFrac, 0, 'a lone loop starts at the top');
     assert.equal(laneOf(vm1, 'm').reps[0].srcTopFrac, 0);
 });
@@ -106,7 +101,7 @@ test('3. nested maps: a member\'s own window inside a windowed group composes', 
     // the slice [2Q, 3Q) (engine: content 2.237Q at group-inner 0.237Q).
     const st = island(3 * Q, { loop: [0, Q],
                                member: { windowActive: true, loopStart: Q, loopEnd: 3 * Q } });
-    const m = laneOf(deriveViewModel(st, opts), 'm');
+    const m = laneOf(deriveViewModel(st), 'm');
     assert.equal(m.underMap, true);
     assert.deepEqual(m.reps[0].srcSegs, [[0.5, 0.75]],
         'group-inner [0, 1Q) through the member\'s [1Q, 3Q) window = content [2Q, 3Q)');
@@ -115,6 +110,58 @@ test('3. nested maps: a member\'s own window inside a windowed group composes', 
     // the member's window from its top, [1Q, 3Q).
     const st2 = island(3 * Q, { loop: [0, 3 * Q],
                                 member: { windowActive: true, loopStart: Q, loopEnd: 3 * Q } });
-    const m2 = laneOf(deriveViewModel(st2, opts), 'm');
+    const m2 = laneOf(deriveViewModel(st2), 'm');
     assert.deepEqual(m2.reps[0].srcSegs, [[0.5, 0.75], [0.25, 0.75]]);
+});
+
+/* ---- 4. a group window OFF the Q grid (a free slide) ----
+ * A kit: a 1Q loop and a 4Q loop recorded 2Q into the group's cycle,
+ * every origin on the grid; the group's 2Q window starts `gs` samples
+ * off it. Whatever `gs` is, each member's slice is the whole map period:
+ * the walk steps in samples, so a member's own wrap never ends it. */
+
+function kit(q, gs) {
+    const member = (id, origin, duration) => ({
+        id, type: 'clip', duration, origin, loopStart: 0, loopEnd: 0,
+        windowActive: false, loopBypassed: false,
+    });
+    return {
+        id: 'root', quantum: q, islandZero: 0, islandPos: 0, masterPos: 0,
+        definerId: '',
+        nodes: [{
+            id: 'g', type: 'stack', anchored: true, origin: 0,
+            loopStart: gs, loopEnd: gs + 2 * q, windowActive: true,
+            loopBypassed: false, loopTop: gs,
+            nodes: [member('a', 0, q), member('b', 2 * q, 4 * q)],
+        }],
+    };
+}
+
+test('4. an off-grid group window: every member shows the whole map period', () => {
+    for (const q of [44100, 48000]) {
+        for (let gs = 1; gs < 2 * q; gs += 37) {
+            const vm = deriveViewModel(kit(q, gs));
+            for (const id of ['a', 'b']) {
+                const lane = laneOf(vm, id);
+                assert.equal(lane.underMap, true, `${id} at ${gs}/${q}: under the map`);
+                const heardQ = lane.reps[0].srcSegs
+                    .reduce((n, [x, y]) => n + (y - x), 0) * lane.contentQ;
+                assert.ok(Math.abs(heardQ - 2) < 1e-9,
+                    `${id} at ${gs}/${q}: slices sum to ${heardQ}Q of the 2Q map`);
+            }
+        }
+    }
+});
+
+test('4b. the slices are whole samples of the take, cut at the member\'s own wraps', () => {
+    const q = 44100, gs = 926;
+    const vm = deriveViewModel(kit(q, gs));
+    // The 1Q loop under inner [gs, gs + 2Q): the rest of its pass, a
+    // whole pass, then the first `gs` samples again.
+    assert.deepEqual(laneOf(vm, 'a').reps[0].srcSegs,
+        [[gs / q, 1], [0, 1], [0, gs / q]]);
+    // The 4Q loop sits 2Q into the group's cycle: content gs + 2Q up to
+    // its end, then its first `gs` samples.
+    assert.deepEqual(laneOf(vm, 'b').reps[0].srcSegs,
+        [[(gs + 2 * q) / (4 * q), 1], [0, gs / (4 * q)]]);
 });
